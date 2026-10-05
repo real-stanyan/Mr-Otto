@@ -84,7 +84,7 @@ describe("镜像卡与管理员之间（#1605 第 1 期 c）", () => {
     expect(src).toMatch(/if \(homeId !== null && friend\) void openAdminsLane\(homeId, uid\);/);
     expect(src).toMatch(/useEffect\(\(\) => \(\) => closeAdminsLane\(\), \[\]\);/);
     expect(src).toMatch(/const collabCards = useMemo\(\(\) => collabCardsOf\(adminsEvents, Date\.now\(\)\), \[adminsEvents\]\);/);
-    expect(src).toMatch(/\.\.\.collabCards\.map\(\(card\) => \(\{ kind: "collab" as const, ts: card\.ts, card \}\)\),/);
+    expect(src).toMatch(/\.\.\.collabCards\.filter\(\(card\) => card\.state !== "pending"\)\.map\(\(card\) => \(\{ kind: "collab" as const, ts: card\.ts, card \}\)\),/);
     expect(src).toMatch(/item\.kind === "collab" \? \(\s*<CollabMirrorCard/);
     expect(src).toMatch(/onDecide\(\{\s*"accepted"\s*\)|onDecide\("accepted"\)/);
     expect(lane).toMatch(/client\.collabDecide\(lane\.session\.workspaceId, lane\.session\.sessionId, requestId, decision\)/);
@@ -93,5 +93,13 @@ describe("镜像卡与管理员之间（#1605 第 1 期 c）", () => {
   it("「管理员之间 · N 条」折在输入框上方，点开是只读的 BottomSheet", () => {
     expect(src).toMatch(/\{`管理员之间 · \$\{adminsRows\.length\} 条`\}/);
     expect(src).toMatch(/<BottomSheet visible=\{adminsOpen\} title=\{`管理员之间 · \$\{name\}`\}/);
+  });
+});
+
+describe("等点头的镜像卡吸底（#1605 真机）", () => {
+  const src = readFileSync(new URL("../../mobile/src/friends/FriendChatScreen.tsx", import.meta.url), "utf8");
+  it("pending 的不进时间线，画在输入框上方；答过的回时间线", () => {
+    expect(src).toMatch(/\{collabCards\.filter\(\(card\) => card\.state === "pending"\)\.map\(\(card\) => \(/);
+    expect(src).toMatch(/key=\{`pending-\$\{card\.requestId\}`\}/);
   });
 });
