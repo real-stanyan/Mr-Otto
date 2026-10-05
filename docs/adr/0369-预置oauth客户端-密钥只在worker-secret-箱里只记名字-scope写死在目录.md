@@ -17,7 +17,7 @@ Google 也只在 `access_type=offline` + `prompt=consent` 时才给 `refresh_tok
    `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` 只放 Worker secret，`worker.ts` 的 `cloudDeps().presetClient` 从 env 现取，
    任一缺 = `null`。条目带 `presetClient` 时 `cloudConnect` 不调 `registerClient`，其余发现、PKCE、回调照旧。
    否掉：每人自己建 client 再粘贴（Gmail 用户门槛不可接受，#1594 留给真需要它的场景）；等 Google 出动态注册（没有迹象）。
-2. **pending 与 cloud 箱只记 `{ client_id, preset }`，secret 不进箱。** 换 token（`cloudCallback`）和续期（`cloudCall` 里那次
+2. **pending 与 cloud 箱只记 `{ client_id, preset }`，secret 不进箱。** 换 token（`cloudCallback`）和续期（`cloudRefresh` 里那次
    `refreshCloudOAuth`）之前由 `resolveClient` 现取 secret 补进去再发，补出来的那份只给这一发外呼用，绝不写回。理由：secret 只存一处，
    轮换不用让所有人重登；箱子（DO 存储 / 备份 / 日志）泄露也不带出我们的客户端密钥。
 3. **「这个客户端是不是我们的预置客户端」只看目录条目，不看存下来的 `preset` 字段。** 这是实现时才冒出来的口子，spec 里没有：
@@ -27,8 +27,9 @@ Google 也只在 `access_type=offline` + `prompt=consent` 时才给 `refresh_tok
    有 → 存的 `ci.preset` 必须等于 `entry.presetClient`，再补现取的 secret，对不上或此刻取不到 = `null`。同时 `cloudConnect` 在存厂商
    注册回包前把 `preset` 字段剥掉（belt-and-braces：`resolveClient` 本就不看它，剥掉是不让这个标记字段在箱里出现歧义）。
 4. **scope 由目录写死，不用资源元数据的全集。** 条目的 `scopes`（Gmail：`gmail.readonly` + `gmail.compose`）优先于 `scopes_supported`；
-   `authorizeParams`（Gmail：`access_type=offline`、`prompt=consent`）逐个 set 到授权 URL 上，但 `client_id` / `redirect_uri` /
-   `state` / `code_challenge*` / `response_type` 是保留键，目录给了也忽略（目录测试也拦）。`resource` 参数照旧带（MCP 规范要求）。
+   `authorizeParams`（Gmail：`access_type=offline`、`prompt=consent`）逐个 set 到授权 URL 上，但 `src/shared/mcpCatalog.ts` 的
+   `AUTHORIZE_RESERVED` 里八个键（`response_type` / `client_id` / `redirect_uri` / `code_challenge` / `code_challenge_method` /
+   `state` / `resource` / `scope`）是保留键，目录给了也忽略（目录测试也拦）。`resource` 参数照旧带（MCP 规范要求）。
    `refreshCloudOAuth` 不改：Google 续期回包不带新 `refresh_token`，既有合并 `{ ...oauth.tokens, ...tokens }` 保留旧的。
 5. **没配凭据 = 503 `preset_unconfigured`「X 还没开放，稍后再试」，且在任何外呼之前就回。** 不先发现再失败，没配好的环境不对 Google 打一发。
    回调时 secret 被删了：换 token 前现取失败，回 `preset_unconfigured`，深链照常回手机，手机拉视图看到没接上。续期时取不到：按

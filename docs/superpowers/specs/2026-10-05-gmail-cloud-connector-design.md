@@ -76,7 +76,7 @@ authorizeParams?: Readonly<Record<string, string>>;
   - 预置凭据为 null → **503 / `preset_unconfigured` / 「Gmail 还没开放，稍后再试」**（文案按条目名拼），**在发现之前就返回**，不外呼；
   - 否则照常发现（拿 authorize / token 端点与 resource），**不调 `registerClient`**。
 - **密钥不进箱**：pending 与落箱的 `clientInformation` 只记 `{ client_id, preset: "google" }`。换 token（`cloudCallback`）与
-  续期（`cloudCall` 里那次 `refreshCloudOAuth`）之前，按 `preset` 从 deps 现取 secret 补进去再发；现取不到 → 换 token 时回
+  续期（`cloudRefresh` 里那次 `refreshCloudOAuth`）之前，按 `preset` 从 deps 现取 secret 补进去再发；现取不到 → 换 token 时回
   `preset_unconfigured`，续期时按 `transient` 处理（凭据没坏，是我们这边没配好，不许把用户标成要重登）。
   理由：secret 只存一处，轮换 secret 不用让所有人重登；箱子泄露也不带出我们的客户端密钥。
 - `authorizeUrl`：`scope` 优先用条目的 `scopes`；再把 `authorizeParams` 逐个 set 上去（不许覆盖 `client_id` / `redirect_uri` /
