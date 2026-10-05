@@ -3,7 +3,7 @@
 // 注册表（GET，无副作用）。两条路都没有副作用，免审批不变（ADR-0171 4.6）。
 
 import type { Tool } from "./tool.js";
-import { searchCatalog, type CatalogEntry } from "../shared/mcpCatalog.js";
+import { desktopBlocked, searchCatalog, type CatalogEntry } from "../shared/mcpCatalog.js";
 import type { ExecutionWorld } from "../world/executionWorld.js";
 import { mapRegistryResponse, registrySearchUrl } from "../shared/mcpRegistry.js";
 
@@ -30,8 +30,9 @@ export function render(e: CatalogEntry): string {
   // 它拆成独立字段之后，不补这一行就等于**只有界面知道、agent 不知道**——
   // 水獭会照样 mcp_configure 落盘再 mcp_authorize，撞同一堵墙，还白留一台
   // 永远连不上的 server 在用户的 mcp.json 里
-  if (e.blocked !== undefined) {
-    lines.push(`现在接不上：${e.blocked}。别装这台，把这句原因直接告诉用户。`);
+  const blocked = desktopBlocked(e);
+  if (blocked !== undefined) {
+    lines.push(`现在接不上：${blocked}。别装这台，把这句原因直接告诉用户。`);
   }
   return lines.join("\n");
 }

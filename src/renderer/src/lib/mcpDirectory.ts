@@ -9,6 +9,7 @@ import {
   CATALOG_CATEGORIES,
   type CatalogCategory,
   type CatalogEntry,
+  desktopBlocked,
 } from "../../../shared/mcpCatalog.js";
 import type { McpServerConfig } from "../../../shared/mcp.js";
 import { fillHttpEntry } from "../../../shared/mcpCatalogFill.js";
@@ -244,8 +245,10 @@ export function installSlot(item: DirectoryItem, busy: boolean): InstallSlot {
   // 也不发「授权」——这两颗按钮点下去必失败，而"提供一个已知会失败的动作"
   // 正是 #722 那个撒谎的勾的形状。把原因说出来，动作留给用户自己决定。
   // **connected 不受影响**：真连上了说明我们的结论过期了，以现实为准（#760）
-  if (item.installed !== "connected" && item.entry.blocked !== undefined) {
-    return { kind: "note", label: "暂时连不上", title: item.entry.blocked };
+  // 预置客户端的条目（Gmail，#1619）同走这条：桌面这一版接不了，说去手机上接，不叫「暂时连不上」
+  const blocked = desktopBlocked(item.entry);
+  if (item.installed !== "connected" && blocked !== undefined) {
+    return { kind: "note", label: item.entry.blocked === undefined ? "在手机上接" : "暂时连不上", title: blocked };
   }
   if (item.installed === null) return { kind: "add" };
   switch (item.installed) {
