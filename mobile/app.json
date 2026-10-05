@@ -8,7 +8,7 @@
     "userInterfaceStyle": "automatic",
     "ios": {
       "supportsTablet": true,
-      "buildNumber": "8",
+      "buildNumber": "9",
       "bundleIdentifier": "com.stanyan.mrotto.mobile",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
@@ -79,7 +79,7 @@
       }
     },
     "owner": "real_stanyan",
-    "runtimeVersion": "5",
+    "runtimeVersion": "6",
     "updates": {
       "url": "https://u.expo.dev/02a88a0c-a498-4453-b03e-00dac97d5938",
       "enabled": true,
