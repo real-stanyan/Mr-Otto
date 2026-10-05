@@ -67,8 +67,10 @@ describe("laneTasksOf", () => {
       ev({ type: "user_message", content: "[系统] 总结给小明", fromUid: ME, mentions: ["admin"], greeting: "pair_call_summary" }),
       ev({ type: "assistant_message", agentId: "admin", content: "小红要你看看仓库。" }),
     ], ME, nameOf);
-    // 电话里朋友说的那句是人话 → 开了第二条；这是可接受的粒度（电话里每句话一条太碎，P2 先这样，见 ADR）
+    // 电话里说的话、挂断、之后的总结全归电话这一条（#1613：之前电话里那句人话另开了一张卡）
+    expect(tasks).toHaveLength(1);
     expect(tasks[0]).toMatchObject({ kind: "call", startedBy: "friend", title: "打给 管理员 的电话", agentIds: ["admin"] });
+    expect(tasks[0]!.items.map((i) => i.text)).toContain("[小红]: 帮我看看仓库");
     const last = tasks.at(-1)!;
     expect(last.items.map((i) => i.text)).toContain("通话结束");
     expect(last.items.at(-1)!.text).toBe("小红要你看看仓库。");
@@ -122,5 +124,22 @@ describe("抽屉的摘要（#1601）：人说的 + 结果露着，智能体之�
     expect(laneTaskDigest(t).map((r) => (r.kind === "item" ? r.item.key : "过程"))).toEqual(["u1", "过程", "u2", "a2"]);
     expect(laneTaskResult(task([me("u1", "查")]))).toBeNull();
     expect(laneTaskDigest(task([]))).toEqual([]);
+  });
+});
+
+describe("电话与电话后的话是一张卡（#1613，真机 2026-10-05）", () => {
+  it("我打给对面管理员，挂了以后半小时内接着说的归到电话那条；换人说的另开", () => {
+    reset();
+    const tasks = laneTasksOf([
+      ev({ type: "voice_call_changed", participants: [{ agentId: "admin", name: "峰哥" }], byUid: ME, ignorable: true }),
+      ev({ type: "user_message", content: "[继爸]: 告诉他，让他早点吃饭", fromUid: ME, voice: true }),
+      ev({ type: "assistant_message", agentId: "admin", content: "行——「他」是哪个？" }),
+      ev({ type: "voice_call_changed", participants: [], byUid: ME, ignorable: true }),
+      ev({ type: "user_message", content: "去吧", fromUid: ME }),
+      ev({ type: "assistant_message", agentId: "admin", content: "好" }),
+      ev({ type: "user_message", content: "我插一句", fromUid: FRIEND }),
+    ], ME, (id) => (id === "admin" ? "峰哥" : id));
+    expect(tasks.map((t) => [t.kind, t.startedBy, t.items.length])).toEqual([["call", "me", 5], ["message", "friend", 1]]);
+    expect(tasks[0]!.title).toBe("打给 峰哥 的电话");
   });
 });

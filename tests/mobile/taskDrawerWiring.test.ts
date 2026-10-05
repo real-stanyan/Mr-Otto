@@ -17,7 +17,7 @@ describe("FriendChatScreen：任务卡", () => {
     expect(src).toMatch(/item\.kind === "task" \? \(\s*<TaskCard/);
   });
   it("两条车道各折一次：laneTasksOf + lanePending 挂最后一条 + laneBusy 只标最后一条", () => {
-    expect(src).toMatch(/const tasks = laneTasksOf\(events, selfUid, nameOfAgent\);\s*const pending = lanePending\(events, streaming\);\s*const last = tasks\.at\(-1\);\s*if \(pending\.length > 0 && last !== undefined\) last\.items\.push\(\.\.\.pending\);\s*const busy = laneBusy\(events\);/);
+    expect(src).toMatch(/const tasks = laneTasksOf\(events, selfUid, peerLane \? nameOfPeerAgent : nameOfAgent\);\s*const pending = lanePending\(events, streaming\);\s*const last = tasks\.at\(-1\);\s*if \(pending\.length > 0 && last !== undefined\) last\.items\.push\(\.\.\.pending\);\s*const busy = laneBusy\(events\);/);
     expect(src).toMatch(/\.\.\.build\(laneEvents, laneSession !== null \? chat\.streaming : \{\}, false\),\s*\.\.\.\(peer === null \|\| peer\.session === null \? \[\] : build\(peerEvents, peer\.streaming, true\)\),/);
   });
   it("与私聊按时间合成，同一毫秒私聊在前", () => {
@@ -65,5 +65,16 @@ describe("抽屉里主人直接面对结果（#1601，真机 2026-10-05）", () 
   });
   it("铺开时下发那条不画 [系统] 气泡，只一行「↳ 谁 下发给 谁」", () => {
     expect(src).toMatch(/item\.handoff !== undefined \? \(\s*<Text key=\{item\.key\}[^]*?\{`↳ \$\{item\.agentId !== undefined \? nameOf\(item\.agentId\) : "智能体"\} 下发给 /);
+  });
+});
+
+describe("朋友那条车道的名字 / 脸按朋友的名册解析（#1613，真机 2026-10-05）", () => {
+  const src = readFileSync(new URL("../../mobile/src/friends/FriendChatScreen.tsx", import.meta.url), "utf8");
+  it("单独一份 peerWs（只有 TA 的智能体 + 公开智能体 + 管理员兜底），卡 / 抽屉 / @ 名单按 peer 切换解析器", () => {
+    expect(src).toMatch(/const peerWs = useMemo<WorkspaceSnapshot \| null>\(\(\) => \{\s*if \(peer === null\) return null;\s*const theirs = \[\.\.\.peer\.agents\];/);
+    expect(src).toMatch(/const nameOfPeerAgent = useCallback\(\(id: string\): string => \(peerWs !== null \? agentNameOf\(peerWs, id\) : id\), \[peerWs\]\);/);
+    expect(src).toMatch(/laneTaskSubtitle\(item\.t\.task, laneTaskStatus\(item\.t\.task, item\.t\.busy\), item\.t\.peer \? nameOfPeerAgent : nameOfAgent\)/);
+    expect(src).toMatch(/nameOf=\{openTask\?\.peer === true \? nameOfPeerAgent : nameOfAgent\}\s*slotOf=\{openTask\?\.peer === true \? slotOfPeerAgent : slotOfAgent\}/);
+    expect(src).toMatch(/tag: `\$\{name\} 的`, slot: slotOfPeerAgent\(a\.agentId\)/);
   });
 });
