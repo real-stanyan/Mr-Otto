@@ -4,11 +4,11 @@
 import { useNavigation } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ActivityIndicator, Share, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, Share, Text, View } from "react-native";
 import * as Haptics from "expo-haptics";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
 import type { AppRow, AppVersionRow } from "../../../src/shared/apps.js";
-import { APP_BRIDGE_JS, appAskText, bridgeDenied, bridgeReplyJs, parseBridgeRequest, type BridgeRequest } from "../../../src/shared/appBridge.js";
+import { APP_BRIDGE_JS, appAskText, appFixText, bridgeDenied, bridgeReplyJs, parseBridgeError, parseBridgeRequest, type BridgeRequest } from "../../../src/shared/appBridge.js";
 import { appData, appPageOk, fetchAppVersion, fetchApps } from "../../../src/shared/appsApi.js";
 import { ADMIN_AGENT_ID } from "../../../src/shared/workspaceAgents.js";
 import { HeaderTextButton } from "../chrome/HeaderTextButton.js";
@@ -29,6 +29,8 @@ export function MiniAppScreen({ route, navigation }: Props) {
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState<string | null>(null);
+  /** 应用自己报上来的第一条错（#1591 真机）：露一条，能一键让管理员修 */
+  const [appError, setAppError] = useState<string | null>(null);
   const history = useRef<string[]>([]);
   const web = useRef<WebView | null>(null);
   const nav = useNavigation();
@@ -110,6 +112,11 @@ export function MiniAppScreen({ route, navigation }: Props) {
   }, [nav, navigation]);
 
   const onMessage = useCallback((e: WebViewMessageEvent) => {
+    const err = parseBridgeError(e.nativeEvent.data);
+    if (err !== null) {
+      setAppError((cur) => cur ?? err);
+      return;
+    }
     const req = parseBridgeRequest(e.nativeEvent.data);
     if (req === null || loaded === null) return;
     void handle(req, loaded).then(
@@ -133,6 +140,7 @@ export function MiniAppScreen({ route, navigation }: Props) {
     );
   }
   return (
+    <View style={{ flex: 1, backgroundColor: c.background }}>
     <WebView
       ref={web}
       style={{ flex: 1, backgroundColor: c.background }}
@@ -149,5 +157,18 @@ export function MiniAppScreen({ route, navigation }: Props) {
       domStorageEnabled={false}
       setSupportMultipleWindows={false}
     />
+    {appError !== null ? (
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 16, paddingVertical: 10, backgroundColor: c.background, borderTopWidth: 0.5, borderTopColor: c.border }}>
+        <Text numberOfLines={2} style={{ flex: 1, fontSize: 13, color: c.destructive }}>{`这个应用出错了：${appError}`}</Text>
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => navigation.navigate("Chat", { kind: "agent", agentId: ADMIN_AGENT_ID, dispatch: appFixText(loaded.app.name, loaded.version.version, appError) })}
+          style={({ pressed }) => [{ paddingHorizontal: 12, height: 32, borderRadius: 16, alignItems: "center", justifyContent: "center", backgroundColor: c.brand }, pressed && { opacity: 0.7 }]}
+        >
+          <Text style={{ fontSize: 13, fontWeight: "600", color: "#fff" }}>让管理员修</Text>
+        </Pressable>
+      </View>
+    ) : null}
+    </View>
   );
 }

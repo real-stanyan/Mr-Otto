@@ -168,7 +168,7 @@ describe("主场里任务那三把刀", () => {
 
 describe("build_app（#1591）挂给谁", () => {
   const appsOpts = (): CloudSessionOpts["apps"] => ({ store: createInMemoryAppStore(), upload: async () => {} });
-  it("主场里：管理员与 apps 域的专员有；出行没有", async () => {
+  it("主场里：只有 apps 域的专员有；管理员与出行都没有（#1591 真机：管理员拿着刀就自己下场了）", async () => {
     const store = newStore();
     const tools: Record<string, string[]> = {};
     const session = open(store, {
@@ -177,7 +177,7 @@ describe("build_app（#1591）挂给谁", () => {
     });
     await session.say("owner", "Stan", "@管理员 @出行 @应用专员 都来", true, ["admin", "a_travel", "a_apps"]);
     await session.settled();
-    expect(tools["admin"]).toContain("build_app");
+    expect(tools["admin"]).not.toContain("build_app");
     expect(tools["a_apps"]).toContain("build_app");
     expect(tools["a_travel"]).not.toContain("build_app");
     store.close();

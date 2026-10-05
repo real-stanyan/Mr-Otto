@@ -1,6 +1,6 @@
 // 应用与宿主之间的桥（#1591）：请求怎么认、能力怎么拦、回执怎么拼、ask 那句怎么写。
 import { describe, expect, it } from "vitest";
-import { APP_BRIDGE_JS, appAskText, bridgeDenied, bridgeReplyJs, capabilityOf, parseBridgeRequest } from "../../src/shared/appBridge.js";
+import { APP_BRIDGE_JS, appAskText, appFixText, bridgeDenied, bridgeReplyJs, capabilityOf, parseBridgeError, parseBridgeRequest } from "../../src/shared/appBridge.js";
 import { appPageOk } from "../../src/shared/appsApi.js";
 
 describe("appBridge", () => {
@@ -34,5 +34,16 @@ describe("appBridge", () => {
     expect(appPageOk(files, "pages/day.html")).toBe(true);
     expect(appPageOk(files, "app.js")).toBe(false);
     expect(appPageOk(files, "../x.html")).toBe(false);
+  });
+});
+
+describe("应用报错（#1591 真机）", () => {
+  it("桥里接了 error / unhandledrejection；宿主只认 {error}；让管理员修那句带名字、版本、报错", () => {
+    expect(APP_BRIDGE_JS).toContain('addEventListener("error"');
+    expect(APP_BRIDGE_JS).toContain('addEventListener("unhandledrejection"');
+    expect(parseBridgeError(JSON.stringify({ error: "TypeError: x" }))).toBe("TypeError: x");
+    expect(parseBridgeError(JSON.stringify({ id: "c1", method: "back" }))).toBeNull();
+    expect(parseBridgeError("nope")).toBeNull();
+    expect(appFixText("日历记事本", 1, "Cannot read  properties")).toBe("[应用「日历记事本」v1 出错了]: Cannot read properties——让应用专员修一下、出下一版。");
   });
 });
