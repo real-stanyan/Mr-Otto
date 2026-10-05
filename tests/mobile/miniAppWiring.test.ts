@@ -36,3 +36,16 @@ describe("应用页与聊天里的卡", () => {
     expect(bubbles).toMatch(/navigation\.navigate\("MiniApp", \{ appId: row\.appId \}\)/);
   });
 });
+
+describe("主页下拉出应用抽屉（#1648）", () => {
+  it("列表顶到头往下拽过线松手就开；点一个进 MiniApp；打开应用记一次最近使用", () => {
+    const chats = read("mobile/src/tabs/ChatsScreen.tsx");
+    expect(chats).toMatch(/onScrollEndDrag=\{\(e\) => \{ if \(e\.nativeEvent\.contentOffset\.y <= -APPS_PULL_TRIGGER && !searching\) setAppsOpen\(true\); \}\}/);
+    expect(chats).toMatch(/onPick=\{\(appId\) => navigation\.navigate\("MiniApp", \{ appId \}\)\}/);
+    expect(read("mobile/src/apps/MiniAppScreen.tsx")).toMatch(/markAppOpened\(app\.id\);/);
+    const drawer = read("mobile/src/apps/AppsDrawer.tsx");
+    expect(drawer).toContain("最近使用");
+    expect(drawer).toContain("我的应用");
+    expect(drawer).toContain("搜索应用");
+  });
+});

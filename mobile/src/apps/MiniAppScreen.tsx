@@ -17,6 +17,7 @@ import { supabase } from "../supabase.js";
 import { usePalette } from "../theme.js";
 import { toast } from "../wx/toast.js";
 import { appById } from "./appsStore.js";
+import { markAppOpened } from "./recentApps.js";
 import { appFileUri, ensureAppFiles } from "./appFiles.js";
 
 type Props = NativeStackScreenProps<RootStackParams, "MiniApp">;
@@ -50,6 +51,7 @@ export function MiniAppScreen({ route, navigation }: Props) {
         const dir = await ensureAppFiles(uid, app.id, version.version, version.files);
         if (!alive) return;
         setLoaded({ app, version, dirUri: dir.uri, uid });
+        markAppOpened(app.id);
         setPage(version.manifest.entry);
       } catch (e) {
         if (alive) setError(e instanceof Error ? e.message : String(e));
