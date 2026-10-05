@@ -13,7 +13,9 @@ describe("ChatScreen", () => {
   it("＋ 里有「相册」「拍摄」，只在会话建好、不是外联时", () => {
     expect(src).toMatch(/label: "相册", onPress: \(\) => void sendPicked\(pickFromLibrary\)/);
     expect(src).toMatch(/label: "拍摄", onPress: \(\) => void sendPicked\(pickFromCamera\)/);
-    expect(src).toMatch(/if \(ready && session !== null && !isOutreach && ws !== null\)/);
+    // #1645 起这一条件提成 canMedia（粘贴图片也按它判）
+    expect(src).toMatch(/const canMedia = ready && session !== null && !isOutreach && ws !== null;/);
+    expect(src).toMatch(/if \(canMedia\) \{/);
   });
   it("发送走 sendCloudMedia，哈希 / 大小 / 上传 / 发送都注入，say 带 media", () => {
     expect(src).toMatch(/sendCloudMedia\(wsId, sid, p\.items, \{/);

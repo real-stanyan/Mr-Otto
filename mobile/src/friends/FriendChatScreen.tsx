@@ -58,6 +58,8 @@ import { markSeen, setOpenKey } from "../inbox/seenStore.js";
 import { useInbox } from "../inbox/useInbox.js";
 import { MediaBubble, PendingMediaBubble } from "../media/MediaBubble.js";
 import { pickFromCamera, pickFromLibrary, pickedKind, prepareAsset, type PickedAsset } from "../media/prepareMedia.js";
+import { PasteDialog, pastedAssets, usePastedImages } from "../media/pasteImages.js";
+import type { PastedImage } from "../../../src/shared/pastedImages.js";
 import type { RootStackParams } from "../nav/types.js";
 import { useMyName } from "../tabs/MeScreen.js";
 import { usePalette, withAlpha, space } from "../theme.js";
@@ -601,6 +603,9 @@ export function FriendChatScreen({ route, navigation }: Props) {
     for (const group of planMediaMessages(ready)) sendMediaToFriend(uid, group);
     if (problems.length > 0) setNote(problems.length === 1 ? (problems[0] ?? "") : `有 ${problems.length} 样没发：${problems[0] ?? ""}`);
   };
+  // 输入框里粘贴图片（#1645）：还是朋友、这一页在最上面时才收；先问一句再走 sendPicked
+  const [pasted, setPasted] = useState<{ key: number; visible: boolean; images: PastedImage[] } | null>(null);
+  usePastedImages(focused && friend, (images) => setPasted({ key: Date.now(), visible: true, images }));
 
   return (
     <View style={{ flex: 1, backgroundColor: c.background }}>
@@ -1021,6 +1026,21 @@ export function FriendChatScreen({ route, navigation }: Props) {
             setFacingPick(null);
             setFacingError(null);
           }}
+        />
+      ) : null}
+      {pasted !== null ? (
+        <PasteDialog
+          key={pasted.key}
+          visible={pasted.visible}
+          images={pasted.images}
+          to={name}
+          onCancel={() => setPasted((p) => (p === null ? p : { ...p, visible: false }))}
+          onSend={() => {
+            const images = pasted.images;
+            setPasted((p) => (p === null ? p : { ...p, visible: false }));
+            void sendPicked(async () => pastedAssets(images));
+          }}
+          onExited={() => setPasted(null)}
         />
       ) : null}
       {carding !== null ? (
