@@ -54,6 +54,7 @@ export type AdminsLaneRow =
   | { kind: "system"; key: string; ts: number; text: string };
 
 const DECISION_TEXT: Record<CollabDecisionEvent["decision"], string> = { accepted: "你接了", declined: "你没接", expired: "过期了，没回" };
+const VIA_TEXT: Record<NonNullable<CollabDecisionEvent["via"]>, string> = { tier_full: "按好友权限直接接了", tier_agents: "按好友权限直接接了（只答，不碰你的东西）", tier_chat: "对方的权限是仅聊天，没接" };
 
 export function adminsLaneRows(events: readonly SessionEvent[]): AdminsLaneRow[] {
   const rows: AdminsLaneRow[] = [];
@@ -63,7 +64,7 @@ export function adminsLaneRows(events: readonly SessionEvent[]): AdminsLaneRow[]
       titles.set(e.requestId, e.title);
       rows.push({ kind: "system", key: `q${e.seq}`, ts: e.ts, text: `${e.quote.ownerName} 的管理员「${e.fromAgentName}」找你的管理员配合「${e.title}」` });
     } else if (e.type === "collab_decision") {
-      rows.push({ kind: "system", key: `d${e.seq}`, ts: e.ts, text: `「${titles.get(e.requestId) ?? "请求"}」：${DECISION_TEXT[e.decision]}` });
+      rows.push({ kind: "system", key: `d${e.seq}`, ts: e.ts, text: `「${titles.get(e.requestId) ?? "请求"}」：${e.via !== undefined ? VIA_TEXT[e.via] : DECISION_TEXT[e.decision]}` });
     } else if (e.type === "user_message" && e.relay !== undefined) {
       const sp = splitSpeakerPrefix(e.content);
       rows.push({ kind: "peer", key: `p${e.seq}`, ts: e.ts, name: sp?.label ?? "对面的管理员", text: sp?.body ?? e.content });

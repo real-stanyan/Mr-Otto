@@ -796,6 +796,9 @@ export interface CollabDecisionEvent extends SessionEventBase {
   type: "collab_decision";
   requestId: string;
   decision: "accepted" | "declined" | "expired";
+  /** 不是主人点的、是按好友权限自动定的（#1605，维护者 2026-10-05 拍板）：tier_full = 全部开放，直接接、按主人的规矩办；
+      tier_agents = 可带智能体，直接接、只答不碰主人的东西；tier_chat = 仅聊天，直接回绝。缺席 = 主人亲手点的 / 超时 */
+  via?: "tier_full" | "tier_agents" | "tier_chat";
   byUid: string | null;
   ignorable: true;
 }

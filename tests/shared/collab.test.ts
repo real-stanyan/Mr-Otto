@@ -47,3 +47,14 @@ describe("task_collab", () => {
     expect(fold.get("t")!.updatedTs).toBe(1003);
   });
 });
+
+describe("按权限自动定的文案（#1605）", () => {
+  it("给发起方读的那句：直接接了 / 仅聊天没接", async () => {
+    const { collabDecisionText, collabAutoAcceptText } = await import("../../src/shared/collab.js");
+    expect(collabDecisionText({ requestId: "r", decision: "accepted", via: "tier_full" })).toContain("按好友权限直接接了");
+    expect(collabDecisionText({ requestId: "r", decision: "declined", via: "tier_chat" })).toContain("仅聊天");
+    const e = { requestId: "r", title: "看营业额", fromAgentName: "雨姐", quote: { ownerName: "继爸", ownerLine: "", note: "" }, result: "" };
+    expect(collabAutoAcceptText(e, "full")).toContain("按好友权限直接接了");
+    expect(collabAutoAcceptText(e, "agents")).toContain("不动你主人的数据");
+  });
+});
