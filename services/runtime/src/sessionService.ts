@@ -173,6 +173,7 @@ import { createInviteToCallTool } from "./inviteToCallTool.js";
 import type { VoiceCallParticipant } from "../../../src/session/events.js";
 import { LoopEngine } from "../../../src/loop/engine.js";
 import type { EventStore } from "../../../src/session/store.js";
+import type { EventLog } from "../../../src/session/eventLog.js";
 import type { AppConnectEvent, FriendPickCandidate, SessionEvent, SessionCreatedEvent, UserMessageEvent, AssistantMessageEvent, AgentRelayEvent, CallRingEvent, OutreachEvent, OutreachLine, OutreachOutcome, UserAttachmentRef, ChatVideoRef, TokenUsage, CollabRequestEvent, CollabDecisionEvent } from "../../../src/session/events.js";
 import { ChatMediaRejectedError } from "./chatMediaIntake.js";
 import { mediaPlaceholder, type ChatMediaRef } from "../../../src/shared/chatMedia.js";
@@ -250,7 +251,7 @@ import { createBuildAppTool } from "./buildAppTool.js";
 import { createSettingsTool, type OwnerSettingsStore } from "./settingsTool.js";
 import { pickCallAck } from "../../../src/shared/callAck.js";
 import {
-  groupOwnerOf, groupSeatsOf, lastMirroredSeq, mirrorLinesOf, nextGroupOwner, reseat, seatAgentId, seatAskedText, seatDeclinedText, seatExpiredText, seatGoneText, seatLangOf,
+  groupOwnerOf, groupSeatsOf, lastMirroredSeq, mirrorLinesOf, nextGroupOwner, reseat, seatAgentId, seatAskedText, seatDeclinedText, seatExpiredText, seatGoneText, seatLangOf, PRIVATE_DIR_RE, PRIVATE_BLOCKED_TEXT, stripPrivateLines,
   seatGrantText, seatLabel, seatMentionsIn, seatUidOf, SEAT_MIRROR_BACKFILL, SEAT_RELAY_MAX_DEPTH, SEAT_RELAY_PER_HOUR_MAX, SEAT_REQUEST_EXPIRE_MS, SEAT_UPGRADE_TEXT,
   type GroupSeat, type MirrorLine, type SeatPolicy,
 } from "../../../src/shared/groupSeats.js";
@@ -840,13 +841,13 @@ export interface CloudSession {
   /** 群 → 座位的镜像：这个座位上次镜像到 `afterSeq` 之后群里的每一句（null = 新座位，带最后 SEAT_MIRROR_BACKFILL 句） */
   seatLinesFor?(seatUid: string, afterSeq: number | null): MirrorLine[];
   /** 座位 → 群：管理员的回话 / 点头卡 / 结局（镜像进群的日志） */
-  receiveSeatReply?(o: { seatUid: string; text: string; model: string; toUid: string | null; depth: number }): void;
+  receiveSeatReply?(o: { seatUid: string; text: string; model: string; toUid: string | null; depth: number; worker?: { agentId: string; name: string } }): void;
   receiveSeatRequest?(e: SeatRequestEvent): void;
   /** 座位 → 群：管理员流式的半句话，原样转成这间房的 delta 帧（署名 seat:<uid>） */
   receiveSeatDelta?(seatUid: string, text: string): void;
   receiveSeatDecision?(e: SeatDecisionEvent): void;
   /** 座位主人在群里点头卡（seat_decide 帧）：只认那个座位的主人、只认还开着的卡 */
-  decideSeat?(requestId: string, byUid: string, decision: "accepted" | "declined"): Promise<{ ok: true } | { ok: false; message: string }>;
+  decideSeat?(requestId: string, byUid: string, decision: "accepted" | "declined", note?: string): Promise<{ ok: true } | { ok: false; message: string }>;
   /** 成员改自己座位的策略（seat_policy 帧） */
   setSeatPolicy?(byUid: string, byName: string, policy: SeatPolicy): { ok: true; changed: boolean } | { ok: false; message: string };
   /** 退群（自己）：座位撤、群主走了转给最早入群的人。回退群之后的座位名单（daemon 拿去写投影） */
@@ -856,7 +857,7 @@ export interface CloudSession {
   /** 座位那一侧：群 → 座位送来的一句（先镜像、再按谁在说起一轮或弹卡）。回 null = 收下了；字符串 = 拒绝的那句人话 */
   seatDeliver?(o: { lines: MirrorLine[]; opening: SeatOpening }): string | null;
   /** 座位那一侧：主人的决定 */
-  seatDecide?(requestId: string, byUid: string, decision: "accepted" | "declined"): string | null;
+  seatDecide?(requestId: string, byUid: string, decision: "accepted" | "declined", note?: string): string | null;
   /** 座位那一侧：镜像到群里的哪一句了（日志推导） */
   mirroredUpTo?(): number | null;
 }
@@ -907,6 +908,13 @@ export function speakerLabelOf(content: string | undefined, fromUid: string): st
     上下文里，读起来就是一条没人执行的正常指令——下一轮谁顺手把它做了都不奇怪 */
 export function kickedNoteText(label: string): string {
   return `${label} 已不在这个团队，上面那句点名不作数`;
+}
+
+/** 座位里专员（L1）的视野（#1682 拍板 F）：只拿管理员交代的话——镜像进来的群聊（chat_message.mirror）与群里送来的开场白
+    （带 mirror 的 user_message）都不进它的上下文。管理员说的话照旧以「[管理员]: …」进来，接力开场白照旧 */
+function seatWorkerView(view: EventLog): EventLog {
+  const keep = (e: SessionEvent): boolean => !((e.type === "chat_message" || e.type === "user_message") && e.mirror !== undefined);
+  return { ...view, load: (sid, o) => view.load(sid, o).filter(keep) };
 }
 
 export function createCloudSession(opts: CloudSessionOpts): CloudSession {
@@ -1319,21 +1327,29 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   }
   /** 挂在 engine 上的 world：每条容器操作先过 gateContainer。`...opts.world` 把
       http 与可选能力原样带过去（DockerWorld 只实现 fs/exec/http） */
+  /** 这一轮是不是「替别人办事」（#1682）：座位里别人点起的、或主人点了头 / 设了放行才起的那一轮。主人的私人文件夹在这一轮里硬拦 */
+  const forSomeoneElse = (): boolean => isSeat && currentInitiator !== null && (currentInitiator !== opts.ownerUid || seatGrantTurn);
   const world: ExecutionWorld = {
     ...opts.world,
     fs: {
       read: async (path) => {
+        if (forSomeoneElse() && PRIVATE_DIR_RE.test(path)) throw new Error(PRIVATE_BLOCKED_TEXT);
         await gateContainer();
         return opts.world.fs.read(path);
       },
       write: async (path, content) => {
+        if (forSomeoneElse() && PRIVATE_DIR_RE.test(path)) throw new Error(PRIVATE_BLOCKED_TEXT);
         await gateContainer();
         return opts.world.fs.write(path, content);
       },
     },
     exec: async (cmd, o) => {
+      const guarded = forSomeoneElse();
+      if (guarded && PRIVATE_DIR_RE.test(cmd)) return { stdout: "", stderr: PRIVATE_BLOCKED_TEXT, exitCode: 126 };
       await gateContainer();
-      return opts.world.exec(cmd, o);
+      const r = await opts.world.exec(cmd, o);
+      // 命令没点名私人文件夹、却把它扫了出来（grep -r / find）：带路径的那几行去掉
+      return guarded ? { ...r, stdout: stripPrivateLines(r.stdout), stderr: stripPrivateLines(r.stderr) } : r;
     },
   };
 
@@ -1519,9 +1535,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       const r = seatRequests.get(e.requestId);
       if (r !== undefined) { r.decision = e.decision; if (r.timer !== null) { clearCollabTimer(r.timer); r.timer = null; } }
     }
-    // 座位里管理员说的每一句送回群（#1682）：非空、不是系统替它应的那句。专员（L1）的话不送——群里只露管理员
-    if (isSeat && e.type === "assistant_message" && e.agentId === ADMIN_AGENT_ID && e.ack === undefined && e.content.trim() !== "") {
-      bridgeSeatReply(e.content.trim(), e.model);
+    // 座位里管理员说的每一句送回群（#1682）：非空、不是系统替它应的那句。专员（L1）的话也送，带 worker——群里折叠成一行
+    if (isSeat && e.type === "assistant_message" && e.agentId !== undefined && e.ack === undefined && e.content.trim() !== "") {
+      bridgeSeatReply(e.content.trim(), e.model, e.agentId === ADMIN_AGENT_ID ? undefined : { agentId: e.agentId, name: specNames.get(e.agentId) ?? e.agentId });
     }
     // 谁在等它的职责（#1356 A2）：同 voiceCall 的推理——daemon.ts 绕过 notify 直接 append 的那几类
     // 里没有 user_message，漏不掉
@@ -1619,11 +1635,11 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   /** 点头卡 → 提要求那句话的时区（进程内）：点了头起的那一轮带上它，「十分钟后」才算得对 */
   const requestTz = new Map<string, string>();
   /** 座位里管理员说的一句送回群。深度 = 叫醒这一轮的那句的深度（群那边 @ 别家时 +1） */
-  function bridgeSeatReply(text: string, model: string): void {
+  function bridgeSeatReply(text: string, model: string, worker?: { agentId: string; name: string }): void {
     const hub = opts.seatHub ?? null;
     if (hub === null || seatGroup === null || archived) return;
     const toUid = (currentJob !== null ? grantRequesters.get(currentJob.openingSeq) : undefined) ?? currentInitiator;
-    void hub.reply({ group: seatGroup, seatUid: opts.ownerUid, text, model, toUid, depth: currentOpeningDepth })
+    void hub.reply({ group: seatGroup, seatUid: opts.ownerUid, text, model, toUid, depth: currentOpeningDepth, ...(worker !== undefined ? { worker } : {}) })
       .catch((err: unknown) => console.warn(`[otto-runtime] 座位的回话送不回群（session=${sessionId}）：${err instanceof Error ? err.message : String(err)}`));
   }
   /** 不花模型的那几句（没同意 / 没回）：以管理员的身份落一条 assistant_message——群里看到的是它说的，它自己下一轮也记得 */
@@ -1632,20 +1648,20 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     notify(store.append({ sessionId, ts: Date.now(), type: "assistant_message", agentId: ADMIN_AGENT_ID, content: text, model: callerModelOf(store.load(sessionId), ADMIN_AGENT_ID) }));
   }
   /** 授权开场白：主人点了头 / 设了全部放行。主人的规矩，但带 greeting = 不算主人亲口 */
-  function seatGrant(o: { fromUid: string; fromName: string; ask: string; via: "card" | "policy"; groupSeq?: number; tz?: string }): void {
+  function seatGrant(o: { fromUid: string; fromName: string; ask: string; via: "card" | "policy"; groupSeq?: number; tz?: string; note?: string }): void {
     if (archived) return;
     const opening = store.append({
       sessionId, ts: Date.now(), type: "user_message", fromUid: opts.ownerUid, mentions: [ADMIN_AGENT_ID], greeting: "seat_grant",
       ...(o.groupSeq !== undefined ? { mirror: { seq: o.groupSeq } } : {}),
       ...(o.tz !== undefined ? { tz: o.tz } : {}),
-      content: seatGrantText({ ownerName: seatOwnerName(), fromName: o.fromName, ask: o.ask, via: o.via }),
+      content: seatGrantText({ ownerName: seatOwnerName(), fromName: o.fromName, ask: o.ask, via: o.via, ...(o.note !== undefined ? { note: o.note } : {}) }),
     }) as UserMessageEvent;
     grantRequesters.set(opening.seq, o.fromUid);
     notify(opening);
     if (coordinator.enqueue({ agentId: ADMIN_AGENT_ID, fromUid: opts.ownerUid, opening }) === "start_turn") startDrain();
   }
-  function seatDecision(requestId: string, decision: SeatDecisionEvent["decision"], byUid: string | null): SeatDecisionEvent {
-    const d = store.append({ sessionId, ts: Date.now(), type: "seat_decision", requestId, seatUid: opts.ownerUid, decision, byUid, ignorable: true }) as SeatDecisionEvent;
+  function seatDecision(requestId: string, decision: SeatDecisionEvent["decision"], byUid: string | null, note?: string): SeatDecisionEvent {
+    const d = store.append({ sessionId, ts: Date.now(), type: "seat_decision", requestId, seatUid: opts.ownerUid, decision, byUid, ...(note !== undefined ? { note } : {}), ignorable: true }) as SeatDecisionEvent;
     notify(d);
     const hub = opts.seatHub ?? null;
     if (hub !== null && seatGroup !== null) {
@@ -2225,7 +2241,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // ask_owner（#1682）：只在座位里、只给管理员；亮不亮在 tools() 里按「这一轮是不是别人使唤」判
     const askOwnerTool = isSeat && spec.agentId === ADMIN_AGENT_ID ? createAskOwnerTool({ request: seatAsk }) : null;
     const engine = new LoopEngine({
-      store: agentView(store, spec.agentId),
+      // 座位里的专员（L1，拍板 F）：只看管理员交代的话，不看镜像进来的群聊、也不看群里送来的开场白
+      store: isSeat && spec.agentId !== ADMIN_AGENT_ID ? seatWorkerView(agentView(store, spec.agentId)) : agentView(store, spec.agentId),
       adapter,
       agentId: spec.agentId,
       // 定时任务那一轮的圈数硬上限（#1283，spec §5.4）：没人在场按停止键。普通轮不封顶（ADR-0006）
@@ -4174,12 +4191,16 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 新座位：带最后 SEAT_MIRROR_BACKFILL 句当背景（只算镜像得出来的那几种，不按事件条数截）
       return mirrorLinesOf(store.load(sessionId), seatUid, seats).slice(-SEAT_MIRROR_BACKFILL);
     },
-    receiveSeatReply({ seatUid, text, model, toUid, depth }) {
+    receiveSeatReply({ seatUid, text, model, toUid, depth, worker }) {
       const seats = groupSeats ?? [];
       const seat = seats.find((s) => s.uid === seatUid);
       if (archived || seat === undefined) return; // 退群了：它最后那句不再进群
-      const said = store.append({ sessionId, ts: Date.now(), type: "assistant_message", agentId: seatAgentId(seatUid), content: text, model }) as AssistantMessageEvent;
+      const said = store.append({
+        sessionId, ts: Date.now(), type: "assistant_message", agentId: seatAgentId(seatUid), content: text, model, ...(worker !== undefined ? { worker } : {}),
+      }) as AssistantMessageEvent;
       notify(said);
+      // 专员的话只是折叠在群里给人看过程：不推送、不当成去使唤别家（它只听自家管理员）
+      if (worker !== undefined) return;
       // 推给叫醒它的那个人
       if (toUid !== null && toUid !== seatUid && seats.some((s) => s.uid === toUid)) {
         const target = alertTargetFor(toUid, seatAgentId(seatUid));
@@ -4224,7 +4245,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       const { seq: _seq, sessionId: _sid, ...rest } = e;
       notify(store.append({ ...rest, sessionId, ts: Date.now() }));
     },
-    async decideSeat(requestId, byUid, decision) {
+    async decideSeat(requestId, byUid, decision, note) {
       if (groupSeats === null) return { ok: false, message: "这不是座位制的群" };
       const r = seatRequests.get(requestId);
       if (r === undefined) return { ok: false, message: "没有这张卡" };
@@ -4233,7 +4254,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       if (archived) return { ok: false, message: "这个群已经收尾了" };
       const hub = opts.seatHub ?? null;
       if (hub === null) return { ok: false, message: "服务这边还没接上，稍后再点" };
-      const refused = await hub.decide({ group: { workspaceId: opts.workspaceId, sessionId }, seatUid: r.event.seatUid, requestId, byUid, decision });
+      const refused = await hub.decide({ group: { workspaceId: opts.workspaceId, sessionId }, seatUid: r.event.seatUid, requestId, byUid, decision, ...(note !== undefined && note !== "" ? { note } : {}) });
       return refused === null ? { ok: true } : { ok: false, message: refused };
     },
     setSeatPolicy(byUid, byName, policy) {
@@ -4293,17 +4314,18 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       if (coordinator.enqueue({ agentId: ADMIN_AGENT_ID, fromUid: opening.fromUid, opening: msg }) === "start_turn") startDrain();
       return null;
     },
-    seatDecide(requestId, byUid, decision) {
+    seatDecide(requestId, byUid, decision, note) {
       if (!isSeat) return "这不是群座位";
       if (byUid !== opts.ownerUid) return `只有${seatOwnerName()}能点`;
       const r = seatRequests.get(requestId);
       if (r === undefined) return "没有这张卡";
       if (r.decision !== null) return r.decision === "expired" ? "这张卡已经过期了" : "已经答过了";
       if (archived) return "这个座位已经收了";
-      seatDecision(requestId, decision, byUid);
+      const n = note !== undefined && note.trim() !== "" ? note.trim() : undefined;
+      seatDecision(requestId, decision, byUid, n);
       const tz = requestTz.get(requestId);
-      if (decision === "accepted") seatGrant({ fromUid: r.event.fromUid, fromName: r.event.fromName, ask: r.event.ask, via: "card", ...(tz !== undefined ? { tz } : {}) });
-      else seatSays(seatDeclinedText(seatOwnerName(), seatLangOf(r.event.ask)));
+      if (decision === "accepted") seatGrant({ fromUid: r.event.fromUid, fromName: r.event.fromName, ask: r.event.ask, via: "card", ...(tz !== undefined ? { tz } : {}), ...(n !== undefined ? { note: n } : {}) });
+      else seatSays(seatDeclinedText(seatOwnerName(), seatLangOf(r.event.ask), n));
       return null;
     },
     mirroredUpTo() {

@@ -31,9 +31,9 @@ export interface SeatHub {
   /** 群 → 座位：有人 @ 了这个座位的管理员。回 null = 送到了；字符串 = 没送到的那句人话（群里说给大家听） */
   deliver(o: { group: GroupRef; seatUid: string; opening: SeatOpening }): Promise<string | null>;
   /** 群 → 座位：座位主人在群里点了头卡 */
-  decide(o: { group: GroupRef; seatUid: string; requestId: string; byUid: string; decision: "accepted" | "declined" }): Promise<string | null>;
+  decide(o: { group: GroupRef; seatUid: string; requestId: string; byUid: string; decision: "accepted" | "declined"; note?: string }): Promise<string | null>;
   /** 座位 → 群：管理员说了一句。`toUid` = 叫醒它的那个人（推送给他） */
-  reply(o: { group: GroupRef; seatUid: string; text: string; model: string; toUid: string | null; depth: number }): Promise<void>;
+  reply(o: { group: GroupRef; seatUid: string; text: string; model: string; toUid: string | null; depth: number; worker?: { agentId: string; name: string } }): Promise<void>;
   /** 座位 → 群：管理员正在吐的半句话（流式预览，不落日志）。fire-and-forget */
   delta(o: { group: GroupRef; seatUid: string; text: string }): void;
   /** 座位 → 群：点头卡与它的结局（镜像） */
@@ -77,15 +77,15 @@ export function createSeatHub(deps: SeatHubDeps): SeatHub {
       const lines = group.seatLinesFor(seatUid, seat.mirroredUpTo?.() ?? null);
       return seat.seatDeliver({ lines, opening });
     },
-    async decide({ group: ref, seatUid, requestId, byUid, decision }) {
+    async decide({ group: ref, seatUid, requestId, byUid, decision, note }) {
       const seat = await seatOf(seatUid, ref);
       if (typeof seat === "string") return seat;
       if (seat.seatDecide === undefined) return "这会儿接不住，稍后再点";
-      return seat.seatDecide(requestId, byUid, decision);
+      return seat.seatDecide(requestId, byUid, decision, note);
     },
-    async reply({ group: ref, seatUid, text, model, toUid, depth }) {
+    async reply({ group: ref, seatUid, text, model, toUid, depth, worker }) {
       const group = await groupOf(ref);
-      group?.receiveSeatReply?.({ seatUid, text, model, toUid, depth });
+      group?.receiveSeatReply?.({ seatUid, text, model, toUid, depth, ...(worker !== undefined ? { worker } : {}) });
     },
     delta({ group: ref, seatUid, text }) {
       void groupOf(ref).then((group) => group?.receiveSeatDelta?.(seatUid, text));

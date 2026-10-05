@@ -238,6 +238,9 @@ export interface AssistantMessageEvent extends SessionEventBase {
       截掉的那一截原样放这里——日志仍然说得清模型那一刻吐了什么，而投影（模型上下文 /
       气泡 / 最后一句 / 语音）只读 content。缺席 = 没截过（正常回复 / 本机会话 / 旧日志） */
   trimmed?: string;
+  /** 群座位制的群里（#1682）：这句是某家管理员手下的专员（L1）说的——群里折叠成一行，署名「名字（谁的专员）」。
+      缺席 = 管理员自己说的 / 不是座位制的群（旧日志照常重放） */
+  worker?: { agentId: string; name: string };
   /** 这条是哪只工作区 agent 干的（#928）。**缺席 = 单 agent 会话**——旧日志、
       本机会话、云会话在多智能体上线前落的那些，全在这一档，照常重放。
       落盘由 engine 的 env() 统一供料，不是每个 append 点各写一遍 */
@@ -842,6 +845,8 @@ export interface SeatDecisionEvent extends SessionEventBase {
   seatUid: string;
   decision: "accepted" | "declined" | "expired";
   byUid: string | null;
+  /** 主人点的时候附的一句（#1682）：「告诉她我那天上班」。缺席 = 没附 */
+  note?: string;
   ignorable: true;
 }
 

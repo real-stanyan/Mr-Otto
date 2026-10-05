@@ -1889,10 +1889,10 @@ async function main(): Promise<void> {
         return room.decideCollab(requestId, byUid, decision);
       },
       // 座位制的群（#1682，ADR-0376）：点头卡 / 我的座位策略 / 退群。判据在 CloudSession，这里只找房、写投影
-      async decideSeat(workspaceId, sessionId, byUid, requestId, decision) {
+      async decideSeat(workspaceId, sessionId, byUid, requestId, decision, note) {
         const active = activeSessions.get(sessionId);
         if (!active || active.workspaceId !== workspaceId || active.session.decideSeat === undefined) return { ok: false, message: "这个群不存在" };
-        return active.session.decideSeat(requestId, byUid, decision);
+        return active.session.decideSeat(requestId, byUid, decision, note);
       },
       async seatPolicy(workspaceId, sessionId, byUid, policy) {
         const active = activeSessions.get(sessionId);

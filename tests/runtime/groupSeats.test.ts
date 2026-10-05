@@ -442,3 +442,51 @@ describe("群座位制：更刁的几种", () => {
     expect(t).not.toContain("这里没有审批：你做的每一步直接生效");
   });
 });
+
+describe("群座位制：三件遗留（#1682）", () => {
+  it("授权轮硬拦私人文件夹：读 / 命令里点名 private 都被拒；主人自己的轮不拦", async () => {
+    const results: string[] = [];
+    let step = 0;
+    const w = setup({
+      script: (c) => {
+        if (c.tools.includes("ask_owner")) return c.transcript.includes("已经请") ? { content: "Waiting on 继爸." } : { content: "", toolCalls: [{ id: "k1", name: "ask_owner", args: { summary: "看排班" } }] };
+        step += 1;
+        if (step === 1) return { content: "", toolCalls: [{ id: "b1", name: "bash", args: { cmd: "cat /work/private/notes.md" } }, { id: "r1", name: "read_file", args: { path: "/work/private/notes.md" } }] };
+        if (step === 2) { results.push(c.transcript); return { content: "done" }; }
+        return { content: "ok" };
+      },
+    });
+    await w.group.say(B, "Stan Yan", "@雨姐 看下继爸排班", true, [seatAgentId(A)]);
+    await w.settleAll();
+    const id = (w.groupLog().find((e) => e.type === "seat_request") as { requestId: string }).requestId;
+    await w.group.decideSeat!(id, A, "accepted", "只告诉他周五");
+    await w.settleAll();
+    const seat = w.seatLog(A);
+    const out = seat.filter((e) => e.type === "tool_result").map((e) => JSON.stringify(e));
+    expect(out.filter((o) => o.includes("私人文件夹")).length).toBe(2);
+    // 附言进了授权开场白、也记在结局上
+    expect(seat.find((e): e is UserMessageEvent => e.type === "user_message" && e.greeting === "seat_grant")!.content).toContain("只告诉他周五");
+    expect(w.groupLog().find((e) => e.type === "seat_decision")).toMatchObject({ note: "只告诉他周五" });
+  });
+
+  it("不接也能附一句：管理员在群里转述", async () => {
+    const w = setup({
+      script: (c) => (c.tools.includes("ask_owner") && !c.transcript.includes("已经请") ? { content: "", toolCalls: [{ id: "k", name: "ask_owner", args: { summary: "x" } }] } : { content: "等。" }),
+    });
+    await w.group.say(C, "Edison Guo", "@雨姐 查下库存", true, [seatAgentId(A)]);
+    await w.settleAll();
+    const id = (w.groupLog().find((e) => e.type === "seat_request") as { requestId: string }).requestId;
+    await w.group.decideSeat!(id, A, "declined", "下周再说");
+    await w.settleAll();
+    expect(said(w.groupLog(), A).at(-1)).toBe("继爸没同意：「下周再说」");
+  });
+
+  it("专员的话折叠进群（带 worker），不推送、不当成去使唤别家", () => {
+    const w = setup({ script: () => ({ content: "x" }) });
+    w.group.receiveSeatReply!({ seatUid: A, text: "@峰哥 预算做好了", model: "m", toUid: B, depth: 0, worker: { agentId: "a_000000000001", name: "Nomad" } });
+    const e = w.groupLog().at(-1)!;
+    expect(e).toMatchObject({ type: "assistant_message", agentId: seatAgentId(A), worker: { name: "Nomad" } });
+    expect(w.alerts).toHaveLength(0);
+    expect(w.seatOf(B)).toBeUndefined();
+  });
+});

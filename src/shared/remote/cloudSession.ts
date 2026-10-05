@@ -158,6 +158,8 @@ import type { GroupSeat } from "../groupSeats.js";
     31（#1682，ADR-0376）：群聊座位制——welcome 的 `chat` 多 `seats` / `groupOwnerUid`；上行多 `seat_decide`（主人点头卡）
     、`seat_policy`（这个群里别人使唤我的管理员：每次问我 / 全部放行）与 `group_leave`（退群），共用一条 `seat_result` 回执。 */
 export const CS_PROTOCOL_VERSION = 31;
+/** 点头卡附言的上限（#1682） */
+export const SEAT_NOTE_MAX = 200;
 export const CS_MAX_TEXT_BYTES = 64 * 1024;
 
 /** 一次回多少字节的文件内容（#1056）。中继单帧上限是 256 KiB（wire.ts 的
@@ -428,7 +430,7 @@ export type CsUp =
   /** 对面管理员的协作请求，主人接 / 不接（**控制房帧**，协议 29，#1605）：只有主人能点；sessionId 是自己家那条管理员车道 */
   | { t: "collab_decide"; workspaceId: string; sessionId: string; requestId: string; decision: "accepted" | "declined" }
   /** 群里别人使唤我的管理员，我接 / 不接（**控制房帧**，协议 31，#1682）：sessionId 是那个群；只有那个座位的主人能点 */
-  | { t: "seat_decide"; workspaceId: string; sessionId: string; requestId: string; decision: "accepted" | "declined" }
+  | { t: "seat_decide"; workspaceId: string; sessionId: string; requestId: string; decision: "accepted" | "declined"; note?: string }
   /** 这个群里别人使唤我的管理员：每次问我 / 全部放行（**控制房帧**，协议 31）。只改发帧的人自己那个座位 */
   | { t: "seat_policy"; workspaceId: string; sessionId: string; policy: "ask" | "open" }
   /** 退出这个座位制的群（**控制房帧**，协议 31）：只退发帧的人自己；群主退群转给最早入群的人 */
@@ -1017,7 +1019,10 @@ export function decodeCsUp(b64: string): CsUp | null {
     if (t === "seat_decide") {
       if (typeof obj.workspaceId !== "string" || typeof obj.sessionId !== "string" || typeof obj.requestId !== "string") return null;
       if (obj.decision !== "accepted" && obj.decision !== "declined") return null;
-      return { t: "seat_decide", workspaceId: obj.workspaceId, sessionId: obj.sessionId, requestId: obj.requestId, decision: obj.decision };
+      // note：主人附的一句，可选；在场就得是 200 字以内的字符串，不对整帧拒
+      if (obj.note !== undefined && (typeof obj.note !== "string" || [...obj.note].length > SEAT_NOTE_MAX)) return null;
+      const note = typeof obj.note === "string" && obj.note.trim() !== "" ? { note: obj.note.trim() } : {};
+      return { t: "seat_decide", workspaceId: obj.workspaceId, sessionId: obj.sessionId, requestId: obj.requestId, decision: obj.decision, ...note };
     }
 
     if (t === "group_leave") {

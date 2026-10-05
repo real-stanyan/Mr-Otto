@@ -151,7 +151,7 @@ export interface FrameHandlerDeps {
     /** 对面管理员的协作请求，主人接 / 不接（#1605）：房没开就开；判据在 CloudSession.decideCollab */
     decideCollab(workspaceId: string, sessionId: string, byUid: string, requestId: string, decision: "accepted" | "declined"): Promise<{ ok: true } | { ok: false; message: string }>;
     /** 座位制的群（#1682）：点头卡、我的座位策略、退群。可选：smoke / 测试假货不接 */
-    decideSeat?(workspaceId: string, sessionId: string, byUid: string, requestId: string, decision: "accepted" | "declined"): Promise<{ ok: true } | { ok: false; message: string }>;
+    decideSeat?(workspaceId: string, sessionId: string, byUid: string, requestId: string, decision: "accepted" | "declined", note?: string): Promise<{ ok: true } | { ok: false; message: string }>;
     seatPolicy?(workspaceId: string, sessionId: string, byUid: string, policy: "ask" | "open"): Promise<{ ok: true } | { ok: false; message: string }>;
     leaveGroup?(workspaceId: string, sessionId: string, byUid: string): Promise<{ ok: true } | { ok: false; message: string }>;
     /** 收尾一条云会话（issue #822）：落日志（CloudSession.archive）+ 写
@@ -544,7 +544,7 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
         }
         const r =
           msg.t === "seat_decide"
-            ? (await deps.sessions.decideSeat?.(msg.workspaceId, msg.sessionId, entry.uid, msg.requestId, msg.decision))
+            ? (await deps.sessions.decideSeat?.(msg.workspaceId, msg.sessionId, entry.uid, msg.requestId, msg.decision, msg.note))
             : msg.t === "seat_policy"
               ? (await deps.sessions.seatPolicy?.(msg.workspaceId, msg.sessionId, entry.uid, msg.policy))
               : msg.t === "group_leave"
