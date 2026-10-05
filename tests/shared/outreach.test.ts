@@ -86,9 +86,12 @@ describe("文案", () => {
   });
   it("原聊天那一行", () => {
     const s = { outreachId: "x", fromAgentId: "a", peerUid: "u2", peerName: "小红", originSessionId: null, startedTs: 0,
-      phase: "ended" as const, outcome: "completed" as const, durationMs: 192_000, transcript: null };
+      phase: "ended" as const, outcome: "completed" as const, durationMs: 192_000, transcript: null, leftMessage: false };
     expect(o.outreachRowText(s)).toBe("打给 小红 · 通话 03:12");
     expect(o.outreachRowText({ ...s, outcome: "missed", durationMs: null })).toBe("打给 小红 · 未接");
+    expect(o.outreachRowText({ ...s, outcome: "missed", durationMs: null, leftMessage: true })).toBe("打给 小红 · 未接 · 已留言");
+    expect(o.missedCallMessageText("  你好，\n周五来不来？ ")).toBe("刚才打你电话没接通，先留个言：你好， 周五来不来？");
+    expect(o.outreachReportText({ agentName: "运维", ownerName: "Stan", peerName: "小红", outcome: "missed", durationMs: null, transcript: [], leftMessage: true })).toContain("已留言");
     expect(o.outreachRowText({ ...s, outcome: "failed", durationMs: null })).toBe("打给 小红 · 没打通");
     expect(o.outreachRowText({ ...s, phase: "started", outcome: null, durationMs: null })).toBe("正在打给 小红");
   });

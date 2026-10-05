@@ -17,6 +17,8 @@ export interface OutreachState {
   outreachId: string; fromAgentId: string; peerUid: string; peerName: string;
   originSessionId: string | null; startedTs: number; phase: OutreachEvent["phase"];
   outcome: OutreachOutcome | null; durationMs: number | null; transcript: OutreachLine[] | null;
+  /** 没接但留了言（#1616）。可选：老的投影 / 夹具没有这一格 = 没留 */
+  leftMessage?: boolean;
 }
 export type OutreachFold = Map<string, OutreachState>;
 
@@ -26,7 +28,7 @@ export function applyOutreach(fold: OutreachFold, e: SessionEvent): void {
     fold.set(e.outreachId, {
       outreachId: e.outreachId, fromAgentId: e.fromAgentId, peerUid: e.peerUid, peerName: e.peerName,
       originSessionId: e.originSessionId ?? null, startedTs: e.ts, phase: "started",
-      outcome: null, durationMs: null, transcript: null,
+      outcome: null, durationMs: null, transcript: null, leftMessage: false,
     });
     return;
   }
@@ -34,7 +36,7 @@ export function applyOutreach(fold: OutreachFold, e: SessionEvent): void {
   if (prev === undefined) return; // 窗口裁掉了开头：不知道是谁打给谁
   fold.set(e.outreachId, {
     ...prev, phase: "ended", outcome: e.outcome ?? "failed",
-    durationMs: e.durationMs ?? null, transcript: e.transcript ?? null,
+    durationMs: e.durationMs ?? null, transcript: e.transcript ?? null, leftMessage: e.leftMessage === true,
   });
 }
 export function outreachFoldOf(events: readonly SessionEvent[]): OutreachFold {
@@ -111,11 +113,21 @@ export function outreachGreetingText(o: { agentName: string; ownerName: string; 
 const OUTCOME_TEXT: Record<OutreachOutcome, string> = {
   completed: "电话打完了", missed: "对方没接", capped: "通话到了 10 分钟上限，已挂断", failed: "电话没打通",
 };
+/** 没接时以主人名义留在私聊里的那条（#1616）：就是它准备好的开场白——电话里要说的话，写下来也成立 */
+export function missedCallMessageText(opening: string): string {
+  return `刚才打你电话没接通，先留个言：${opening.replace(/\s+/gu, " ").trim()}`;
+}
 export function outreachReportText(o: {
   agentName: string; ownerName: string; peerName: string; outcome: OutreachOutcome; durationMs: number | null; transcript: readonly OutreachLine[];
+  /** 没接但留了言（#1616）：汇报改成「已留言」，并且不许回来问主人下一步 */
+  leftMessage?: boolean;
 }): string {
   const [a, w, p] = [promptSafe(o.agentName), promptSafe(o.ownerName), promptSafe(o.peerName)];
   const dur = o.durationMs !== null ? `（通话 ${outreachDurationText(o.durationMs)}）` : "";
+  if (o.outcome === "missed" && o.leftMessage === true) {
+    return `[系统] 「${a}」打给 ${p} 的结果：对方没接，已经把要说的话以 ${w} 的名义留在和 ${p} 的私聊里了，${p} 看到会回。\n` +
+      `${a}：一句话告诉 ${w}「没接，已留言」就行，不用问他下一步、也不用再打。`;
+  }
   const body = o.transcript.length === 0
     ? "没有通话内容。"
     : `通话记录：\n${o.transcript.map((l) => `${l.who === "agent" ? a : p}：${l.text.replace(/\s+/gu, " ")}`).join("\n")}`;
@@ -125,7 +137,7 @@ export function outreachReportText(o: {
 export function outreachRowText(s: OutreachState): string {
   if (s.phase === "started") return `正在打给 ${s.peerName}`;
   if (s.durationMs !== null) return `打给 ${s.peerName} · 通话 ${outreachDurationText(s.durationMs)}`;
-  return `打给 ${s.peerName} · ${s.outcome === "missed" ? "未接" : "没打通"}`;
+  return `打给 ${s.peerName} · ${s.outcome === "missed" ? (s.leftMessage === true ? "未接 · 已留言" : "未接") : "没打通"}`;
 }
 
 /** 一个 job 覆盖的全部开场白（agentRelay.openingsCovered）里，与「这一轮能不能动手 / 能不能打电话」有关的三格

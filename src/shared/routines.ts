@@ -207,7 +207,9 @@ export function routineOpeningText(o: { title: string; instruction: string; fire
   return (
     `【定时任务到点】现在是 ${formatInTz(o.firedAt, o.tz)}。\n` +
     `任务：${o.instruction}\n` +
-    `按任务去做。要叫我接电话就用 call_user；要打给好友用 call_friend。做完在这里说一句结果。`
+    `按任务去做。要叫我接电话就用 call_user；要打给好友用 call_friend。` +
+    // #1612 真机：拨了电话还接着干活，接通时它还「忙」，开场白只能排队，主人拿着电话等它想
+    `打电话之前先把要说的想好（写进 opening），拨出去之后这一轮就收口——回一句「已拨」，别接着干别的；接通了你在电话里说。别的事做完在这里说一句结果。`
   );
 }
 

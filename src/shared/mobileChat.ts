@@ -405,7 +405,7 @@ export function outreachRowView(s: OutreachState): OutreachRowView {
 /** 群里那一行（居中灰条）：群里每个人都看得到，要带上是谁打给谁 */
 export function outreachGroupText(agentName: string, s: OutreachState): string {
   if (s.phase === "started") return `${agentName} 正在打给 ${s.peerName}`;
-  const tail = s.durationMs !== null ? `通话 ${outreachDurationText(s.durationMs)}` : s.outcome === "missed" ? "未接" : "没打通";
+  const tail = s.durationMs !== null ? `通话 ${outreachDurationText(s.durationMs)}` : s.outcome === "missed" ? (s.leftMessage === true ? "未接 · 已留言" : "未接") : "没打通";
   return `${agentName} 打给了 ${s.peerName} · ${tail}`;
 }
 
