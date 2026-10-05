@@ -173,7 +173,7 @@ import { createInviteToCallTool } from "./inviteToCallTool.js";
 import type { VoiceCallParticipant } from "../../../src/session/events.js";
 import { LoopEngine } from "../../../src/loop/engine.js";
 import type { EventStore } from "../../../src/session/store.js";
-import type { FriendPickCandidate, SessionEvent, SessionCreatedEvent, UserMessageEvent, AssistantMessageEvent, AgentRelayEvent, CallRingEvent, OutreachEvent, OutreachLine, OutreachOutcome, UserAttachmentRef, ChatVideoRef, TokenUsage, CollabRequestEvent, CollabDecisionEvent } from "../../../src/session/events.js";
+import type { AppConnectEvent, FriendPickCandidate, SessionEvent, SessionCreatedEvent, UserMessageEvent, AssistantMessageEvent, AgentRelayEvent, CallRingEvent, OutreachEvent, OutreachLine, OutreachOutcome, UserAttachmentRef, ChatVideoRef, TokenUsage, CollabRequestEvent, CollabDecisionEvent } from "../../../src/session/events.js";
 import { ChatMediaRejectedError } from "./chatMediaIntake.js";
 import { mediaPlaceholder, type ChatMediaRef } from "../../../src/shared/chatMedia.js";
 import { pendingImageDescriptions } from "../../../src/shared/visionPending.js";
@@ -193,6 +193,8 @@ import { createCallFriendTool } from "./callFriendTool.js";
 import { createMessageFriendTool } from "./messageFriendTool.js";
 import { createRelayToOwnerTool } from "./relayToOwnerTool.js";
 import { createReplyToFriendTool } from "./replyToFriendTool.js";
+import { createRequestAppConnectTool } from "./requestAppConnectTool.js";
+import { APP_CONNECT_PER_HOUR_MAX, appConnectFoldOf, appConnectToolText, applyAppConnect, cloudServerIdOf, openCardFor, type AppConnectFold } from "../../../src/shared/appConnect.js";
 import { createRoutineTools } from "./routineTools.js";
 import type { RoutineStore } from "./routineStore.js";
 import { ROUTINE_MAX_ROUNDS, routineOpeningText } from "../../../src/shared/routines.js";
@@ -911,6 +913,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   let outreachChatSent: number[] = [];
   // 选人卡（#1520）：同 outreachFold，从 seed 播种、notify 里推进；「这张卡还能不能点」只从这一份读
   const friendPickFold: FriendPickFold = friendPickFoldOf(seed);
+  // 应用连接卡（#1666）：同 friendPickFold；「这个应用此刻有没有一张开着的卡」只从这一份读
+  const appConnectFold: AppConnectFold = appConnectFoldOf(seed);
+  /** 连接卡发出的滑动一小时窗（#1666）：进程内，重启清零（同 outreachChatSent / laneBridge） */
+  let appConnectOffered: number[] = [];
   /** 这条会话此刻的名单 = 团队名单 ∩ 聊天名单。**全文件读名单只走这一个口**：@ 解析、派活、
       接力、brief、通话选人约 40 处下游一次全对，少改一处就是那一处还站着整个团队。
       团队名单读不出来（degraded）时原样交回：降级记号一旦被名单滤掉，下游「名单读不出来」
@@ -1400,6 +1406,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     if (e.type === "voice_call_changed") voiceCall = applyVoiceCallEvent(voiceCall, e);
     applyOutreach(outreachFold, e);
     applyFriendPick(friendPickFold, e);
+    applyAppConnect(appConnectFold, e);
     // 外联的生命周期跟着走（#1441）：它收尾时自己 append → 回到这里 → observe 只认 call_ring /
     // voice_call_changed，不会把自己落的 outreach 事件当别的再收一遍（见 outreachRun.finish 的注释）
     outreachRun?.observe(e);
@@ -1913,6 +1920,13 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
                   : "只有他本人亲口让你回，才能把话送回给朋友。这一轮不是。",
             dispatch: (friend, text) => friendReply.send({ agentId: spec.agentId, agentName: specNames.get(spec.agentId) ?? spec.name, friend, text }),
           });
+    // request_app_connect（#1666）：请主人连一个连接器目录应用，会话里出一张卡。只在主场（approveAll）、非外联、非车道挂；
+    // 在 tools() 里再按「主人亲口那一轮之外的受监督轮不亮、等级 ≤ 1、有连接器域」判。reason 恒为 missing——
+    // 「登录过期」那一路由连接器 409 兜底直接调 offerAppConnect（#1666 Task 4）
+    const appConnectTool =
+      !opts.approveAll || isOutreach || isPair
+        ? null
+        : createRequestAppConnectTool({ offer: (o) => offerAppConnect({ agentId: spec.agentId, ...o, reason: "missing" }) });
     // 定时任务三把刀（#1283）：只在主场私聊里挂；亮不亮按「主人亲口 && 不受监督」现算（routine 轮算主人亲口，Task 8）
     const routineTools =
       opts.routines === null || !opts.approveAll || chatKind !== "dm"
@@ -2050,6 +2064,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           ...(callFriendTool !== null && adminOnly && !supervisedTurn() ? [callFriendTool] : []),
           ...(messageFriendTool !== null && adminOnly && !supervisedTurn() ? [messageFriendTool] : []),
           ...(replyToFriendTool !== null && adminOnly && !supervisedTurn() ? [replyToFriendTool] : []),
+          // 请主人连应用（#1666）：受监督轮不亮（那一轮不是主人在说话，卡只该为主人发）；动手的刀按等级与连接器域过
+          ...(appConnectTool !== null && !supervisedTurn() && (me === null || tierOf(me) <= 1) && (me === null || connectorsAllowed(me, turnRoster)) ? [appConnectTool] : []),
           // 对面公开的智能体（#1542）：只在这条车道此刻是公开的（朋友在客人名单里）才亮
           ...(bridgeTool !== null && adminOnly && pairFacingOf(chatHumans, pairFacts!.peerUid) === "both" ? [bridgeTool] : []),
           // 第 1 期 b（#1605）：不再要求车道公开——对面看的是自己家的管理员车道，不是这条
@@ -3328,6 +3344,25 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   const logFriendPickEvent: CloudSession["logFriendPick"] = (e) => {
     if (archived) return;
     notify(store.append({ sessionId, ts: Date.now(), type: "friend_pick", ...e, ignorable: true }));
+  };
+
+  // 应用连接卡（#1666）落盘：request_app_connect 与连接器 409 兜底共用。归档之后是空操作（同 logFriendPickEvent）
+  const logAppConnect = (e: Omit<AppConnectEvent, "type" | "seq" | "sessionId" | "ts" | "ignorable">): void => {
+    if (archived) return;
+    notify(store.append({ sessionId, ts: Date.now(), type: "app_connect", ...e, ignorable: true }));
+  };
+  /** 发一张「请主人连 X」的卡；回给模型的那句话。已经能用 / 已有开着的卡 / 这个小时发够了，都不发（#1666） */
+  const offerAppConnect = (o: { agentId: string; catalogId: string; appName: string; why: string; reason: "missing" | "needs_login" }): string => {
+    const t = now();
+    if (grantsSnapshot?.value.some((g) => g.serverId === cloudServerIdOf(o.catalogId))) return `${o.appName} 已经连上了，直接用它的工具。`;
+    if (openCardFor(appConnectFold, o.catalogId, t) !== null) return `连 ${o.appName} 的卡已经在会话里了，等主人点。这一轮别再试它。`;
+    const sent = pruneBridgeWindow(appConnectOffered, t);
+    if (!bridgeWindowAllows(sent, t, APP_CONNECT_PER_HOUR_MAX)) {
+      return `这个小时已经发了 ${APP_CONNECT_PER_HOUR_MAX} 张连接卡了。直接用文字告诉主人要连什么，让他去「我 → 应用」里连。`;
+    }
+    logAppConnect({ connectId: randomUUID(), phase: "offered", fromAgentId: o.agentId, catalogId: o.catalogId, appName: o.appName, why: o.why, reason: o.reason });
+    appConnectOffered = [...sent, t];
+    return appConnectToolText(o.appName);
   };
 
   const session: CloudSession = {
