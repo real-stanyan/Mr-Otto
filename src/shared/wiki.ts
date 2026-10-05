@@ -606,7 +606,8 @@ export const WIKI_PROMPT_INTRO =
 export const WIKI_PROMPT_INTRO_READONLY =
   `\n下面是主人团队 wiki 的一部分（只读：索引 + 常驻页 + 你自己那页）。答朋友的问题时以它为准；这里看不到的页你读不到，别编。\n`;
 
-export function truncateIndexForPrompt(index: string, limit = WIKI_INDEX_INJECT_LIMIT): string {
+/** readOnly（外联，#1655）：那条线上没有 wiki_read，截断尾巴不能叫它去搜 / 读 index.md（#1206） */
+export function truncateIndexForPrompt(index: string, limit = WIKI_INDEX_INJECT_LIMIT, o: { readOnly?: boolean } = {}): string {
   if (index.length <= limit) return index;
   const lines = index.split("\n");
   const kept: string[] = [];
@@ -617,13 +618,14 @@ export function truncateIndexForPrompt(index: string, limit = WIKI_INDEX_INJECT_
     used += line.length + 1;
   }
   const left = lines.length - kept.length;
-  return `${kept.join("\n")}\n…（索引还有 ${left} 行，用 wiki_read 搜索或读 index.md 看全部）`;
+  const tail = o.readOnly === true ? `…（索引还有 ${left} 行，这里没放）` : `…（索引还有 ${left} 行，用 wiki_read 搜索或读 index.md 看全部）`;
+  return `${kept.join("\n")}\n${tail}`;
 }
 
 export function renderWikiPrompt(s: WikiSnapshotForPrompt, o: { readOnly?: boolean } = {}): string {
   const self = agentPagePath(s.agentId);
   let out = o.readOnly === true ? WIKI_PROMPT_INTRO_READONLY : WIKI_PROMPT_INTRO;
-  out += `\n[索引]\n${truncateIndexForPrompt(s.index)}\n`;
+  out += `\n[索引]\n${truncateIndexForPrompt(s.index, WIKI_INDEX_INJECT_LIMIT, { readOnly: o.readOnly === true })}\n`;
   if (s.pinned.length > 0) {
     out += `\n[常驻页]\n`;
     for (const p of s.pinned) out += `### ${promptSafe(p.title)}（${p.path}）\n${p.body}\n`;
