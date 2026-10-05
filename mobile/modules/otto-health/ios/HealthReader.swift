@@ -6,11 +6,30 @@ import HealthKit
 // · 心率 / 血氧：min / avg / max；静息心率、HRV：avg
 // · 体重 / 体脂：每天最后一条
 // · 站立小时：appleStandHour 里 stood 的样本数
-// · 睡眠：样本按分期累加分钟，归到样本结束（醒来）那天；当天有 Apple Watch 来源时只用手表的（防手表 + 手机重复计）
+// · 睡眠：按一夜（相邻样本间隔 < 2 小时合为一段）归到醒来那天，段内按分期累加分钟；
+//   一段里有 Apple Watch 来源时只用手表的（防手表 + 手机重复计）。
+//   iOS 16 起手表把一夜写成很多短的分期小段，若逐条按各自结束时间归日，一夜会被午夜劈成两天。
 // · 训练：HKWorkout 列表
 // 输出 { days: [[String: Any]], workouts: [[String: Any]] }，键名对 src/shared/health.ts 的 HealthDay / HealthWorkout。
+// 输出只含 [from, to] 范围内的日子。
 struct HealthReader {
   let store: HKHealthStore
+  private let calendar: Calendar
+  private let dayFormatter: DateFormatter
+
+  init(store: HKHealthStore) {
+    self.store = store
+    var c = Calendar(identifier: .gregorian)
+    c.timeZone = .current
+    self.calendar = c
+    // 一个实例只建一次：睡眠几千条小段每条都要 dayKey，每次新建 DateFormatter 很贵
+    let f = DateFormatter()
+    f.calendar = c
+    f.timeZone = .current
+    f.locale = Locale(identifier: "en_US_POSIX")
+    f.dateFormat = "yyyy-MM-dd"
+    self.dayFormatter = f
+  }
 
   static let readTypes: Set<HKObjectType> = [
     HKQuantityType(.stepCount), HKQuantityType(.distanceWalkingRunning), HKQuantityType(.activeEnergyBurned),
@@ -21,29 +40,23 @@ struct HealthReader {
     HKObjectType.workoutType(),
   ]
 
-  private var calendar: Calendar {
-    var c = Calendar(identifier: .gregorian)
-    c.timeZone = .current
-    return c
-  }
-
   private func dayKey(_ d: Date) -> String {
-    let f = DateFormatter()
-    f.calendar = calendar
-    f.timeZone = .current
-    f.locale = Locale(identifier: "en_US_POSIX")
-    f.dateFormat = "yyyy-MM-dd"
-    return f.string(from: d)
+    dayFormatter.string(from: d)
   }
 
+  // 不走 DateFormatter 解析：有些时区（圣地亚哥、亚松森、开罗）夏令时在午夜跳过，当天 00:00 不存在，date(from:) 会回 nil。
+  // 先拿 yyyy-MM-dd 的年月日拼成日期，再 startOfDay（它会落到当天真正的第一刻）。
   private func parseDay(_ s: String) throws -> Date {
-    let f = DateFormatter()
-    f.calendar = calendar
-    f.timeZone = .current
-    f.locale = Locale(identifier: "en_US_POSIX")
-    f.dateFormat = "yyyy-MM-dd"
-    guard let d = f.date(from: s) else { throw NSError(domain: "OttoHealth", code: 1, userInfo: [NSLocalizedDescriptionKey: "日期不对：\(s)"]) }
-    return calendar.startOfDay(for: d)
+    let bad = NSError(domain: "OttoHealth", code: 1, userInfo: [NSLocalizedDescriptionKey: "日期不对：\(s)"])
+    let parts = s.split(separator: "-", omittingEmptySubsequences: false)
+    guard parts.count == 3, parts[0].count == 4, parts[1].count == 2, parts[2].count == 2,
+          let y = Int(parts[0]), let m = Int(parts[1]), let d = Int(parts[2]),
+          (1...12).contains(m), (1...31).contains(d),
+          let date = calendar.date(from: DateComponents(year: y, month: m, day: d, hour: 12))
+    else { throw bad }
+    let day = calendar.startOfDay(for: date)
+    guard dayKey(day) == s else { throw bad } // 2 月 30 日之类会被 Calendar 滚到下个月，不认
+    return day
   }
 
   private static func round1(_ x: Double) -> Double { (x * 10).rounded() / 10 }
@@ -109,29 +122,39 @@ struct HealthReader {
     }
 
     if metrics.contains("sleep") {
-      // 醒来那天算：取 [start-12h, end) 里结束于 [start, end) 的样本
+      // 按一夜归日：多取前 12 小时，让头一天前一晚的前半夜也在手里；
+      // 按开始时间排序，相邻样本间隔 <= 2 小时就并进同一段（段尾取见过的最大 endDate），段尾落在 (start, end] 的才要，
+      // 以段尾 - 1 秒所在的日子为键（醒来那天；恰好 00:00 醒的算前一天结束）。
       let raw = try await samples(HKCategoryType(.sleepAnalysis), start: start.addingTimeInterval(-12 * 3600), end: end) as? [HKCategorySample] ?? []
-      let inRange = raw.filter { $0.endDate > start && $0.endDate <= end }
-      let byDay = Dictionary(grouping: inRange) { dayKey($0.endDate.addingTimeInterval(-1)) }
-      for (day, list) in byDay {
-        let watch = list.filter { ($0.sourceRevision.productType ?? "").hasPrefix("Watch") }
-        let use = watch.isEmpty ? list : watch
-        var mins: [String: Double] = [:]
+      let sorted = raw.sorted { $0.startDate < $1.startDate }
+      var sessions: [(end: Date, samples: [HKCategorySample])] = []
+      for s in sorted {
+        if let last = sessions.last, s.startDate <= last.end.addingTimeInterval(2 * 3600) {
+          sessions[sessions.count - 1] = (end: max(last.end, s.endDate), samples: last.samples + [s])
+        } else {
+          sessions.append((end: s.endDate, samples: [s]))
+        }
+      }
+      var sleepByDay: [String: [String: Double]] = [:]
+      for session in sessions where session.end > start && session.end <= end {
+        let watch = session.samples.filter { ($0.sourceRevision.productType ?? "").hasPrefix("Watch") }
+        let use = watch.isEmpty ? session.samples : watch
+        let key = dayKey(session.end.addingTimeInterval(-1))
         for s in use {
           let m = s.endDate.timeIntervalSince(s.startDate) / 60
           guard let stage = HKCategoryValueSleepAnalysis(rawValue: s.value) else { continue }
           switch stage {
-          case .inBed: mins["inBedMin", default: 0] += m
-          case .awake: mins["awakeMin", default: 0] += m
-          case .asleepCore: mins["coreMin", default: 0] += m; mins["asleepMin", default: 0] += m
-          case .asleepDeep: mins["deepMin", default: 0] += m; mins["asleepMin", default: 0] += m
-          case .asleepREM: mins["remMin", default: 0] += m; mins["asleepMin", default: 0] += m
-          case .asleepUnspecified: mins["asleepMin", default: 0] += m
+          case .inBed: sleepByDay[key, default: [:]]["inBedMin", default: 0] += m
+          case .awake: sleepByDay[key, default: [:]]["awakeMin", default: 0] += m
+          case .asleepCore: sleepByDay[key, default: [:]]["coreMin", default: 0] += m; sleepByDay[key, default: [:]]["asleepMin", default: 0] += m
+          case .asleepDeep: sleepByDay[key, default: [:]]["deepMin", default: 0] += m; sleepByDay[key, default: [:]]["asleepMin", default: 0] += m
+          case .asleepREM: sleepByDay[key, default: [:]]["remMin", default: 0] += m; sleepByDay[key, default: [:]]["asleepMin", default: 0] += m
+          case .asleepUnspecified: sleepByDay[key, default: [:]]["asleepMin", default: 0] += m
           @unknown default: break
           }
         }
-        if !mins.isEmpty { put(day, "sleep", mins.mapValues { $0.rounded() }) }
       }
+      for (day, mins) in sleepByDay where !mins.isEmpty { put(day, "sleep", mins.mapValues { $0.rounded() }) }
     }
 
     var workouts: [[String: Any]] = []
@@ -153,7 +176,10 @@ struct HealthReader {
       }
     }
 
-    return ["days": days.keys.sorted().map { days[$0]! }, "workouts": workouts]
+    // 只交 [from, to] 里的日子：统计桶、站立小时、睡眠的头一晚都可能在边上多出一天（yyyy-MM-dd 字符串比较即日期比较）
+    let fromKey = dayKey(start)
+    let toKey = dayKey(try parseDay(to))
+    return ["days": days.keys.filter { $0 >= fromKey && $0 <= toKey }.sorted().map { days[$0]! }, "workouts": workouts]
   }
 
   private func collection(_ id: HKQuantityTypeIdentifier, _ options: HKStatisticsOptions, start: Date, end: Date) async throws -> [String: HKStatistics] {
