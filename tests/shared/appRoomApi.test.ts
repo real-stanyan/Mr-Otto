@@ -1,7 +1,7 @@
 // tests/shared/appRoomApi.test.ts
 import { describe, expect, it } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { createRoom, pingRoom, releaseRoomChannels, roomData, subscribeRoom } from "../../src/shared/appRoomApi.js";
+import { createRoom, listRooms, pingRoom, releaseRoomChannels, roomData, subscribeRoom } from "../../src/shared/appRoomApi.js";
 
 const ROOM = "11111111-2222-4333-8444-555555555555";
 const U1 = "2819d0bb-933b-499d-be44-2bb51b5a8391";
@@ -68,6 +68,22 @@ describe("appRoomApi", () => {
     const f = fakeClient(() => ({ data: false, error: null }));
     expect(await pingRoom(f.client, ROOM, "轮到你了")).toBe(false);
     await expect(pingRoom(f.client, ROOM, "  ")).rejects.toThrow();
+  });
+  it("listRooms：同一家的房间 + 就开在这个应用上的房间（.or 两个条件），按 updated_at 倒序", async () => {
+    const FAM = "0ffc3e43-153d-4a2b-a4e6-9e6ddcecee7b";
+    const APPX = "c0000000-0000-4000-8000-000000000000";
+    const ops: unknown[][] = [];
+    const row = { id: ROOM, host_uid: U1, host_app_id: APPX, host_version: 1, family_id: FAM, title: "局", closed: false, updated_at: "2026-10-05T00:00:00Z" };
+    const builder: Record<string, (...a: unknown[]) => unknown> = {};
+    for (const m of ["select", "eq", "or", "order", "limit"]) builder[m] = (...a: unknown[]) => { ops.push([m, ...a]); return builder; };
+    (builder as { then?: unknown }).then = (res: (v: unknown) => void) => res({ data: [row], error: null });
+    const client = { from: (t: string) => { ops.push(["from", t]); return builder; } } as unknown as SupabaseClient;
+    const rows = await listRooms(client, FAM, APPX);
+    expect(rows?.map((r) => r.id)).toEqual([ROOM]);
+    expect(ops).toContainEqual(["from", "app_rooms"]);
+    expect(ops).toContainEqual(["or", `family_id.eq.${FAM},host_app_id.eq.${APPX}`]);
+    expect(ops.some((o) => o[0] === "eq" && o[1] === "family_id")).toBe(false);
+    expect(ops).toContainEqual(["order", "updated_at", { ascending: false }]);
   });
   it("subscribeRoom：两个私有频道——room-sys:<id> 收 change / members / closed（只信这里），room:<id> 收发成员即时消息", async () => {
     const f = fakeClient(() => ({ data: null, error: null }));

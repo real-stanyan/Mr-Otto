@@ -8,6 +8,7 @@ import { CommonActions } from "@react-navigation/native";
 import Constants, { ExecutionEnvironment } from "expo-constants";
 import * as Notifications from "expo-notifications";
 import { myAppForHost } from "../../../src/shared/appRoom.js";
+import { fetchRoom } from "../../../src/shared/appRoomApi.js";
 import { fetchApps } from "../../../src/shared/appsApi.js";
 import { ringTarget } from "../../../src/shared/callRing.js";
 import { alertKey, alertTargetFromPayload, type AlertTarget } from "../../../src/shared/notifyPrefs.js";
@@ -26,11 +27,12 @@ function targetOf(n: Notifications.Notification): AlertTarget | null {
 let pendingNav: (() => void) | null = null;
 
 function open(t: AlertTarget): void {
-  // 房间叫人（#1675）：先找我名下对应房主应用的那一份（我是房主 = 同一个 id；否则是它的副本），再进房间模式
+  // 房间叫人（#1675）：先找我名下对应房主应用的那一份（我是房主 = 同一个 id；它的副本；同一家的原版 / 别的副本——
+  // 家从房间行读，RLS 让成员读得到），再进房间模式；读不到房间行就只按载荷里的房主应用认，都不沾回首页
   if (t.kind === "room") {
     void (async () => {
-      const apps = await fetchApps(supabase);
-      const mine = myAppForHost(apps ?? [], t.hostAppId);
+      const [apps, room] = await Promise.all([fetchApps(supabase), fetchRoom(supabase, t.roomId)]);
+      const mine = myAppForHost(apps ?? [], room?.hostAppId ?? t.hostAppId, room?.familyId);
       const go = (): void => {
         navRef.dispatch(CommonActions.reset(mine === null
           ? { index: 0, routes: [{ name: "Home" }] }

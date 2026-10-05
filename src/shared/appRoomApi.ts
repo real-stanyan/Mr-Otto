@@ -43,9 +43,16 @@ export async function fetchMembers(client: SupabaseClient, roomId: string): Prom
   }
 }
 
-export async function listRooms(client: SupabaseClient, familyId: string): Promise<RoomRow[] | null> {
+const FILTER_ID_RE = /^[0-9a-f-]{36}$/i;
+
+/** 这一家的房间；给了 appId 时连「就开在这个应用上」的也算（房主在副本上开局、而我这份是别家来的那种边角，#1675 终审）。
+    两个 id 都进 PostgREST 的 or 过滤串，形状不对的直接不认（不让逗号 / 括号混进去） */
+export async function listRooms(client: SupabaseClient, familyId: string, appId?: string): Promise<RoomRow[] | null> {
+  if (!FILTER_ID_RE.test(familyId) || (appId !== undefined && !FILTER_ID_RE.test(appId))) return null;
   try {
-    const res = await client.from("app_rooms").select("*").eq("family_id", familyId).order("updated_at", { ascending: false }).limit(50);
+    const base = client.from("app_rooms").select("*");
+    const scoped = appId === undefined ? base.eq("family_id", familyId) : base.or(`family_id.eq.${familyId},host_app_id.eq.${appId}`);
+    const res = await scoped.order("updated_at", { ascending: false }).limit(50);
     if (res.error) return null;
     return ((res.data ?? []) as unknown[]).map(roomRowOf).filter((r): r is RoomRow => r !== null);
   } catch {

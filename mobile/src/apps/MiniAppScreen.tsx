@@ -185,7 +185,7 @@ export function MiniAppScreen({ route, navigation }: Props) {
       }
       case "room.open": {
         if (typeof a0 !== "string") throw new Error("要给房间 id");
-        const rooms = (await listRooms(supabase, familyOf(l.app))) ?? [];
+        const rooms = (await listRooms(supabase, familyOf(l.app), l.app.id)) ?? [];
         if (!rooms.some((r) => r.id === a0)) throw new Error("没有这一间（或你不在里面）");
         // 只是被邀请、还没加入的：读房主那一版要先是成员（RLS 认 joined），先替 TA 加入
         const mine = ((await fetchMembers(supabase, a0)) ?? []).find((m) => m.uid === l.uid);
@@ -193,7 +193,7 @@ export function MiniAppScreen({ route, navigation }: Props) {
         navigation.replace("MiniApp", { appId: l.app.id, roomId: a0 });
         return true;
       }
-      case "room.rooms": return ((await listRooms(supabase, familyOf(l.app))) ?? []).map(roomSummary);
+      case "room.rooms": return ((await listRooms(supabase, familyOf(l.app), l.app.id)) ?? []).map(roomSummary);
       case "room.invite": {
         const r = needRoom(l);
         if (r.hostUid !== l.uid) throw new Error("只有房主能邀请");

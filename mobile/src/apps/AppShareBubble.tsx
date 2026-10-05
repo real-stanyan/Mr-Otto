@@ -6,8 +6,8 @@ import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { appShareMarker, type AppShareCard } from "../../../src/shared/appCard.js";
-import type { RoomInvite } from "../../../src/shared/appRoom.js";
-import { joinRoom } from "../../../src/shared/appRoomApi.js";
+import { myAppForHost, type RoomInvite } from "../../../src/shared/appRoom.js";
+import { fetchRoom, joinRoom } from "../../../src/shared/appRoomApi.js";
 import { cloudClient } from "../cloud/cloudClient.js";
 import type { RootStackParams } from "../nav/types.js";
 import { supabase } from "../supabase.js";
@@ -35,7 +35,9 @@ export function AppShareBubble({ card, mine, messageId, room }: { card: AppShare
     await refreshApps();
     navigation.navigate("MiniApp", { appId: r.value.appId });
   };
-  // 房间邀请（#1675）：没有这个应用就先复制，再加入房间，进房间模式（跑房主那一版）
+  // 房间邀请（#1675）：没有这个应用就先复制，再加入房间，进房间模式（跑房主那一版）。
+  // 「有没有」按家认（myAppForHost 带房间的 family）：房主多半在副本上开局，我手里同一家的原版 / 别的副本都算，
+  // 再复制一份的话那份的家是房主的副本 id、对不上房间，rooms() / open 都看不见这一局（#1675 终审）
   const join = async (): Promise<void> => {
     if (room === null) return;
     setBusy(true);
@@ -43,12 +45,17 @@ export function AppShareBubble({ card, mine, messageId, room }: { card: AppShare
     try {
       let myAppId: string;
       if (mine) myAppId = card.appId;
-      else if (added !== null) myAppId = added.id;
       else {
-        const r = await cloudClient.appAccept(messageId);
-        if (!r.ok) throw new Error(r.message);
-        myAppId = r.value.appId;
-        await refreshApps();
+        const r = await fetchRoom(supabase, room.id);
+        if (r === null) throw new Error("这一局已经没了，或你没被邀请");
+        const have = myAppForHost(apps.apps ?? [], r.hostAppId, r.familyId);
+        if (have !== null) myAppId = have.id;
+        else {
+          const acc = await cloudClient.appAccept(messageId);
+          if (!acc.ok) throw new Error(acc.message);
+          myAppId = acc.value.appId;
+          await refreshApps();
+        }
       }
       if (!mine) await joinRoom(supabase, room.id);
       navigation.navigate("MiniApp", { appId: myAppId, roomId: room.id });

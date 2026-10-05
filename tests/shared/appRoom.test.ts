@@ -40,6 +40,25 @@ describe("appRoom", () => {
     expect(myAppForHost([app({})], APP)?.id).toBe(APP);
     expect(myAppForHost([], APP)).toBeNull();
   });
+  it("myAppForHost 按家认：房主在副本上开局时，同一家的原版 / 别的副本都算我手里那份（#1675 终审）", () => {
+    const HOST_COPY = "d0000000-0000-4000-8000-000000000000"; // 房主手里的副本，family = APP
+    const original = app({}); // 原版作者
+    const myCopy = app({ id: "c0000000-0000-4000-8000-000000000000", createdByAgent: `share:${APP}` }); // 同源的另一份副本
+    const unrelated = app({ id: "e0000000-0000-4000-8000-000000000000", createdByAgent: "a_y" });
+    // 1. id 就是房主那个
+    expect(myAppForHost([unrelated, myCopy, app({ id: HOST_COPY, createdByAgent: `share:${APP}` })], HOST_COPY, APP)?.id).toBe(HOST_COPY);
+    // 2. 我手里是房主那个的副本
+    const copyOfHost = app({ id: "f0000000-0000-4000-8000-000000000000", createdByAgent: `share:${HOST_COPY}` });
+    expect(myAppForHost([myCopy, copyOfHost], HOST_COPY, APP)).toBe(copyOfHost);
+    // 3a. 家就是我的原版
+    expect(myAppForHost([unrelated, myCopy, original], HOST_COPY, APP)).toBe(original);
+    // 3b. 我手里是同一家的另一份副本
+    expect(myAppForHost([unrelated, myCopy], HOST_COPY, APP)).toBe(myCopy);
+    // 不给家：只认前两条（老调用方）
+    expect(myAppForHost([unrelated, myCopy], HOST_COPY)).toBeNull();
+    // 4. 都不沾
+    expect(myAppForHost([unrelated], HOST_COPY, APP)).toBeNull();
+  });
   it("频道名、键、字节数、速率闸", () => {
     expect(roomTopic(ROOM)).toBe(`room:${ROOM}`);
     expect(roomSysTopic(ROOM)).toBe(`room-sys:${ROOM}`);

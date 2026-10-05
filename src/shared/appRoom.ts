@@ -100,9 +100,17 @@ export function familyOf(app: AppRow): string {
   return m !== null ? m[1]!.toLowerCase() : app.id;
 }
 
-/** 我名下对应房主那个应用的一份：房主就是我（同一个 id）或我手里是它的副本 */
-export function myAppForHost(apps: readonly AppRow[], hostAppId: string): AppRow | null {
-  return apps.find((a) => a.id === hostAppId) ?? apps.find((a) => a.createdByAgent === appShareMarker(hostAppId)) ?? null;
+/**
+ * 我名下对应房主那个应用的一份。认法依次：房主就是我（同一个 id）→ 我手里是它的副本 →
+ * （给了房间的 family 时）家就是我的原版 → 我手里是同一家的别的副本。
+ * 房主多半在副本上开局（分享过后人人手里都是副本），只认前两条会让同家的人再装一份、新副本的家又对不上房间（#1675 终审）。
+ */
+export function myAppForHost(apps: readonly AppRow[], hostAppId: string, familyId?: string): AppRow | null {
+  const exact = apps.find((a) => a.id === hostAppId) ?? apps.find((a) => a.createdByAgent === appShareMarker(hostAppId));
+  if (exact !== undefined) return exact;
+  if (familyId === undefined) return null;
+  const fam = familyId.toLowerCase();
+  return apps.find((a) => a.id === fam) ?? apps.find((a) => familyOf(a) === fam) ?? null;
 }
 
 /** 每秒最多 perSec 次：滑动一秒的窗 */

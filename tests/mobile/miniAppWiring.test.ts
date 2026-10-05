@@ -92,7 +92,7 @@ describe("房间模式（#1675）", () => {
     expect(src).toMatch(/case "storage\.get": return appData\.get\(supabase, l\.app\.id, l\.uid, a0\);/);
     expect(src).toMatch(/case "room\.set": return roomData\.set\(supabase, needRoom\(l\)\.id, a0, a1, req\.args\[2\]\);/);
     expect(src).toMatch(/case "room\.ping": return pingRoom\(supabase, needRoom\(l\)\.id, a0\);/);
-    expect(src).toMatch(/case "room\.rooms": return \(\(await listRooms\(supabase, familyOf\(l\.app\)\)\) \?\? \[\]\)\.map\(roomSummary\);/);
+    expect(src).toMatch(/case "room\.rooms": return \(\(await listRooms\(supabase, familyOf\(l\.app\), l\.app\.id\)\) \?\? \[\]\)\.map\(roomSummary\);/);
     expect(src).toMatch(/updatedAt: new Date\(r\.updatedTs\)\.toISOString\(\)/);
     expect(src).toMatch(/case "room\.send": \{\s*needRoom\(l\);/);
   });
@@ -139,10 +139,18 @@ describe("邀请卡（#1675）", () => {
     expect(chat).toMatch(/const invite = appCard !== null \? decodeRoomInvite\(m\.body\) : null;/);
     expect(chat).toMatch(/<AppShareBubble card=\{appCard\} mine=\{mine\} messageId=\{m\.id\} room=\{invite\?\.room \?\? null\} \/>/);
   });
-  it("加入：没有就先 appAccept 复制，再 joinRoom，进房间模式", () => {
+  it("加入：先读这间房、按家认我手里那份（myAppForHost 带 familyId）；没有才 appAccept 复制 → refreshApps → joinRoom → 进房间模式", () => {
     const b = read("mobile/src/apps/AppShareBubble.tsx");
-    expect(b).toMatch(/await joinRoom\(supabase, room\.id\);/);
-    expect(b).toMatch(/navigation\.navigate\("MiniApp", \{ appId: myAppId, roomId: room\.id \}\)/);
+    expect(b).toMatch(/const r = await fetchRoom\(supabase, room\.id\);\s*if \(r === null\) throw new Error\("这一局已经没了，或你没被邀请"\);/);
+    expect(b).toMatch(/myAppForHost\(apps\.apps \?\? \[\], r\.hostAppId, r\.familyId\)/);
+    const order = ["fetchRoom(supabase, room.id)", "myAppForHost(", "cloudClient.appAccept(messageId)", "await refreshApps()", "await joinRoom(supabase, room.id)", 'navigation.navigate("MiniApp", { appId: myAppId, roomId: room.id })', /finally \{\s*setBusy\(false\)/];
+    const joinSrc = b.slice(b.indexOf("const join = async"));
+    const at = order.map((s) => (typeof s === "string" ? joinSrc.indexOf(s) : joinSrc.search(s)));
+    expect(at.every((i) => i >= 0)).toBe(true);
+    expect([...at].sort((x, y) => x - y)).toEqual(at);
+  });
+  it("room.open 的 listRooms 带上这个应用的 id（就开在这个应用上的房也认）", () => {
+    expect(read("mobile/src/apps/MiniAppScreen.tsx")).toMatch(/const rooms = \(await listRooms\(supabase, familyOf\(l\.app\), l\.app\.id\)\) \?\? \[\];/);
   });
 });
 
@@ -150,7 +158,8 @@ describe("房间推送点开（#1675）", () => {
   it("room 目标：找我名下对应房主应用的那一份，进 MiniApp 房间模式；找不到回首页", () => {
     const src = read("mobile/src/push/messagePush.ts");
     expect(src).toMatch(/if \(t\.kind === "room"\) \{/);
-    expect(src).toMatch(/myAppForHost\(apps \?\? \[\], t\.hostAppId\)/);
+    expect(src).toMatch(/const \[apps, room\] = await Promise\.all\(\[fetchApps\(supabase\), fetchRoom\(supabase, t\.roomId\)\]\);/);
+    expect(src).toMatch(/myAppForHost\(apps \?\? \[\], room\?\.hostAppId \?\? t\.hostAppId, room\?\.familyId\)/);
     expect(src).toMatch(/\{ name: "MiniApp" as const, params: \{ appId: mine\.id, roomId: t\.roomId \} \}/);
   });
 });
