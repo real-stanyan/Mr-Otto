@@ -19,10 +19,12 @@
           "audio"
         ],
         "NSPhotoLibraryUsageDescription": "选照片和视频发到聊天里时要用一下相册。",
-        "NSCameraUsageDescription": "拍照片和视频发到聊天里时要用一下相机。"
+        "NSCameraUsageDescription": "拍照片和视频发到聊天里时要用一下相机。",
+        "NSHealthShareUsageDescription": "你问智能体健康相关的问题时，读取你的步数、睡眠、心率、体重和体能训练来回答。"
       },
       "entitlements": {
-        "com.apple.developer.usernotifications.time-sensitive": true
+        "com.apple.developer.usernotifications.time-sensitive": true,
+        "com.apple.developer.healthkit": true
       }
     },
     "android": {
@@ -79,7 +81,7 @@
       }
     },
     "owner": "real_stanyan",
-    "runtimeVersion": "6",
+    "runtimeVersion": "7",
     "updates": {
       "url": "https://u.expo.dev/02a88a0c-a498-4453-b03e-00dac97d5938",
       "enabled": true,
