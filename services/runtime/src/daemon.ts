@@ -426,7 +426,7 @@ async function main(): Promise<void> {
     if (error) throw new Error(`主场查询失败（${uid}）：${error.message}`);
     return data ? (data as { id: string }).id : null;
   }
-  /** 这家对这位朋友现成的那条管理员车道（#1605），没有回 null。0064 的唯一索引是权威 */
+  /** 这家对这位朋友现成的那条管理员车道（#1605），没有回 null。0065 的唯一索引是权威 */
   async function findAdminsSession(workspaceId: string, peerUid: string): Promise<string | null> {
     const { data, error } = await supabase.from("workspace_sessions").select("id").eq("workspace_id", workspaceId).eq("chat_kind", "admins").eq("peer_uid", peerUid).maybeSingle();
     if (error) throw new Error(`管理员车道查询失败（${workspaceId}）：${error.message}`);

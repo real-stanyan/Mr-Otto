@@ -24,6 +24,8 @@ export interface LaneTask {
   /** 牵涉到的智能体（出现顺序） */
   agentIds: string[];
   lastTs: number;
+  /** 这一条里管理员建了任务 / 派了 / 交了协作（task_* 事件）：是代办，主页画卡（#1605 真机） */
+  delegated?: true;
 }
 
 export const LANE_TASK_TITLE_MAX = 40;
@@ -78,7 +80,13 @@ export function laneTasksOf(events: readonly SessionEvent[], selfUid: string | u
       }
       const task = start({ key: `u${e.seq}`, ts: e.ts, startedBy: by, kind: "message", title: titleOf(e.content) });
       task.items.push({ key: `u${e.seq}`, ts: e.ts, who: by, text: e.content });
+    } else if (e.type.startsWith("task_") && e.type !== "task_collab") {
+      // 建任务 / 派 / 进度（#1605 真机：「带上他的管理员去看营业额」建了任务却按聊天画成气泡）：不占一行，只标这一条是代办
+      const last = tasks.at(-1);
+      if (last !== undefined) last.delegated = true;
     } else if (e.type === "task_collab" || e.type === "collab_decision") {
+      const cur = tasks.at(-1);
+      if (cur !== undefined) cur.delegated = true;
       // 协作（#1605）：交给了谁家的管理员、对面主人接没接——归当前任务，当智能体那一侧的一行
       const text = e.type === "task_collab"
         ? `已交给 ${e.withName} 的管理员，等 TA 点头`
@@ -157,6 +165,7 @@ export function laneBusy(events: readonly SessionEvent[]): boolean {
 export type LaneTaskShape = "chat" | "task";
 export function laneTaskShape(task: LaneTask): LaneTaskShape {
   if (task.kind !== "message") return "task";
+  if (task.delegated === true) return "task";
   if (task.agentIds.length > 1) return "task";
   if (task.items.some((i) => i.handoff !== undefined)) return "task";
   return "chat";

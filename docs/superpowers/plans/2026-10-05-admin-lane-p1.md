@@ -20,6 +20,6 @@ Spec：`docs/superpowers/specs/2026-10-05-admin-lane-design.md`（已合，#1611
 - 登记八处（同 `task_*`）：agentView keep / persistencePolicy / sessionPackage strip / taskSync executor / contextEstimate 不计 / cloudTimeline 藏 / deriveMessages 投影（request → 「[协作请求 r_…] A 的管理员 X 找你…」给 B 的管理员；decision → 「[对面主人：接了 / 不接 / 没回]」给 A 的管理员）/ persistencePolicy.test。
 - `src/shared/tasks.ts`：`collaborator.state: "pending" | "accepted" | "declined" | "expired"`；`task_collab` 落 pending；`collab_decision` 按 requestId → taskId 推状态（请求事件带 taskId，所以 fold 要先见过 request；B 那份日志里没有任务，不折）。
 - `src/shared/collab.ts`：`collabRequestText` / `collabDecisionText`（投影文案）、`COLLAB_EXPIRE_MS = 24h`。
-- `supabase/migrations/0064_admin_lanes.sql`：`chat_kind` 多 `'admins'`（check 多一支：`agent_ids = ['admin']`、`peer_uid not null`）；`ws_sessions_one_admins_per_peer on (workspace_id, peer_uid) where chat_kind = 'admins'`。
+- `supabase/migrations/0065_admin_lanes.sql`（原为 0064，撞了 #1606 的号）：`chat_kind` 多 `'admins'`（check 多一支：`agent_ids = ['admin']`、`peer_uid not null`）；`ws_sessions_one_admins_per_peer on (workspace_id, peer_uid) where chat_kind = 'admins'`。
 - `chatKind` 联合类型：`session_created.cloud.chat.kind` 多 `"admins"`；消费方逐个过 tsc。
 - 测试：`tests/session/collabEvents.test.ts`（登记八处 + fold）、`tests/shared/collab.test.ts` 加文案。
