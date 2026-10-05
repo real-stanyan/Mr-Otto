@@ -474,8 +474,9 @@ export function ChatScreen({ route, navigation }: Props) {
   const call = useMemo(() => voiceCallOf(events), [events]);
   const inCall = useMemo(() => (call === null ? null : new Set(call.participants.map((p) => p.agentId))), [call]);
   const rows = useMemo(
-    () => (ws !== null ? chatRows({ events, ws, selfUid, now: Date.now(), ownerOnly: isHomeWorkspace(ws), ...(session?.ownerUid ? { ownerUid: session.ownerUid } : {}) }) : []),
-    [ws, events, selfUid, session?.ownerUid],
+    // seats：专员那一行写「谁的专员」（#1682），同时间线上的名字一样用含走了的人那一份
+    () => (ws !== null ? chatRows({ events, ws, selfUid, now: Date.now(), ownerOnly: isHomeWorkspace(ws), seats: labelSeats, ...(session?.ownerUid ? { ownerUid: session.ownerUid } : {}) }) : []),
+    [ws, events, selfUid, session?.ownerUid, labelSeats],
   );
   // 连接卡（#1666 终审）：开着的卡多了一张就强制重拉一次清单。edge 是回 409 那一刻才把应用翻成 needs_login 的，
   // 进页拉的那份比新来的卡旧——不重拉，卡上的按钮按旧视图判（needs_login 卡由 appConnectActionFor 兜住，这里让其它情况也跟上）
@@ -632,10 +633,11 @@ export function ChatScreen({ route, navigation }: Props) {
   // 点头卡（#1682）：接 / 不接走控制房（seat_decide），sessionId 是这个群。卡的结局另以 seat_decision 广播回来，
   // 回执只答收没收下。没连上之前画的可能是缓存里的卡，同 decide 不许点
   const [seatDeciding, setSeatDeciding] = useState<string | null>(null);
-  const seatDecide = async (requestId: string, decision: "accepted" | "declined"): Promise<void> => {
+  // note = 主人顺手附的一句（可选），随帧带走、整理（去空白 / 截长）在 client 里
+  const seatDecide = async (requestId: string, decision: "accepted" | "declined", note: string): Promise<void> => {
     if (!ready || seatDeciding !== null || baseWs === null || sessionId === null) return;
     setSeatDeciding(requestId);
-    const r = await cloudClient.seatDecide(baseWs.id, sessionId, requestId, decision);
+    const r = await cloudClient.seatDecide(baseWs.id, sessionId, requestId, decision, note);
     setSeatDeciding(null);
     if (!r.ok) setPageNote({ text: r.message, tone: "error" });
   };
@@ -1088,7 +1090,7 @@ export function ChatScreen({ route, navigation }: Props) {
                     }}
                     {...(group && composerNote === null ? { onMentionAvatar: mentionFromAvatar } : {})}
                     seatDeciding={seatDeciding}
-                    onSeatDecide={(id, d) => void seatDecide(id, d)}
+                    onSeatDecide={(id, d, note) => void seatDecide(id, d, note)}
                     {...(home.home !== null && home.home.agents.length > 0 && !isOutreach
                       ? { onLongPress: (r: ChatRow) => setDispatching({ key: Date.now(), visible: true, row: r }) }
                       : {})}

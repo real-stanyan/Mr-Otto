@@ -14,8 +14,8 @@ import { escalationNoteText } from "./escalation.js";
 import { chatMediaItemsOf, type ChatMediaItem } from "./chatMedia.js";
 import { parseDispatchOpening, type DispatchCardView } from "./dispatchQuote.js";
 import { friendPickFoldOf, friendPickStatus, type FriendPickStatus } from "./friendPick.js";
-import { seatCardsOf, seatCardStateAt, type SeatCard } from "./groupSeats.js";
-import { seatCardView, seatRosterLineParts } from "./groupSeatsView.js";
+import { seatCardsOf, seatCardStateAt, type GroupSeat, type SeatCard } from "./groupSeats.js";
+import { knownSeats, seatCardView, seatNotesOf, seatRosterLineParts, seatWorkerTag, workerFoldText } from "./groupSeatsView.js";
 import { healthReadLineText, READ_HEALTH_TOOL } from "./health.js";
 import {
   approvalCardTitle, assistantLabel, callOffsetText, chatRosterLineParts, cloudEmptyState, decisionLineText, hiddenFromCloudTimeline,
@@ -152,6 +152,16 @@ export type ChatRow =
   | {
     kind: "seat_card"; key: string; ts: number; requestId: string; headline: string; ask: string;
     state: SeatCard["state"]; status: string | null; canDecide: boolean;
+    /** 主人点的时候附的那一句，定了之后画在状态底下：「继爸：「只告诉他周五」」。null = 没附 / 还没定 */
+    note: string | null;
+  }
+  /** 专员（L1）在群里说的话（#1682）：某家管理员手下的专员干活时镜像进群的那几句。不是那家管理员的回话——
+      折成挂在那家座位底下的一行小字，同一家连着说的几句并成一行（「Nomad（继爸的专员）说了 3 句」），点开看全文。
+      没有头像（长按 @ 不给：专员只听自家管理员，@ 不到），也不进名册「最后一句」（sessionLast.lastOf 同一条判据）。
+      `key` 取这一串第一句的位置，后面再并进来的几句不换 key（列表不重挂） */
+  | {
+    kind: "worker"; key: string; ts: number; seatAgentId: string; tag: string; summary: string;
+    lines: { name: string; text: string }[];
   };
 
 type ItemRow = Exclude<ChatRow, { kind: "time" }>;
@@ -224,6 +234,8 @@ export function chatRows(o: {
   ownerUid?: string;
   /** 只有群主批得了（个人主场里的会话，#1393，同 runtime 的 initiatorMayDecide）。缺席 = 团队那条规矩 */
   ownerOnly?: boolean;
+  /** 座位制的群里认得出的座位（含走了的人，knownSeats）：专员那一行写「谁的专员」用。缺席 = 从这份日志里现折 */
+  seats?: readonly GroupSeat[];
 }): ChatRow[] {
   const items: ItemRow[] = [];
   let prevRoster: ChatRosterChangedEvent | null = null;
@@ -250,6 +262,9 @@ export function chatRows(o: {
   const tasks: ReadonlyMap<string, TaskRow> = taskFoldOf(o.events, o.ws.id);
   // 点头卡（#1682）：结局在后面的 seat_decision 里，同任务卡整条日志折一次
   const seatCards = seatCardsOf(o.events);
+  const seatNotes = seatNotesOf(o.events);
+  // 专员那一行的「谁的专员」：调用方给了就用（此刻的座位 + 走了的人），没给从日志现折；一句专员的话都没有就不折
+  let seatList: readonly GroupSeat[] | null = o.seats ?? null;
   // 读健康数据那一行（#1656）：结果要对回调用时的参数（哪几类、哪几天），先把 read_health 的调用收一遍
   const healthCalls = new Map<string, unknown>();
   for (const e of o.events) {
@@ -375,11 +390,29 @@ export function chatRows(o: {
       const card = seatCards.get(e.requestId);
       if (card !== undefined && card.seq === e.seq) {
         const state = seatCardStateAt(card, o.now);
-        items.push({ kind: "seat_card", key: `seat-${e.requestId}`, ts: e.ts, requestId: e.requestId, state, ...seatCardView(card, state, o.selfUid) });
+        items.push({ kind: "seat_card", key: `seat-${e.requestId}`, ts: e.ts, requestId: e.requestId, state, ...seatCardView(card, state, o.selfUid, seatNotes.get(e.requestId)) });
       }
       continue;
     }
     if (e.type === "seat_decision") continue;
+    // 专员的话（#1682）：要在 rowOf 之前认出来——否则画成那家管理员的气泡。中间步骤（要了工具 / 空正文）同管理员的一样不画
+    if (e.type === "assistant_message" && e.worker !== undefined && e.agentId !== undefined) {
+      if (hiddenFromCloudTimeline(e)) continue;
+      const text = splitBubbles(e.content).map(stripEmotionTag).filter((p) => p !== "").join("\n\n");
+      if (text === "") continue;
+      seatList ??= knownSeats(o.events, null);
+      const line = { name: e.worker.name, text };
+      const prev = items[items.length - 1];
+      // 同一家连着说的并成一行：中间夹的只要是不画的（工具结果、内务）就还算连着
+      if (prev !== undefined && prev.kind === "worker" && prev.seatAgentId === e.agentId) {
+        prev.lines.push(line);
+        prev.summary = workerFoldText(prev.lines, prev.tag);
+        continue;
+      }
+      const tag = seatWorkerTag(e.agentId, seatList, o.selfUid);
+      items.push({ kind: "worker", key: `worker-${e.seq}`, ts: e.ts, seatAgentId: e.agentId, tag, summary: workerFoldText([line], tag), lines: [line] });
+      continue;
+    }
     if (e.type === "chat_roster_changed") {
       // 座位制的群（#1682）按座位比：humans 不含群主，群主一换手按旧那份比会读错
       const parts = e.seats !== undefined ? seatRosterLineParts(prevRoster, e, o.selfUid, o.ownerUid ?? "") : chatRosterLineParts(prevRoster, e, o.selfUid);

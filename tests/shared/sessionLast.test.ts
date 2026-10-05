@@ -64,6 +64,10 @@ describe("lastOf", () => {
     expect(lastOf(reply({ content: "   ", agentId: "a1" }))).toBeNull();
     expect(lastOf(reply({ content: "旧日志", }))).toBeNull();
   });
+  it("座位制群里专员镜像进来的那句（带 worker，#1682）不算：那是过程，不是那家管理员的回话", () => {
+    expect(lastOf(reply({ content: "正在查航班", agentId: "seat:u2", worker: { agentId: "a_nomad", name: "Nomad" } }))).toBeNull();
+    expect(lastOf(reply({ content: "查好了", agentId: "seat:u2" }))).toEqual({ ts: 5000, excerpt: "查好了", from: "agent:seat:u2" });
+  });
   it("人的 chat_message 算；系统旁白（fromUid=system）不算", () => {
     expect(lastOf(chat({ content: "大家看一下", fromUid: "u2" }))).toEqual({ ts: 5000, excerpt: "大家看一下", from: "human:u2" });
     expect(lastOf(chat({ content: "没派出去", fromUid: "system", label: "系统" }))).toBeNull();

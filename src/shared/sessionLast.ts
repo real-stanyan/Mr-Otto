@@ -46,13 +46,15 @@ export function excerptOf(text: string): string {
  *   那两种的 fromUid 是点火的人，不是他此刻说的话）；engine 注的旁白（后台任务 / 护栏，
  *   `isSystemNote`）不算。正文剥掉 `[名字]: ` 前缀；
  * - agent 的**答案**（`assistant_message` 带 agentId、不是中间步骤——要了工具或空正文的
- *   那一条在时间线上也不画，#1055）；
+ *   那一条在时间线上也不画，#1055；也不是座位制群里专员镜像进来的那句，#1682）；
  * - 人的 `chat_message`（系统旁白 fromUid=system 不算）。
  * 摘录为空（整条只有空白）也不算：写一格空串进去等于把上一句好好的话擦掉。
  */
 export function lastOf(e: SessionEvent): SessionLast | null {
   if (e.type === "assistant_message") {
-    if (!e.agentId || isAgentStep(e)) return null;
+    // 座位制的群里专员（L1）镜像进来的话（#1682，带 worker）不算：那是某家管理员手下干活的过程，群里折成一行小字，
+    // 不是谁的回话——名册第二行写它，就成了「继爸的管理员: 正在查航班…」
+    if (!e.agentId || isAgentStep(e) || e.worker !== undefined) return null;
     const excerpt = excerptOf(e.content);
     return excerpt === "" ? null : { ts: e.ts, excerpt, from: `agent:${e.agentId}` };
   }

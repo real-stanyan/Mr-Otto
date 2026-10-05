@@ -76,6 +76,7 @@ import {
   csChannel,
   encodeCs,
   decodeCsDown,
+  SEAT_NOTE_MAX,
   type CsDeniedCode,
   type CsGitHost,
   type CsChatInfo,
@@ -244,8 +245,9 @@ export interface CloudSessionClient {
   /** 对面管理员的协作请求，接 / 不接（控制房 RPC，协议 29，#1605）：只有主人能点，服务端判 */
   collabDecide(workspaceId: string, sessionId: string, requestId: string, decision: "accepted" | "declined"): Promise<FriendsResult<null>>;
   /** 群里别人使唤我的管理员，接 / 不接（控制房 RPC，协议 31，#1682）：sessionId 是那个群；只有那个座位的主人点得了，服务端判。
-      回执只答收没收下——卡的结局另以 seat_decision 事件广播 */
-  seatDecide(workspaceId: string, sessionId: string, requestId: string, decision: "accepted" | "declined"): Promise<FriendsResult<null>>;
+      回执只答收没收下——卡的结局另以 seat_decision 事件广播。`note` = 主人附的一句（可选）：去掉首尾空白，空的不带，
+      超过 SEAT_NOTE_MAX 字截掉——服务端对超长的整帧拒，一句附言不该让「接 / 不接」本身点不成 */
+  seatDecide(workspaceId: string, sessionId: string, requestId: string, decision: "accepted" | "declined", note?: string): Promise<FriendsResult<null>>;
   /** 这个群里别人使唤我的管理员：每次问我 / 全部放行（控制房 RPC，协议 31）。只改发帧的人自己那个座位 */
   seatPolicy(workspaceId: string, sessionId: string, policy: "ask" | "open"): Promise<FriendsResult<null>>;
   /** 退出这个座位制的群（控制房 RPC，协议 31）：群主退群转给最早入群的人 */
@@ -1376,8 +1378,10 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     });
   }
 
-  function seatDecide(workspaceId: string, sessionId: string, requestId: string, decision: "accepted" | "declined"): Promise<FriendsResult<null>> {
-    return seatRequest({ t: "seat_decide", workspaceId, sessionId, requestId, decision }, "decide", sessionId, requestId, "没有点成");
+  function seatDecide(workspaceId: string, sessionId: string, requestId: string, decision: "accepted" | "declined", note?: string): Promise<FriendsResult<null>> {
+    // 按 Unicode 字符数截（服务端也是这么数的），emoji 不劈成两半；截完再 trim 一次，免得尾巴上剩个空格
+    const said = note === undefined ? "" : Array.from(note.trim()).slice(0, SEAT_NOTE_MAX).join("").trim();
+    return seatRequest({ t: "seat_decide", workspaceId, sessionId, requestId, decision, ...(said !== "" ? { note: said } : {}) }, "decide", sessionId, requestId, "没有点成");
   }
 
   function seatPolicy(workspaceId: string, sessionId: string, policy: "ask" | "open"): Promise<FriendsResult<null>> {

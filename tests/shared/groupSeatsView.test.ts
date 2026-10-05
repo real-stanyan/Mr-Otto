@@ -5,7 +5,8 @@ import { describe, expect, it } from "vitest";
 import { agentFaceIfKnown } from "../../src/shared/agentAvatar.js";
 import { seatAgentId, seatCardsOf, type GroupSeat } from "../../src/shared/groupSeats.js";
 import {
-  knownSeats, seatCardView, seatHandleOf, seatMentionCandidates, seatMentionEntries, seatRosterLineParts, withSeats,
+  knownSeats, seatCardView, seatHandleOf, seatMentionCandidates, seatMentionEntries, seatNotesOf, seatRosterLineParts, seatWorkerTag,
+  withSeats, WORKER_PREVIEW_MAX, workerFoldText, workerPreview,
 } from "../../src/shared/groupSeatsView.js";
 import { chatRows, liveRows } from "../../src/shared/mobileChat.js";
 import { parseMemberMentions, parseMentions } from "../../src/shared/remote/agentMention.js";
@@ -110,11 +111,33 @@ describe("点头卡", () => {
   it("seatCardView：主人看到按钮，别人看到等谁点头；结局三档", () => {
     seq = 0;
     const card = seatCardsOf([req()]).get("r1")!;
-    expect(seatCardView(card, "pending", "u2")).toEqual({ headline: "Stan 想让雨姐动手：用邮件发周报给老板", ask: "帮我把周报发给老板", status: null, canDecide: true });
+    expect(seatCardView(card, "pending", "u2")).toEqual({ headline: "Stan 想让雨姐动手：用邮件发周报给老板", ask: "帮我把周报发给老板", status: null, canDecide: true, note: null });
     expect(seatCardView(card, "pending", "me")).toMatchObject({ headline: "你 想让雨姐动手：用邮件发周报给老板", status: "等 继爸 点头", canDecide: false });
     expect(seatCardView(card, "accepted", "u2")).toMatchObject({ status: "已接", canDecide: false });
     expect(seatCardView(card, "declined", "me").status).toBe("没同意");
     expect(seatCardView(card, "expired", "me").status).toBe("没回");
+  });
+  it("seatCardView：附言定了才画，人人看得见；主人自己看写「你」；空白 / 还开着不画", () => {
+    seq = 0;
+    const card = seatCardsOf([req()]).get("r1")!;
+    expect(seatCardView(card, "declined", "me", " 只告诉他周五 ").note).toBe("继爸：「只告诉他周五」");
+    expect(seatCardView(card, "accepted", "u2", "只告诉他周五").note).toBe("你：「只告诉他周五」");
+    expect(seatCardView(card, "accepted", "me", "  ").note).toBeNull();
+    expect(seatCardView(card, "accepted", "me").note).toBeNull();
+    expect(seatCardView(card, "pending", "me", "只告诉他周五").note).toBeNull();
+  });
+  it("seatNotesOf：只认定了那张卡的第一条结局；没附 / 请求不在窗口里的不进表", () => {
+    seq = 0;
+    const dec = (o: Record<string, unknown>): SessionEvent => e({ type: "seat_decision", seatUid: "u2", byUid: "u2", ignorable: true, ...o });
+    const notes = seatNotesOf([
+      dec({ requestId: "r0", decision: "accepted", note: "窗口外" }),
+      req(),
+      req({ requestId: "r2" }),
+      dec({ requestId: "r1", decision: "declined", note: " 那天我上班 " }),
+      dec({ requestId: "r1", decision: "accepted", note: "后来的不算" }),
+      dec({ requestId: "r2", decision: "accepted" }),
+    ]);
+    expect([...notes]).toEqual([["r1", "那天我上班"]]);
   });
   it("chatRows：一张卡一行在请求的位置，结局只改状态不占行；过了点按过期画、按钮收起", () => {
     seq = 0;
@@ -130,6 +153,15 @@ describe("点头卡", () => {
     seq = 0;
     const late = chatRows({ events: [req()], ws, selfUid: "u2", now: DAY + 600_001 }).filter((r) => r.kind !== "time");
     expect(late).toEqual([expect.objectContaining({ kind: "seat_card", state: "expired", canDecide: false, status: "没回" })]);
+  });
+  it("chatRows：主人附的一句画在卡上（结局那条仍不占行）", () => {
+    seq = 0;
+    const ws = withSeats(WS, SEATS);
+    const rows = chatRows({
+      events: [req(), e({ type: "seat_decision", requestId: "r1", seatUid: "u2", decision: "declined", byUid: "u2", note: "告诉她我那天上班", ignorable: true })],
+      ws, selfUid: "me", now: DAY,
+    }).filter((r) => r.kind !== "time");
+    expect(rows).toEqual([expect.objectContaining({ kind: "seat_card", state: "declined", status: "没同意", note: "继爸：「告诉她我那天上班」" })]);
   });
 });
 
@@ -153,5 +185,77 @@ describe("时间线认 seat:<uid>", () => {
       ws: withSeats(WS, SEATS), selfUid: "u3", now: DAY, ownerUid: "me",
     }).filter((r) => r.kind === "roster");
     expect(rows.map((r) => (r.kind === "roster" ? r.parts.map((p) => p.text).join("") : ""))).toEqual(["Stan退出了群聊，继爸成了群主"]);
+  });
+});
+
+describe("专员（L1）的话（#1682）", () => {
+  const worker = (agentId: string, name: string, content: string, o: Record<string, unknown> = {}): SessionEvent =>
+    e({ type: "assistant_message", content, model: "m", agentId, worker: { agentId: `a_${name}`, name }, ...o });
+  const admin = (agentId: string, content: string): SessionEvent => e({ type: "assistant_message", content, model: "m", agentId });
+  const ws = withSeats(WS, SEATS);
+  const rowsOf = (events: SessionEvent[], selfUid = "me", seats: GroupSeat[] | undefined = SEATS) =>
+    chatRows({ events, ws, selfUid, now: DAY, ...(seats !== undefined ? { seats } : {}) }).filter((r) => r.kind !== "time");
+
+  it("折成一行小字，不画成那家管理员的气泡；署名「Nomad（继爸的专员）· 第一行」，全文点开看", () => {
+    seq = 0;
+    const rows = rowsOf([worker("seat:u2", "Nomad", "先查航班\n再订酒店")]);
+    expect(rows).toEqual([{
+      kind: "worker", key: "worker-0", ts: DAY, seatAgentId: "seat:u2", tag: "继爸的专员",
+      summary: "Nomad（继爸的专员）· 先查航班", lines: [{ name: "Nomad", text: "先查航班\n再订酒店" }],
+    }]);
+    expect(rows.some((r) => r.kind === "agent")).toBe(false);
+  });
+
+  it("同一家连着说的并成一行（中间夹不画的事件也算连着），key 不随后来的几句变；管理员开口 / 换一家就断开", () => {
+    seq = 0;
+    const rows = rowsOf([
+      worker("seat:u2", "Nomad", "第一句"),
+      e({ type: "tool_result", toolCallId: "c1", status: "ok", content: "" }),
+      worker("seat:u2", "Nomad", "第二句"),
+      worker("seat:u2", "Nomad", "第三句"),
+      admin("seat:u2", "办好了。"),
+      worker("seat:u2", "Nomad", "收尾"),
+      worker("seat:u3", "Scout", "我这边也查了"),
+    ]);
+    expect(rows.map((r) => [r.kind, r.key, r.kind === "worker" ? r.summary : ""])).toEqual([
+      ["worker", "worker-0", "Nomad（继爸的专员）说了 3 句"],
+      ["agent", "e4", ""],
+      ["worker", "worker-5", "Nomad（继爸的专员）· 收尾"],
+      ["worker", "worker-6", "Scout（阿峰的专员）· 我这边也查了"],
+    ]);
+    expect(rows[0]!.kind === "worker" ? rows[0]!.lines.map((l) => l.text) : []).toEqual(["第一句", "第二句", "第三句"]);
+  });
+
+  it("几只专员轮着说：写「继爸的专员说了 N 句」，每句是谁点开看", () => {
+    seq = 0;
+    const rows = rowsOf([worker("seat:u2", "Nomad", "查航班"), worker("seat:u2", "Atlas", "查酒店")]);
+    expect(rows).toEqual([expect.objectContaining({ summary: "继爸的专员说了 2 句", lines: [{ name: "Nomad", text: "查航班" }, { name: "Atlas", text: "查酒店" }] })]);
+  });
+
+  it("中间步骤（要了工具 / 空正文）不画；我家的写「我的专员」；没给座位从日志现折，查不到只写「专员」", () => {
+    seq = 0;
+    expect(rowsOf([
+      worker("seat:u2", "Nomad", "我先跑一下", { toolCalls: [{ id: "c1", name: "bash", args: {} }] }),
+      worker("seat:u2", "Nomad", "  "),
+    ])).toEqual([]);
+    seq = 0;
+    expect(rowsOf([worker("seat:me", "Nomad", "好")])).toEqual([expect.objectContaining({ tag: "我的专员", summary: "Nomad（我的专员）· 好" })]);
+    seq = 0;
+    expect(rowsOf([roster({ seats: SEATS }), worker("seat:u3", "Scout", "好")], "me", undefined).filter((r) => r.kind === "worker"))
+      .toEqual([expect.objectContaining({ tag: "阿峰的专员" })]);
+    seq = 0;
+    expect(rowsOf([worker("seat:u9", "Scout", "好")], "me", undefined)).toEqual([expect.objectContaining({ tag: "专员", summary: "Scout（专员）· 好" })]);
+  });
+
+  it("seatWorkerTag / workerPreview / workerFoldText", () => {
+    expect(seatWorkerTag("seat:u2", SEATS, "me")).toBe("继爸的专员");
+    expect(seatWorkerTag("seat:me", SEATS, "me")).toBe("我的专员");
+    expect(seatWorkerTag("a_1", SEATS, "me")).toBe("专员");
+    expect(workerPreview("\n  先查   航班 \n再订")).toBe("先查 航班");
+    const long = "查".repeat(WORKER_PREVIEW_MAX + 5);
+    expect(Array.from(workerPreview(long))).toHaveLength(WORKER_PREVIEW_MAX);
+    expect(workerPreview(long).endsWith("…")).toBe(true);
+    expect(Array.from(workerPreview("😀".repeat(WORKER_PREVIEW_MAX + 1)))).toHaveLength(WORKER_PREVIEW_MAX);
+    expect(workerFoldText([], "专员")).toBe("");
   });
 });

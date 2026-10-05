@@ -105,8 +105,15 @@ export function seatRosterLineParts(
   return parts.length > 0 ? parts : null;
 }
 
-/** 点头卡那一行（#1682）：标题、原话、底下那行状态。`status` null = 我就是座位的主人、卡还开着——画「接 / 不接」 */
-export function seatCardView(card: SeatCard, state: SeatCard["state"], selfUid: string): { headline: string; ask: string; status: string | null; canDecide: boolean } {
+/** 点头卡那一行（#1682）：标题、原话、底下那行状态。`status` null = 我就是座位的主人、卡还开着——画「接 / 不接」。
+    `note` = 主人点的时候附的那一句（seatNotesOf），定了之后画在状态底下、群里人人看得见：「继爸：「只告诉他周五」」；
+    卡还开着时不画（还没人点，哪来的附言） */
+export function seatCardView(
+  card: SeatCard,
+  state: SeatCard["state"],
+  selfUid: string,
+  note?: string,
+): { headline: string; ask: string; status: string | null; canDecide: boolean; note: string | null } {
   const from = card.fromUid === selfUid ? "你" : card.fromName;
   const mine = card.seatUid === selfUid;
   const status =
@@ -114,5 +121,56 @@ export function seatCardView(card: SeatCard, state: SeatCard["state"], selfUid: 
       : state === "accepted" ? "已接"
         : state === "declined" ? "没同意"
           : "没回";
-  return { headline: `${from} 想让${card.agentName}动手：${card.summary}`, ask: card.ask, status, canDecide: mine && state === "pending" };
+  const said = state !== "pending" && note !== undefined && note.trim() !== "" ? `${mine ? "你" : card.ownerName}：「${note.trim()}」` : null;
+  return { headline: `${from} 想让${card.agentName}动手：${card.summary}`, ask: card.ask, status, canDecide: mine && state === "pending", note: said };
+}
+
+/** 每张点头卡主人附的那一句（按 requestId）。只认定了那张卡的那一条结局（同 seatCardsOf：第一条结局说了算，
+    后来的重复结局不改卡、也不改附言）；没附 / 只有空白不进表。SeatCard 本身不带它（groupSeats.ts 是三端共用的规矩，
+    附言只是手机上多画的一行，不往那份形状里塞） */
+export function seatNotesOf(events: readonly SessionEvent[]): Map<string, string> {
+  const asked = new Set<string>();
+  const settled = new Set<string>();
+  const out = new Map<string, string>();
+  for (const e of events) {
+    if (e.type === "seat_request") asked.add(e.requestId);
+    else if (e.type === "seat_decision" && asked.has(e.requestId) && !settled.has(e.requestId)) {
+      settled.add(e.requestId);
+      if (e.note !== undefined && e.note.trim() !== "") out.set(e.requestId, e.note.trim());
+    }
+  }
+  return out;
+}
+
+// ── 专员（L1）在群里说的话（#1682） ──
+// 座位里某家管理员手下的专员干活时说的话也镜像进群（assistant_message 带 worker，agentId 仍是 seat:<uid>）：
+// 群里给人看过程，但它不是那家管理员的回话——折成那家座位底下的一行小字，点开才看全文。
+
+/** 专员是谁家的：「继爸的专员」，我家的写「我的专员」；座位查不到（窗口外 / 脏数据）只写「专员」，不编主人 */
+export function seatWorkerTag(agentId: string, seats: readonly GroupSeat[], selfUid: string): string {
+  const uid = seatUidOf(agentId);
+  if (uid === null) return "专员";
+  if (uid === selfUid) return "我的专员";
+  const seat = seats.find((s) => s.uid === uid);
+  return seat === undefined ? "专员" : `${seat.name}的专员`;
+}
+
+/** 折叠那一行后半截要几个字：一行放得下的量，屏幕再按 numberOfLines 截一次 */
+export const WORKER_PREVIEW_MAX = 40;
+
+/** 第一行非空的字，折叠空白，超长截断（省略号算在上限里；按 Unicode 字符数，emoji 不劈成两半） */
+export function workerPreview(text: string): string {
+  const first = text.split("\n").map((l) => l.replace(/\s+/g, " ").trim()).find((l) => l !== "") ?? "";
+  const chars = Array.from(first);
+  return chars.length <= WORKER_PREVIEW_MAX ? first : `${chars.slice(0, WORKER_PREVIEW_MAX - 1).join("")}…`;
+}
+
+/** 折叠那一行怎么说：一句 =「Nomad（继爸的专员）· 第一行」；几句 =「Nomad（继爸的专员）说了 3 句」；
+    几只专员轮着说的写「继爸的专员说了 3 句」（每句是谁说的，点开看）。`tag` = seatWorkerTag */
+export function workerFoldText(lines: readonly { name: string; text: string }[], tag: string): string {
+  const first = lines[0];
+  if (first === undefined) return "";
+  const label = `${first.name}（${tag}）`;
+  if (lines.length === 1) return `${label}· ${workerPreview(first.text)}`; // 全角括号自带留白，「）」后不再空一格
+  return `${lines.every((l) => l.name === first.name) ? label : tag}说了 ${lines.length} 句`;
 }

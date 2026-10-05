@@ -13,12 +13,27 @@ describe("ChatScreen：座位制的群", () => {
   });
   it("@ 的候选换成各家管理员；点头卡走 seatDecide；长按头像插 @", () => {
     expect(src).toMatch(/seats !== null \? seatMentionCandidates\(seats\)/);
-    expect(src).toMatch(/cloudClient\.seatDecide\(baseWs\.id, sessionId, requestId, decision\)/);
+    expect(src).toMatch(/cloudClient\.seatDecide\(baseWs\.id, sessionId, requestId, decision, note\)/);
+    expect(src).toMatch(/onSeatDecide=\{\(id, d, note\) => void seatDecide\(id, d, note\)\}/);
     expect(src).toMatch(/onMentionAvatar: mentionFromAvatar/);
     expect(src).toMatch(/withSeats\(w, labelSeats\)/);
   });
+  it("专员那一行写「谁的专员」要座位：chatRows 吃 labelSeats", () => {
+    expect(src).toMatch(/chatRows\(\{ events, ws, selfUid, now: Date\.now\(\), ownerOnly: isHomeWorkspace\(ws\), seats: labelSeats/);
+  });
   it("拉人建群只拉朋友", () => {
     expect(src).toMatch(/agentIds: \[\],\n\s+humans: pickedPeople,/);
+  });
+});
+
+describe("Bubbles：座位制的群", () => {
+  const src = read("mobile/src/chat/Bubbles.tsx");
+  it("专员那一行单独画（不进管理员气泡、没有头像可长按 @）；点头卡有「附一句」、定了画附言", () => {
+    expect(src).toMatch(/case "worker":\n\s+return <WorkerFoldRow row=\{row\} group=\{group\} \/>;/);
+    expect(src).toMatch(/placeholder="附一句（可选）"/);
+    expect(src).toMatch(/maxLength=\{SEAT_NOTE_MAX\}/);
+    expect(src).toMatch(/onDecide\(row\.requestId, "accepted", note\)/);
+    expect(src).toMatch(/row\.note !== null/);
   });
 });
 
