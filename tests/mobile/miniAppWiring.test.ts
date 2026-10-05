@@ -7,7 +7,7 @@ const read = (p: string): string => readFileSync(new URL(`../../${p}`, import.me
 describe("MiniAppScreen：WebView 宿主 + 桥", () => {
   const src = read("mobile/src/apps/MiniAppScreen.tsx");
   it("文件落本机后以 file:// 载入；只许读这一版的目录；不是本目录的跳转不放行；桥注在内容之前", () => {
-    expect(src).toMatch(/const dir = await ensureAppFiles\(uid, app\.id, version\.version, version\.files\);/);
+    expect(src).toMatch(/const dir = room === null\s*\? await ensureAppFiles\(uid, app\.id, version\.version, version\.files\)/);
     expect(src).toMatch(/source=\{\{ uri: appFileUri\(loaded\.dirUri, page\) \}\}/);
     expect(src).toMatch(/allowingReadAccessToURL=\{loaded\.dirUri\}/);
     expect(src).toMatch(/onShouldStartLoadWithRequest=\{\(r\) => r\.url\.startsWith\(loaded\.dirUri\)\}/);
@@ -26,7 +26,7 @@ describe("应用页与聊天里的卡", () => {
     const apps = read("mobile/src/machine/AppsScreen.tsx");
     expect(apps).toMatch(/<Group header="我的应用"/);
     expect(apps).toMatch(/navigation\.navigate\("MiniApp", \{ appId: a\.id \}\)/);
-    expect(read("mobile/src/nav/types.ts")).toMatch(/MiniApp: \{ appId: string; share\?: boolean \};/);
+    expect(read("mobile/src/nav/types.ts")).toMatch(/MiniApp: \{ appId: string; share\?: boolean; roomId\?: string \};/);
     expect(read("mobile/src/nav/RootNavigator.tsx")).toMatch(/<Root\.Screen name="MiniApp" component=\{MiniAppScreen\}/);
   });
   it("app_card 投影成一张 app 行；Bubbles 画 AppCard、点开进 MiniApp", () => {
@@ -77,5 +77,30 @@ describe("私聊 ＋ 里发应用；抽屉长按分享 / 删除（#1648 真机�
     expect(drawer).toMatch(/onLongPress=\{\(\) => more\(a\)\}/);
     expect(drawer).toMatch(/cloudClient\.appDelete\(a\.id\)/);
     expect(drawer).toContain("分享给朋友");
+  });
+});
+
+describe("房间模式（#1675）", () => {
+  const src = read("mobile/src/apps/MiniAppScreen.tsx");
+  it("路由多 roomId；有 roomId 时跑房主钉住的那一版", () => {
+    expect(read("mobile/src/nav/types.ts")).toMatch(/MiniApp: \{ appId: string; share\?: boolean; roomId\?: string \};/);
+    expect(src).toMatch(/const room = roomId === undefined \? null : await fetchRoom\(supabase, roomId\);/);
+    expect(src).toMatch(/fetchAppVersion\(supabase, room\.hostAppId, room\.hostVersion\)/);
+    expect(src).toMatch(/ensureAppFiles\(room\.hostUid, room\.hostAppId, room\.hostVersion, version\.files\)/);
+  });
+  it("个人 storage 仍落在我自己那份应用；room.* 走 appRoomApi；不在房间的数据操作拒", () => {
+    expect(src).toMatch(/case "storage\.get": return appData\.get\(supabase, l\.app\.id, l\.uid, a0\);/);
+    expect(src).toMatch(/case "room\.set": return roomData\.set\(supabase, needRoom\(l\)\.id, a0, a1, req\.args\[2\]\);/);
+    expect(src).toMatch(/case "room\.ping": return pingRoom\(supabase, needRoom\(l\)\.id, a0\);/);
+    expect(src).toMatch(/case "room\.rooms": return \(await listRooms\(supabase, familyOf\(l\.app\)\)\) \?\? \[\];/);
+  });
+  it("订阅推成 otto 事件；离开页面退订", () => {
+    expect(src).toMatch(/subscribeRoom\(supabase, loaded\.room\.id, loaded\.uid, \{/);
+    expect(src).toMatch(/bridgeEventJs\("room\.change", e\)/);
+    expect(src).toMatch(/bridgeEventJs\("room\.message", \{ from, msg \}\)/);
+    expect(src).toMatch(/return \(\) => link\.close\(\);/);
+  });
+  it("邀请：先 inviteToRoom 再发邀请信封", () => {
+    expect(src).toMatch(/await inviteToRoom\(supabase, room\.id, p\.uid\);\s*await sendToFriend\(p\.uid, encodeRoomInvite\(/);
   });
 });
