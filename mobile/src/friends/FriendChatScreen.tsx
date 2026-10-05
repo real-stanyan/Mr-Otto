@@ -294,10 +294,26 @@ export function FriendChatScreen({ route, navigation }: Props) {
   }, [homeWs, peer, uid]);
   const nameOfAgent = useCallback((id: string): string => (mentionWs !== null ? agentNameOf(mentionWs, id) : id), [mentionWs]);
   const slotOfAgent = useCallback((id: string): number => (mentionWs !== null ? agentFaceSlot(mentionWs, id) : 0), [mentionWs]);
+  // 朋友那条车道里的名字 / 脸按**朋友的**名册解析（#1613）：两家管理员的 agentId 都是 admin，混进我的名册就会把
+  // 对面的管理员画成我的管理员（真机：打给峰哥的电话卡上写着「雨姐」）。mentionWs 里对面的 admin 已被我的挤掉，所以单独一份
+  const peerWs = useMemo<WorkspaceSnapshot | null>(() => {
+    if (peer === null) return null;
+    const theirs = [...peer.agents];
+    if (peer.publicAgent && !theirs.some((a) => a.agentId === peer.publicAgent!.agentId)) {
+      const p = peer.publicAgent;
+      theirs.push({ agentId: p.agentId, name: p.name, description: p.description, instructions: "", models: [], tools: [], createdBy: uid, updatedTs: 0, avatarSlot: p.avatarSlot });
+    }
+    if (!theirs.some((a) => a.agentId === ADMIN_AGENT_ID)) {
+      theirs.push({ agentId: ADMIN_AGENT_ID, name: `${name.replace(/\s+/g, "")}的管理员`, description: "", instructions: "", models: [], tools: [], createdBy: uid, updatedTs: 0, avatarSlot: null });
+    }
+    return { id: peer.session?.workspaceId ?? "", name: "", ownerUid: uid, members: [], connectors: [], sessions: [], agents: theirs, sandboxApproval: null, kind: "home" };
+  }, [peer, uid, name]);
+  const nameOfPeerAgent = useCallback((id: string): string => (peerWs !== null ? agentNameOf(peerWs, id) : id), [peerWs]);
+  const slotOfPeerAgent = useCallback((id: string): number => (peerWs !== null ? agentFaceSlot(peerWs, id) : 0), [peerWs]);
   // 代办的任务（#1565，ADR-0364）：两条车道各折成任务，还在答的那几只（流式碎片）挂在最后一条上；主页每条一张卡
   const taskRows = useMemo<TaskRow[]>(() => {
     const build = (events: readonly SessionEvent[], streaming: Readonly<Record<string, string>>, peerLane: boolean): TaskRow[] => {
-      const tasks = laneTasksOf(events, selfUid, nameOfAgent);
+      const tasks = laneTasksOf(events, selfUid, peerLane ? nameOfPeerAgent : nameOfAgent);
       const pending = lanePending(events, streaming);
       const last = tasks.at(-1);
       if (pending.length > 0 && last !== undefined) last.items.push(...pending);
@@ -308,7 +324,7 @@ export function FriendChatScreen({ route, navigation }: Props) {
       ...build(laneEvents, laneSession !== null ? chat.streaming : {}, false),
       ...(peer === null || peer.session === null ? [] : build(peerEvents, peer.streaming, true)),
     ];
-  }, [laneEvents, laneSession, chat.streaming, peer, peerEvents, selfUid, nameOfAgent]);
+  }, [laneEvents, laneSession, chat.streaming, peer, peerEvents, selfUid, nameOfAgent, nameOfPeerAgent]);
   /** 点开的那张卡（#1565）：按 key 现找，抽屉里的内容跟着车道一起长 */
   const [openTaskKey, setOpenTaskKey] = useState<{ key: string; peer: boolean } | null>(null);
   const [taskDrawerOpen, setTaskDrawerOpen] = useState(false);
@@ -559,7 +575,7 @@ export function FriendChatScreen({ route, navigation }: Props) {
                   <TaskCard
                     t={item.t}
                     status={laneTaskStatus(item.t.task, item.t.busy)}
-                    subtitle={laneTaskSubtitle(item.t.task, laneTaskStatus(item.t.task, item.t.busy), nameOfAgent)}
+                    subtitle={laneTaskSubtitle(item.t.task, laneTaskStatus(item.t.task, item.t.busy), item.t.peer ? nameOfPeerAgent : nameOfAgent)}
                     footer={item.t.peer ? `${name}的管理员在办 · 两人都看得到` : laneFacing === "both" ? "你和 TA 都看得到" : "仅你可见"}
                     onPress={() => {
                       setOpenTaskKey({ key: item.t.task.key, peer: item.t.peer });
@@ -739,7 +755,7 @@ export function FriendChatScreen({ route, navigation }: Props) {
           agentIds={[]}
           entries={[
             ...broughtNames.map((a) => ({ key: `mine:${a.agentId}`, name: a.name, tag: "我的", slot: agentFaceSlot(homeWs, a.agentId) })),
-            ...peerNames.map((a) => ({ key: `peer:${a.agentId}`, name: a.name, tag: `${name} 的`, slot: slotOfAgent(a.agentId) })),
+            ...peerNames.map((a) => ({ key: `peer:${a.agentId}`, name: a.name, tag: `${name} 的`, slot: slotOfPeerAgent(a.agentId) })),
           ]}
           humans={[]}
           footer={laneFacing === "both" || peerNames.length > 0 ? `@ 了智能体的那句进它的车道，不 @ 谁就是发给${name}。` : `@ 了它的那句只有你看得到，${name}收不到；不 @ 谁就是发给${name}。`}
@@ -801,8 +817,8 @@ export function FriendChatScreen({ route, navigation }: Props) {
         task={openTask?.task ?? null}
         peer={openTask?.peer ?? false}
         busy={openTask?.busy ?? false}
-        nameOf={nameOfAgent}
-        slotOf={slotOfAgent}
+        nameOf={openTask?.peer === true ? nameOfPeerAgent : nameOfAgent}
+        slotOf={openTask?.peer === true ? slotOfPeerAgent : slotOfAgent}
         meName={me.name}
         meAvatar={me.avatar}
         friendName={name}
