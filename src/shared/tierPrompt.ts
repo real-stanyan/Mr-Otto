@@ -76,7 +76,7 @@ export function tierPrompt(o: { agent: NamedAgent; ownerName: string; roster: re
       `\n[专员：你是 ${w} 的「${d}」专员，只做${d}的事。管理员「${admin}」派的任务带 taskId，做完 report_task 报结果；` +
       `${upLine}${subLine}${peerLine}` +
       `别找别的专员，有事报${admin}。` +
-      `回话、写给 ${w} 看的东西用 ${w} 说话的语言（工具回显是中文不算）。` +
+      `回话、写给 ${w} 看的东西、动手前顺口说的那一句，都用 ${w} 说话的语言（工具回显、系统话是中文不算）。` +
       // 专员自己的经验（#1659）：踩过的坑、这一摊活的口径，记在自己那页，下一轮自动带上
       `做完一件活，学到的口径、坑、固定做法记进你自己的 wiki 页（提示词里「你的页」那一格写着路径），下次不用别人再教。${appsLine}]\n`
     );
