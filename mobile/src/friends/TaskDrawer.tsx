@@ -1,9 +1,11 @@
 // 代办的抽屉（#1565，ADR-0364）：私聊页上一张任务卡点开的那一扇——这次请求的来回、管理员下发给了谁、谁回了什么，
 // 按时间一行一行；底下一格能接着说（进的是这条任务所在的车道，不是私聊）。主页只留卡，过程全在这里。
+// 主人直接面对结果（#1601）：默认只露人说的话与收尾那句，智能体之间的往返折成一格「过程 · N 条」，点开才铺。
 import { useEffect, useState } from "react";
 import { Keyboard, Platform, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { LANE_TASK_STATUS_LABEL, laneTaskStatus, type LaneTask } from "../../../src/shared/laneTasks.js";
+import { LANE_TASK_STATUS_LABEL, laneItemPreview, laneTaskDigest, laneTaskStatus, type LaneTask, type LaneTaskItem } from "../../../src/shared/laneTasks.js";
+import { Icon } from "../wx/Icon.js";
 import { BottomSheet } from "../sheet/BottomSheet.js";
 import { space, usePalette, withAlpha } from "../theme.js";
 
@@ -33,6 +35,8 @@ export function TaskDrawer({ visible, task, peer, busy, nameOf, slotOf, meName, 
   const { c } = usePalette();
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
+  /** 点开过的「过程」格（按格的 key；换一条任务从头折起） */
+  const [opened, setOpened] = useState<Set<string>>(() => new Set());
   const status = task === null ? null : laneTaskStatus(task, busy);
   const title = task === null ? "代办" : `${task.kind === "call" ? "电话" : "代办"} · ${LANE_TASK_STATUS_LABEL[status!]}`;
   const send = async (): Promise<void> => {
@@ -63,20 +67,54 @@ export function TaskDrawer({ visible, task, peer, busy, nameOf, slotOf, meName, 
             {task.items.length === 0 ? (
               <Text style={{ fontSize: 13, color: c.mutedForeground, textAlign: "center" }}>还没有进展。</Text>
             ) : (
-              task.items.map((item) => (
-                <LaneBubble
-                  key={item.key}
-                  item={item}
-                  name={item.agentId !== undefined ? nameOf(item.agentId) : "智能体"}
-                  slot={item.agentId !== undefined ? slotOf(item.agentId) : 0}
-                  meName={meName}
-                  meAvatar={meAvatar}
-                  friendName={friendName}
-                  friendAvatar={friendAvatar}
-                  footer={item.handoff !== undefined ? `下发给 ${item.handoff.toAgentIds.map(nameOf).join("、")}` : footer}
-                  peer={peer}
-                />
-              ))
+              laneTaskDigest(task).map((row) => {
+                const bubble = (item: LaneTaskItem) => (
+                  <LaneBubble
+                    key={item.key}
+                    item={item}
+                    name={item.agentId !== undefined ? nameOf(item.agentId) : "智能体"}
+                    slot={item.agentId !== undefined ? slotOf(item.agentId) : 0}
+                    meName={meName}
+                    meAvatar={meAvatar}
+                    friendName={friendName}
+                    friendAvatar={friendAvatar}
+                    footer={item.handoff !== undefined ? `下发给 ${item.handoff.toAgentIds.map(nameOf).join("、")}` : footer}
+                    peer={peer}
+                  />
+                );
+                if (row.kind === "item") return bubble(row.item);
+                const open = opened.has(row.key);
+                const last = row.items.at(-1)!;
+                return (
+                  <View key={row.key} style={{ gap: 12 }}>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={open ? "收起过程" : "展开过程"}
+                      onPress={() => setOpened((prev) => { const next = new Set(prev); if (next.has(row.key)) next.delete(row.key); else next.add(row.key); return next; })}
+                      style={({ pressed }) => [{ marginHorizontal: 12, paddingVertical: 8, paddingHorizontal: 12, borderRadius: 10, backgroundColor: withAlpha(c.foreground, 0.04), gap: 2 }, pressed && { opacity: 0.7 }]}
+                    >
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+                        <Icon name={open ? "chevron-down" : "chevron-right"} size={14} stroke={2} color={c.faint} />
+                        <Text style={{ fontSize: 12, fontWeight: "600", color: c.mutedForeground }}>{`过程 · ${row.items.length} 条`}</Text>
+                      </View>
+                      {open ? null : (
+                        <Text numberOfLines={1} style={{ fontSize: 12, color: c.faint, paddingLeft: 18 }}>
+                          {`${last.agentId !== undefined ? nameOf(last.agentId) : "智能体"}：${laneItemPreview(last, nameOf)}`}
+                        </Text>
+                      )}
+                    </Pressable>
+                    {open
+                      ? row.items.map((item) =>
+                        // 下发的那条是系统替它落给下一棒的开场白——给模型看的，主人只需要知道给了谁
+                        item.handoff !== undefined ? (
+                          <Text key={item.key} style={{ fontSize: 12, color: c.faint, paddingLeft: 62 }}>
+                            {`↳ ${item.agentId !== undefined ? nameOf(item.agentId) : "智能体"} 下发给 ${item.handoff.toAgentIds.map(nameOf).join("、")}`}
+                          </Text>
+                        ) : bubble(item))
+                      : null}
+                  </View>
+                );
+              })
             )}
           </ScrollView>
         )}

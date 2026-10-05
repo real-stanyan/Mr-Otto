@@ -1,4 +1,5 @@
 // 代办的任务投影（#1565，ADR-0364）：一次请求 = 一条任务；回话、下发、下一棒归到它名下；电话开一条；状态与卡上的字。
+import { laneItemPreview, laneTaskDigest, laneTaskResult, type LaneTask, type LaneTaskItem } from "../../src/shared/laneTasks.js";
 import { describe, expect, it } from "vitest";
 import type { SessionEvent } from "../../src/session/events.js";
 import { LANE_TASK_TITLE_MAX, laneBusy, laneTaskStatus, laneTaskSubtitle, laneTasksOf } from "../../src/shared/laneTasks.js";
@@ -91,5 +92,35 @@ describe("laneTasksOf", () => {
     expect(laneBusy(events)).toBe(true);
     const t = laneTasksOf(events, ME, nameOf)[0]!;
     expect(laneTaskStatus(t, laneBusy(events))).toBe("working");
+  });
+});
+
+describe("抽屉的摘要（#1601）：人说的 + 结果露着，智能体之间的往返折成「过程」", () => {
+  const me = (key: string, text: string): LaneTaskItem => ({ key, ts: 1, who: "me", text });
+  const ag = (key: string, agentId: string, text: string): LaneTaskItem => ({ key, ts: 1, who: "agent", agentId, text });
+  const hand = (key: string, from: string, to: string): LaneTaskItem => ({ key, ts: 1, who: "agent", agentId: from, text: "[系统] …接力…", handoff: { toAgentIds: [to] } });
+  const task = (items: LaneTaskItem[]): LaneTask => ({ key: "t", ts: 1, startedBy: "me", kind: "message", title: "x", items, agentIds: [], lastTs: 1 });
+  const nameOf = (id: string): string => ({ a1: "雨姐", a2: "店铺管家" })[id] ?? id;
+
+  it("真机那条：主人一句 → 雨姐 @店铺管家 → 下发 → 店铺管家回 → 下发 → 雨姐收尾：露主人那句与收尾，中间四条折成一格", () => {
+    const t = task([me("u1", "去看看上个月营业额"), ag("a1", "a1", "@店铺管家 取一下"), hand("r1", "a1", "a2"), ag("a2", "a2", "@雨姐 9 月出来了"), hand("r2", "a2", "a1"), ag("a3", "a1", "9 月出来了：$78,807")]);
+    const rows = laneTaskDigest(t);
+    expect(rows.map((r) => (r.kind === "item" ? r.item.key : `过程×${r.items.length}`))).toEqual(["u1", "过程×4", "a3"]);
+    expect(laneTaskResult(t)!.key).toBe("a3");
+    const p = rows[1] as { kind: "process"; items: LaneTaskItem[] };
+    expect(laneItemPreview(p.items.at(-1)!, nameOf)).toBe("下发给 雨姐");
+    expect(laneItemPreview(p.items[0]!, nameOf)).toBe("@店铺管家 取一下");
+  });
+  it("只有一问一答：没有过程格；还在办、最后是下发：结果是前一句、下发折在它后面", () => {
+    expect(laneTaskDigest(task([me("u1", "在吗"), ag("a1", "a1", "在")])).map((r) => r.kind)).toEqual(["item", "item"]);
+    const t = task([me("u1", "查一下"), ag("a1", "a1", "@店铺管家 你来"), hand("r1", "a1", "a2")]);
+    expect(laneTaskResult(t)!.key).toBe("a1");
+    expect(laneTaskDigest(t).map((r) => (r.kind === "item" ? r.item.key : `过程×${r.items.length}`))).toEqual(["u1", "a1", "过程×1"]);
+  });
+  it("主人中途接着说的那句不折；没有智能体发言 = 没结果", () => {
+    const t = task([me("u1", "查"), ag("a1", "a1", "@店铺管家 来"), me("u2", "顺便看看昨天的"), ag("a2", "a2", "好了")]);
+    expect(laneTaskDigest(t).map((r) => (r.kind === "item" ? r.item.key : "过程"))).toEqual(["u1", "过程", "u2", "a2"]);
+    expect(laneTaskResult(task([me("u1", "查")]))).toBeNull();
+    expect(laneTaskDigest(task([]))).toEqual([]);
   });
 });

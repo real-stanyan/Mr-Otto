@@ -100,6 +100,38 @@ export function laneTasksOf(events: readonly SessionEvent[], selfUid: string | u
   return tasks;
 }
 
+/** 抽屉里的一行：要么原样一条，要么一段折起来的「过程」（智能体之间的往返） */
+export type LaneDigestRow = { kind: "item"; item: LaneTaskItem } | { kind: "process"; key: string; items: LaneTaskItem[] };
+
+/** 这条任务的「结果」：最后一条不是下发的智能体发言（收尾那句）；没有就 null */
+export function laneTaskResult(task: LaneTask): LaneTaskItem | null {
+  for (let i = task.items.length - 1; i >= 0; i--) {
+    const it = task.items[i]!;
+    if (it.who === "agent" && it.handoff === undefined) return it;
+  }
+  return null;
+}
+
+/** 抽屉默认只给主人看人说的话 + 结果（#1601，真机 2026-10-05：翻三屏才看到结论）。
+    其余智能体的往返——互相 @ 的中间发言、系统替它落的下发——连续的一段折成一格「过程」，顺序不动。 */
+export function laneTaskDigest(task: LaneTask): LaneDigestRow[] {
+  const result = laneTaskResult(task);
+  const rows: LaneDigestRow[] = [];
+  for (const item of task.items) {
+    const process = item.who === "agent" && item !== result;
+    const last = rows.at(-1);
+    if (process && last !== undefined && last.kind === "process") last.items.push(item);
+    else rows.push(process ? { kind: "process", key: `p${item.key}`, items: [item] } : { kind: "item", item });
+  }
+  return rows;
+}
+
+/** 折起来那格露的一行预览：最后一条的第一行，截短 */
+export function laneItemPreview(item: LaneTaskItem, nameOf: (agentId: string) => string): string {
+  if (item.handoff !== undefined) return `下发给 ${item.handoff.toAgentIds.map(nameOf).join("、")}`;
+  return titleOf(item.text);
+}
+
 /** 这条车道此刻有没有人还欠一个回答（最后一条任务「代办中」的判据），与云会话状态行同一份 */
 export function laneBusy(events: readonly SessionEvent[]): boolean {
   return openTurns(events).length > 0;
