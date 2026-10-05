@@ -56,7 +56,7 @@ app_room_data     room_id → app_rooms (cascade) · key text (1–200) · value
 app_room_pings    id bigserial · room_id · from_uid · text（1–80）· created_at
 ```
 
-- **成员判据**一个函数：`is_room_member(room uuid) → bool`，只看 `status = 'joined'`、只问当前登录的人（`auth.uid()`，不带 uid 参数，所以拿它探不了别人在哪间房）；**房间关了照样算成员、照样能读**，关房后的写由各 RPC 自己拦（「这一局已经结束了」）。security definer、`stable`，各条 RLS 都调它，判据只有一处。broadcast 那一侧同形：`room_topic_member(topic text)`。
+- **成员判据**一个函数：`is_room_member(room uuid) → bool`，只看 `status = 'joined'`、只问当前登录的人（`auth.uid()`，不带 uid 参数，所以拿它探不了别人在哪间房）；**房间关了照样算成员、照样能读**，关房后的写由各 RPC 自己拦（「这一局已经结束了」）。security definer、`stable`，各条 RLS 都调它，判据只有一处。broadcast 那一侧同形：`room_topic_readable(topic text)` / `room_topic_writable(topic text)`（见下）。
 - **读**：`app_rooms` / `app_room_members` 成员与被邀的人能读；`app_room_data` 只有 joined 成员能读。
 - **写只走 RPC**（表本身对 authenticated 只开 select）。每个 RPC 自己核一遍，security definer：
   - `app_room_create(app_id, title) → room`：`apps.owner_uid = auth.uid()`；版本取那个应用的 `current_version`；房主自动 joined。每人同时开着的房间 ≤ 50。
@@ -80,6 +80,7 @@ app_room_pings    id bigserial · room_id · from_uid · text（1–80）· crea
   另有一个 `AFTER UPDATE` 触发器挂在 `app_rooms` 上：`closed` 由 false 变 true 时发事件 `closed`，载荷 `{closed: true}`。
   投递由上面 `realtime.messages` 的 select 策略把关，只有 joined 成员收得到。触发器里发送失败吞掉（不回滚写入）——漏一条通知，应用回前台时重读对齐即可。
   只有 `app_room_pings` 留在 publication（runtime 用 service role 订；客户端没有它的 select 策略）。
+- **频道授权在加入（join）时评估**：Realtime 在客户端 join 频道时判一次，退房 / 关房要等客户端重新 join 或刷新 token 才生效，不是逐条消息判；写入不靠它，写永远走 RPC 并由 RPC 核成员与房间状态。
 - 个人 `app_data` 不动。
 
 **为什么写只走 RPC**：比较后再写（`if_rev`）、人数上限、好友判据、限速都要在一个事务里判；拆成「RLS + 客户端先读后写」就是竞态。
