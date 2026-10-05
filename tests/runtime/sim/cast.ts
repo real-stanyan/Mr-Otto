@@ -178,6 +178,19 @@ export const SCENARIOS: Scenario[] = [
     ],
   },
   {
+    id: "hen", title: "Hen party planning", groupTitle: "Em's hen do 💍", owner: "emily", members: ["sophie", "megan", "priya"],
+    aim: "管理员把活派给自家专员：主人让管理员叫自己的行程专员按人头算预算；朋友找主人的管理员要预算（卡）；有人问护士朋友的管理员排班（卡，接了要读真排班）；那位护士设了放行后再问一次直接答。",
+    beats: [
+      { kind: "say", who: "emily", goal: "Announce the hen party weekend Nov 6-8 in Nashville, super excited." },
+      { kind: "say", who: "emily", goal: "Ask your own assistant to get your trip-planner agent to draft a rough per-person budget for 4 people (flights, Airbnb, 2 dinners, a bar crawl) and post it.", at: ["emily"] },
+      { kind: "say", who: "priya", goal: "Ask Megan's assistant whether Megan is working on Nov 7 (you're booking dinner).", at: ["megan"] },
+      { kind: "policy", who: "megan", policy: "open" },
+      { kind: "say", who: "sophie", goal: "Ask Megan's assistant if Megan is off Oct 16-18 too, since you're thinking of visiting Chicago.", at: ["megan"] },
+      { kind: "say", who: "sophie", goal: "Ask Emily's assistant to send you the budget breakdown again but in AUD.", at: ["emily"] },
+      { kind: "say", who: "megan", goal: "Joke about Nashville and line dancing, just to the humans." },
+    ],
+  },
+  {
     id: "ignored", title: "Owner never answers", groupTitle: "Late night", owner: "jake", members: ["tyler"],
     aim: "主人不理点头卡：10 分钟过期，管理员在群里说一句；过期之后再点没用。",
     beats: [

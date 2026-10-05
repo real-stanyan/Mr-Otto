@@ -24,6 +24,8 @@ export interface ScenarioReport {
     toolCalls: Record<string, number>;
   };
   transcript: ScenarioResult["transcript"];
+  /** 每个座位每一轮：谁叫醒的、哪种轮、调了哪些刀、结果 */
+  trace: { seat: string; from: string; kind: "owner" | "grant" | "guest"; steps: string[] }[];
 }
 
 const CJK = /[一-鿿]/;
@@ -55,6 +57,7 @@ function turnsOf(log: readonly SessionEvent[]): { opening: UserMessageEvent; eve
 export function checkScenario(r: ScenarioResult, city: City, opts: { chineseOk?: string[] } = {}): ScenarioReport {
   const findings: Finding[] = [];
   const g = r.groupLog;
+  const trace: ScenarioReport["trace"] = [];
   const toolCalls: Record<string, number> = {};
   let guestTurns = 0;
   let grantTurns = 0;
@@ -69,6 +72,17 @@ export function checkScenario(r: ScenarioResult, city: City, opts: { chineseOk?:
       if (guest) guestTurns++;
       else if (grant) grantTurns++;
       else ownerTurns++;
+      const results = new Map<string, string>();
+      for (const e of t.events) if (e.type === "tool_result") results.set(e.toolCallId, `${e.status}: ${e.output.replace(/\s+/g, " ").slice(0, 140)}`);
+      trace.push({
+        seat: owner.adminName,
+        from: personaByUid.get(t.opening.fromUid ?? "")?.name ?? t.opening.fromUid ?? "?",
+        kind: guest ? "guest" : grant ? "grant" : "owner",
+        steps: t.events.flatMap((e) =>
+          e.type === "assistant_message"
+            ? (e.toolCalls ?? []).map((c) => `${e.agentId === "admin" ? "" : `[${e.agentId}] `}${c.name}(${JSON.stringify(c.args).slice(0, 90)}) → ${results.get(c.id) ?? "?"}`)
+            : []),
+      });
       for (const e of t.events) {
         if (e.type !== "assistant_message") continue;
         for (const c of e.toolCalls ?? []) {
@@ -112,6 +126,14 @@ export function checkScenario(r: ScenarioResult, city: City, opts: { chineseOk?:
     }
   }
 
+  // ④b 同一只管理员短时间内说了两句差不多的话（接力里两头各被叫醒一次）
+  const said = g.filter((e): e is Extract<SessionEvent, { type: "assistant_message" }> => e.type === "assistant_message");
+  for (let i = 1; i < said.length; i++) {
+    const a = said[i]!;
+    const prev = said.slice(Math.max(0, i - 4), i).find((b) => b.agentId === a.agentId && a.ts - b.ts < 120_000 && similar(a.content, b.content) > 0.6);
+    if (prev) findings.push({ severity: "warn", check: "同一只管理员重复说话", detail: `${personaByUid.get(seatUidOf(a.agentId ?? "") ?? "")?.adminName}：「${a.content.slice(0, 60)}」` });
+  }
+
   // ⑤ 被 @ 了没回 + 回话延迟
   const lat: number[] = [];
   let unanswered = 0;
@@ -153,5 +175,14 @@ export function checkScenario(r: ScenarioResult, city: City, opts: { chineseOk?:
       guestTurns, grantTurns, ownerTurns, toolCalls,
     },
     transcript: r.transcript,
+    trace,
   };
+}
+
+/** 两句话的字二元组重合度（粗判「是不是同一句话说了两遍」） */
+function similar(a: string, b: string): number {
+  const grams = (s: string): Set<string> => { const out = new Set<string>(); const t = s.toLowerCase().replace(/\s+/g, " "); for (let i = 0; i < t.length - 1; i++) out.add(t.slice(i, i + 2)); return out; };
+  const x = grams(a); const y = grams(b);
+  let n = 0; for (const k of x) if (y.has(k)) n++;
+  return n / Math.max(1, Math.min(x.size, y.size));
 }
