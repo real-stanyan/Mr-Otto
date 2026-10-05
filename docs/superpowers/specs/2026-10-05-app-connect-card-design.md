@@ -38,7 +38,7 @@ interface AppConnectEvent {
 
 - 过期与被顶掉在读的时候算（照 `friendPickStatus`）：发出后 **24 小时**没动 = 过期；同一会话里同一个 `catalogId` 发了新卡，旧卡算被顶掉。
 - 要登记的地方照 `friend_pick` 抄：`KNOWN_EVENT_TYPES_MAP`、`persistencePolicy`（持久化）、`agentView`（keep）、`deriveMessages`（不进模型）、`contextEstimate`、`cloudTimeline.hiddenFromCloudTimeline`、`sessionPackage`（strip）、`taskSync`、桌面 `Timeline.tsx`（不画）。
-- 新 greeting 值 `"app_connected"`（`user_message.greeting` 联合尾巴加一个）：连上后那条开场白。
+- 新 greeting 值 `"app_connected"` 与 `"app_declined"`（`user_message.greeting` 联合尾巴加两个）：连上 / 不用了之后那条开场白。
 
 ## 3. runtime
 
@@ -60,10 +60,10 @@ interface AppConnectEvent {
 
 ### 3.3 帧 `app_connect`（主人点了之后）
 
-- 上行 `{ t: "app_connect", connectId, outcome: "connected" | "dismissed" }`，下行 `{ t: "app_connect_result", connectId, ok, message? }`。`CS_PROTOCOL_VERSION` 28 → 29。
+- 上行 `{ t: "app_connect", connectId, outcome: "connected" | "dismissed" }`，下行 `{ t: "app_connect_result", connectId, ok, message? }`。`CS_PROTOCOL_VERSION` 29 → 30（写 spec 时以为是 28，main 上 #1656 已进到 29）。
 - 只有会话主人能点（同 `pickFriend` 的 `byUid !== opts.ownerUid` 闸）；卡不是开着的（已连 / 已忽略 / 过期 / 被顶掉）就拒。
 - `connected`：清 `grantsSnapshot`（否则 60 秒内下一轮还看不到新工具），写 `phase: "connected"`，再写一条 `greeting: "app_connected"` 的开场白（「主人连上了 X，接着办刚才的事」，mentions 发卡那只），`enqueue` 起一轮。这条开场白算主人亲口（`openingTraits` 的 `ownerSpoke` 放行）：只有主人点得出来，工具又不在受监督轮里给。
-- `dismissed`：写 `phase: "dismissed"`，**不起新一轮**；模型下一轮从时间线读到「主人没连 X」（`deriveMessages` 给它一句旁白）。
+- `dismissed`：写 `phase: "dismissed"`，再写一条 `greeting: "app_declined"` 的开场白（「主人没连 X，看看不用它能不能办」）并起一轮——同 connected 一条路。写计划时改的：不起轮的话这句话要么丢、要么只能当一条没人回的开场白挂着（重启补跑会把它当未答的话再跑），不如直接让智能体回一句。
 
 ## 4. 手机
 
@@ -91,7 +91,7 @@ interface AppConnectEvent {
 
 ### 4.3 桌面
 
-- 一期不画卡。云会话页给一条灰色旁白「X 请你在手机上连 Y」，结局写「已连上 Y」/「没连 Y」。
+- 一期不画（同选人卡、应用卡、任务卡：`hiddenFromCloudTimeline` 挡掉）。写计划时改的：桌面云会话页的卡片类事件一律不画，单给这一种画旁白反而不一致。
 
 ## 5. 测试
 
