@@ -9,7 +9,7 @@ import { createMemoryWikiFs } from "../../services/runtime/src/wikiFs.js";
 import { createInMemoryWikiJournal } from "../../services/runtime/src/wikiJournal.js";
 import { serializeWikiPage } from "../../src/shared/wiki.js";
 import { EventStore } from "../../src/session/store.js";
-import type { SessionEvent, ApprovalRequestEvent, AgentRelayEvent, CallRingEvent, ChatMessageEvent, UserMessageEvent } from "../../src/session/events.js";
+import type { SessionEvent, ApprovalRequestEvent, AgentRelayEvent, AssistantMessageEvent, CallRingEvent, ChatMessageEvent, UserMessageEvent } from "../../src/session/events.js";
 import { CALL_USER_TOOL_NAME, callbackAnsweredText, callbackGreetingText, RING_TTL_MS, type RingPush } from "../../src/shared/callRing.js";
 import { openTurns as openTurnsOf } from "../../src/shared/turnLedger.js";
 import type { ModelAdapter, ModelReply } from "../../src/model/adapter.js";
@@ -7840,5 +7840,55 @@ describe("消息推送（#1442）：回答推给问的人、@ 推给被点名的
       { uid: "u-hong", kind: "mention", title: "群聊", subtitle: "alice", body: "@小红 看下", target: { kind: "cloud", chat: "team", workspaceId: "w1", sessionId: "s1", agentId: "" } },
     ]);
     r.store.close();
+  });
+});
+
+// ── 通话里的应承（#1623） ─────────────────────────────────────────────
+describe("通话里主人说完一句：它想之前 runtime 先替它应一句（#1623）", () => {
+  function slowThinker(seen: unknown[][]): ModelAdapter {
+    return {
+      model: "fake-model",
+      async chat(messages): Promise<ModelReply> {
+        seen.push(messages as unknown[]);
+        return { content: "看完了，没问题。" };
+      },
+    };
+  }
+  it("通话里的人话一落盘，紧跟一条 ack 的 assistant_message（在 turn_start 之前）；模型不读它；两句不一样", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const seen: unknown[][] = [];
+    const session = createCloudSession({ ...baseOpts(store, events, slowThinker(seen)), wiki: testWiki() });
+    expect(await session.setVoiceCall("u1", "alice", ["default"])).toEqual({ kind: "ok" });
+    await session.settled();
+    await session.say("u1", "alice", "帮我看看仓库", true, ["default"], undefined, undefined, true);
+    await session.settled();
+    await session.say("u1", "alice", "再看看账", true, ["default"], undefined, undefined, true);
+    await session.settled();
+    const log = store.load("s1");
+    const acks = log.filter((e): e is AssistantMessageEvent => e.type === "assistant_message" && e.ack === true);
+    expect(acks).toHaveLength(2);
+    expect(acks[0]!.content).not.toBe(acks[1]!.content);
+    const u = log.findIndex((e) => e.type === "user_message" && e.content.includes("帮我看看仓库"));
+    expect(log[u + 1]).toMatchObject({ type: "assistant_message", agentId: "default", ack: true });
+    for (const m of seen) expect(JSON.stringify(m)).not.toContain(acks[0]!.content);
+    expect(JSON.stringify(seen.at(-1))).not.toContain(acks[1]!.content);
+    store.close();
+  });
+  it("打字的 / 不在通话里 / 接力与开场白：不补", async () => {
+    const store = newStore();
+    const session = createCloudSession({ ...baseOpts(store, [], slowThinker([])), wiki: testWiki() });
+    await session.setVoiceCall("u1", "alice", ["default"]);
+    await session.settled();
+    await session.say("u1", "alice", "打字说一句", true, ["default"]);
+    await session.settled();
+    expect(store.load("s1").some((e) => e.type === "assistant_message" && (e as AssistantMessageEvent).ack === true)).toBe(false);
+    store.close();
+    const store2 = newStore();
+    const s2 = createCloudSession({ ...baseOpts(store2, [], slowThinker([])), wiki: testWiki() });
+    await s2.say("u1", "alice", "没在通话里", true, ["default"], undefined, undefined, true);
+    await s2.settled();
+    expect(store2.load("s1").some((e) => e.type === "assistant_message" && (e as AssistantMessageEvent).ack === true)).toBe(false);
+    store2.close();
   });
 });

@@ -28,6 +28,9 @@ describe("delegationRolePrompt", () => {
     expect(s).toContain("指定的代办智能体：助手");
     expect(s).not.toContain("：管理员");
     expect(s).toContain("别替 小明 答应任何事");
+    // #1620：先分清聊天还是交办
+    expect(s).toContain("先分清是**聊天**还是**交办**");
+    expect(s).toContain("不问要办什么、不派活、不记代办");
     // #1614：客人的「他」默认是主人；待客分寸
     expect(s).toContain("小红 嘴里的「他 / 她 / 你主人 / 他本人」默认就是 小明");
     expect(s).toContain("不许说「说人话」");

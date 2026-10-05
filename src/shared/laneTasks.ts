@@ -37,7 +37,9 @@ function titleOf(text: string): string {
 /** 同一个人在这么久以内接着说的话归到他上一条任务里（真机 2026-10-05：「他不在线，你去给他打电话」「你可以给他打电话的」各自成了一条卡）。
     换一个人说、或隔久了、或上一条是智能体自己起的，才开新的一条。电话也算他的上一条（#1613：打给对面管理员的电话与
     电话里说的那句成了两张卡）；通话中的人话一律归到电话那条，不看是谁 */
-export const LANE_TASK_GAP_MS = 30 * 60_000;
+// 3 分钟不是 30 分钟（#1626，真机 2026-10-05 12:12）：半小时的窗口把「@雨姐」折进了上面那张派过店铺管家的旧卡，
+// 卡钉在任务开始的时间点，新来的一问一答藏在屏幕上方——主人以为没反应。这个窗口是给几秒内的连续追问定的
+export const LANE_TASK_GAP_MS = 3 * 60_000;
 
 /** 把一条车道的日志折成任务。`selfUid` 判「我 / 朋友」；`nameOf` 给电话那条任务起标题（参与的智能体叫什么） */
 export function laneTasksOf(events: readonly SessionEvent[], selfUid: string | undefined, nameOf: (agentId: string) => string = (id) => id): LaneTask[] {
@@ -138,6 +140,17 @@ export function laneItemPreview(item: LaneTaskItem, nameOf: (agentId: string) =>
 /** 这条车道此刻有没有人还欠一个回答（最后一条任务「代办中」的判据），与云会话状态行同一份 */
 export function laneBusy(events: readonly SessionEvent[]): boolean {
   return openTurns(events).length > 0;
+}
+
+/** 主页上这条任务长什么样（#1620，真机 2026-10-05：「@雨姐 你说对吗」出了一张代办卡）：
+    一只智能体答、没有下发（没派活）、不是电话 = **聊天**，主页按气泡铺开，像群里的一个人插话；
+    派了活 / 牵涉多只 / 电话 = **代办**，主页一张卡、过程在抽屉。纯投影，日志不动 */
+export type LaneTaskShape = "chat" | "task";
+export function laneTaskShape(task: LaneTask): LaneTaskShape {
+  if (task.kind !== "message") return "task";
+  if (task.agentIds.length > 1) return "task";
+  if (task.items.some((i) => i.handoff !== undefined)) return "task";
+  return "chat";
 }
 
 export type LaneTaskStatus = "working" | "replied" | "waiting";

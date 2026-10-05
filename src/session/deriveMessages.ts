@@ -895,6 +895,8 @@ export function deriveMessages(
       }
 
       case "assistant_message":
+        // 通话里的应承（#1623）：runtime 在它想之前替它说的，不是模型的输出，不进上下文
+        if (event.ack === true) break;
         // 上一组若没答完就到此为止（中断后的下一轮）：先把攒着的用户消息放出来，
         // 别让它们隔着新组越攒越远
         flushDeferred();
