@@ -71,7 +71,7 @@ export function createCreateAgentTool(deps: {
               required: ["serverId", "tools"],
             },
           },
-          domain: { type: "string", description: "职责域：清单里的键（travel / writing / support / ops / dev / finance / life / research / design / schedule）或 custom:名字（≤12 字）" },
+          domain: { type: "string", description: `职责域：清单里的键（${DOMAIN_CATALOG.map((d) => d.key).join(" / ")}）或 custom:名字（≤12 字）` },
           tier: { type: "number", description: "1 = 专员（默认）；2 = 子工（要带 parentAgentId）" },
           parentAgentId: { type: "string", description: "子工的上级专员的 agentId" },
         },
