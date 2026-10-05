@@ -381,7 +381,8 @@ export function relayBoundsOf(events: readonly SessionEvent[]): RelayBounds {
     转述）。空回复在时间线上本来就不画（cloudTimeline.isAgentStep），只是开场白从没说过可以 */
 export function relayOpeningText(fromName: string, toName: string, depth: number): string {
   const from = promptSafe(fromName), to = promptSafe(toName);
-  return `[系统] 「${from}」在上一条发言里 @ 了「${to}」（接力第 ${depth} 棒）。${to}：交给你的事接着做；有结论再说，没要补的就不用回，需要谁再 @ 谁。`;
+  // #1683 模拟：英文私聊里被 @ 的专员跟着这句系统话回了一大段中文、管理员回了一句「（无补充）」——两件事都在这里说死
+  return `[系统] 「${from}」在上一条发言里 @ 了「${to}」（接力第 ${depth} 棒）。${to}：交给你的事接着做；有结论再说，没要补的就不用回（什么都别输出，也别写无补充这类占位），需要谁再 @ 谁。说话用主人的语言——这句系统话是中文，不代表要说中文。`;
 }
 
 export function relayNudgeText(fromName: string, toName: string, loop: ToolLoopDetection): string {

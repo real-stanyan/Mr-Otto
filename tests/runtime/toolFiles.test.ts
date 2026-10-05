@@ -99,6 +99,17 @@ describe("工具交出去的文件（toolFiles 中间件）", () => {
     expect(recent.get(`sha256:${hex}`)?.name).toBe("../x/报价单.pdf");
   });
 
+  it("这条对话里已经交出过同一份（同一个 sha256）：不再传、不再出卡，回执说「上面那份就是」", async () => {
+    const uploads: string[] = [];
+    const data = new TextEncoder().encode("%PDF-1.4 same");
+    const seen = new Set([`sha256:${hexOf(data)}`]);
+    const mw = createToolFileIntakeMiddleware({ upload: async (b, p) => void uploads.push(`${b}:${p}`) }, { workspaceId: WS, sessionId: SID }, undefined, (id) => seen.has(id));
+    const out = await mw(ctx, ok([{ data, mimeType: PDF, name: "deck.pdf" }]));
+    expect(uploads).toEqual([]);
+    expect(out.fileRefs).toBeUndefined();
+    expect(out.output).toContain("上面那份就是");
+  });
+
   it("传不上去 / 格式不收：跳过，output 末尾补一句实话", async () => {
     const mw = createToolFileIntakeMiddleware({ upload: async () => { throw new Error("网断了"); } }, { workspaceId: WS, sessionId: SID });
     const out = await mw(ctx, ok([{ data: new Uint8Array([1]), mimeType: PDF, name: "a.pdf" }, { data: new Uint8Array([1]), mimeType: "application/zip", name: "a.zip" }]));

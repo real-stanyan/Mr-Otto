@@ -480,6 +480,14 @@ export async function createCity(o: { edgeBase: string; runtimeSecret: string; p
     }
     if (e.type === "user_message") {
       if (e.mirror !== undefined || e.relay !== undefined && where.includes("座位")) return null;
+      // 接力的系统话、对面管理员的回话（带 relay）不是人说的：系统话算 system，对面管理员按它的名字算智能体（#1683：
+      // 原来算成人话，英文私聊里一串中文系统话把「这是英文对话」的判断冲掉了，专员冒中文没被查出来）
+      if (e.relay !== undefined || /^\[系统\]/.test(e.content)) {
+        const p = /^\[([^\]]+)\]:\s*/.exec(e.content);
+        return p !== null && p[1] !== "系统"
+          ? { kind: "agent", where, who: p[1]!, text: e.content.slice(p[0].length), ts: e.ts }
+          : { kind: "system", where, who: "system", text: e.content.slice(0, 200), ts: e.ts };
+      }
       if (e.greeting !== undefined) return { kind: "system", where, who: `[${e.greeting}]`, text: e.content.slice(0, 400), ts: e.ts };
       return { kind: "human", where, who: nameOf(e.fromUid ?? ""), text: e.content.replace(/^\[[^\]]*\]:\s*/, "") + att(e.files), ts: e.ts };
     }

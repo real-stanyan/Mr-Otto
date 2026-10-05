@@ -2612,7 +2612,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 交给人的文件（#1683）同一个口子：传进 chat-media，engine 把 ref 落进 tool_result.files
       middlewares: toolImages === null ? [] : [
         createToolImageIntakeMiddleware(toolImages, { workspaceId: opts.workspaceId, sessionId }),
-        createToolFileIntakeMiddleware({ upload: toolImages.upload, ...(toolImages.log !== undefined ? { log: toolImages.log } : {}) }, { workspaceId: opts.workspaceId, sessionId }, recentFiles),
+        createToolFileIntakeMiddleware(
+          { upload: toolImages.upload, ...(toolImages.log !== undefined ? { log: toolImages.log } : {}) },
+          { workspaceId: opts.workspaceId, sessionId },
+          recentFiles,
+          (id) => store.load(sessionId).some((e) => e.type === "tool_result" && e.status === "ok" && (e.files ?? []).some((f) => f.id === id)),
+        ),
       ],
       // 自动压缩（#957 A-1，ADR-0062）。桌面在 src/main/agent.ts 里一直有这一格，
       // runtime 从头到尾没有——于是云会话的上下文**单调增长**，直到每一轮都因超窗

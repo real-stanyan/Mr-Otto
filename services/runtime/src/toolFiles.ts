@@ -81,15 +81,23 @@ export function createToolFileIntakeMiddleware(
   port: ToolFilesPort,
   where: { workspaceId: string; sessionId: string },
   recent?: RecentFiles,
+  /** 这条对话里已经交出过这份（同一个 sha256）了吗（#1683 模拟：专员做好的 PPT 已经在聊天里，管理员又 send_file 一遍，
+      同一份卡片出现三次）。缺席 = 不查 */
+  delivered?: (id: string) => boolean,
 ): ToolMiddleware {
   return async (ctx, next) => {
     const outcome = await next();
     if (outcome.status !== "ok") return outcome;
-    const files = outcome.files ?? [];
-    if (files.length === 0) return outcome;
-    const refs = await publishToolFiles(port, where.workspaceId, where.sessionId, files, recent);
+    const all = outcome.files ?? [];
+    if (all.length === 0) return outcome;
+    const idOf = (f: ToolFile): string => `sha256:${createHash("sha256").update(f.data).digest("hex")}`;
+    const files = delivered === undefined ? all : all.filter((f) => !delivered(idOf(f)));
+    const dup = all.length - files.length;
+    const refs = files.length === 0 ? [] : await publishToolFiles(port, where.workspaceId, where.sessionId, files, recent);
     const lost = files.length - refs.length;
-    const output = lost > 0 ? `${outcome.output}\n（注意：有 ${lost} 份文件没能发到聊天里——网络或格式问题。跟用户说实话，文件还在工作区里。）` : outcome.output;
+    let output = outcome.output;
+    if (dup > 0) output += "\n（这份文件聊天里已经有了，没再发一遍——跟用户说「上面那份就是」，别再发。）";
+    if (lost > 0) output += `\n（注意：有 ${lost} 份文件没能发到聊天里——网络或格式问题。跟用户说实话，文件还在工作区里。）`;
     return { ...outcome, output, ...(refs.length > 0 ? { fileRefs: refs } : {}) };
   };
 }
