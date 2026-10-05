@@ -15,8 +15,10 @@ export interface CollabToolDeps {
   tasks: () => ReadonlyMap<string, TaskRow>;
   /** 这条任务点起之前主人最近的那句原话（去掉 `[名字]: ` 前缀）；取不到回空串 */
   ownerLineBefore: (taskId: string) => string;
-  /** 落 collab_request（本地一份 + 送到对面）；回拒绝的那句话或 null */
+  /** 先送到对面、送到了再落本地一份；回拒绝的那句话或 null */
   request: (o: { task: TaskRow; note: string; ownerLine: string; result: string }) => Promise<string | null>;
+  /** 等点头的那条再送一次（对面按 requestId 去重；修好之前没送到的那条靠它补上）；回拒绝的那句话或 null */
+  redeliver: (requestId: string) => Promise<string | null>;
 }
 
 export function createCollabTool(deps: CollabToolDeps): Tool {
@@ -48,10 +50,16 @@ export function createCollabTool(deps: CollabToolDeps): Tool {
       if (note.length > COLLAB_NOTE_MAX) throw new Error(`note 最多 ${COLLAB_NOTE_MAX} 字`);
       const peer = deps.peer();
       const st = task.collaborator?.uid === peer.uid ? task.collaborator.state : undefined;
-      if (st === "pending") return `「${task.title}」已经交给${peer.name}的管理员了，等 ${peer.name} 点头，别重复发。`;
+      if (st === "pending") {
+        const rid = task.collaborator?.requestId;
+        const again = rid === undefined ? null : await deps.redeliver(rid);
+        if (again !== null) throw new Error(`没送到：${again}。告诉主人没送到、为什么，别说已经交给了。`);
+        return `「${task.title}」已经交给${peer.name}的管理员了（又确认送达了一次），等 ${peer.name} 点头，别重复发。`;
+      }
       if (st === "accepted") return `${peer.name}的管理员已经在办「${task.title}」了，等它回话就行。`;
       const refused = await deps.request({ task, note, ownerLine: deps.ownerLineBefore(task.id), result: task.summary ?? "" });
-      if (refused !== null) throw new Error(refused);
+      // 真机 2026-10-05：工具报了错，管理员照样说「交给了」——错误那句把该怎么说写死
+      if (refused !== null) throw new Error(`没送到：${refused}。告诉主人没送到、为什么，别说已经交给了。`);
       return `已把「${task.title}」交给${peer.name}的管理员，等 ${peer.name} 点头（24 小时没回算失败）；它答了会落在这条对话里。` +
         `告诉主人「已交给 ${peer.name} 的管理员，等那边回」，别说成已经在办。`;
     },

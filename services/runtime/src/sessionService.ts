@@ -1828,16 +1828,33 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
             request: async ({ task, note, ownerLine, result }) => {
               if (archived) return "这条会话已经收尾了";
               const requestId = `r_${randomUUID().slice(0, 8)}`;
-              // 先 task_collab 再 collab_request：重放时 foldTask 要先见到协作者那一格，请求才记得上 pending
-              notify(store.append({ sessionId, ts: Date.now(), type: "task_collab", taskId: task.id, withUid: pairFacts.peerUid, withName: pairFacts.peerName, byAgentId: spec.agentId, ignorable: true }));
-              const event = store.append({
-                sessionId, ts: Date.now(), type: "collab_request", requestId, taskId: task.id, title: task.title,
+              const draft: CollabRequestEvent = {
+                sessionId, seq: 0, ts: Date.now(), type: "collab_request", requestId, taskId: task.id, title: task.title,
                 fromUid: opts.ownerUid, fromAgentName: specNames.get(spec.agentId) ?? spec.name,
                 quote: { ownerName: pairFacts.ownerName, ownerLine, note }, result: result.slice(0, 500), expiresTs: Date.now() + COLLAB_EXPIRE_MS,
                 byAgentId: spec.agentId, ignorable: true,
-              }) as CollabRequestEvent;
-              notify(event);
-              return adminsBridge.deliverRequest({ ownerUid: opts.ownerUid, peerUid: pairFacts.peerUid, event, origin: { workspaceId: opts.workspaceId, sessionId } });
+              };
+              // **先送达、再落本地**（真机 2026-10-05：对面建车道撞了约束，这边却已经落了请求，任务卡写着「等 TA 点头」）。
+              // 送不到 = 这边一个字不落，回那句话
+              const refused = await adminsBridge
+                .deliverRequest({ ownerUid: opts.ownerUid, peerUid: pairFacts.peerUid, event: draft, origin: { workspaceId: opts.workspaceId, sessionId } })
+                .catch((err: unknown) => {
+                  console.warn(`[otto-runtime] 协作请求送不过去（session=${sessionId}）：${err instanceof Error ? err.message : String(err)}`);
+                  return "对面那边这会儿接不住，稍后再试";
+                });
+              if (refused !== null) return refused;
+              // 先 task_collab 再 collab_request：重放时 foldTask 要先见到协作者那一格，请求才记得上 pending
+              notify(store.append({ sessionId, ts: Date.now(), type: "task_collab", taskId: task.id, withUid: pairFacts.peerUid, withName: pairFacts.peerName, byAgentId: spec.agentId, ignorable: true }));
+              const { seq: _seq, ...rest } = draft;
+              notify(store.append({ ...rest, ts: Date.now() }));
+              return null;
+            },
+            redeliver: async (requestId) => {
+              const e = store.load(sessionId).find((x): x is CollabRequestEvent => x.type === "collab_request" && x.requestId === requestId);
+              if (e === undefined) return "找不到那条请求";
+              return adminsBridge
+                .deliverRequest({ ownerUid: opts.ownerUid, peerUid: pairFacts.peerUid, event: e, origin: { workspaceId: opts.workspaceId, sessionId } })
+                .catch(() => "对面那边这会儿接不住，稍后再试");
             },
           });
     const engine = new LoopEngine({
