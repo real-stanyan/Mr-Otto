@@ -18,6 +18,7 @@ import { createInMemoryMentionInbox } from "../../services/runtime/src/mentionIn
 import { createWorkspaceLock } from "../../services/runtime/src/workspaceLock.js";
 import { createInMemoryCloudSessionMeta } from "../../services/runtime/src/cloudSessionMeta.js";
 import { taskFoldOf } from "../../src/shared/tasks.js";
+import { createInMemoryAppStore } from "../../services/runtime/src/appStore.js";
 
 const fakeWorld: ExecutionWorld = {
   fs: { read: async (path) => `<content of ${path}>`, write: async () => {} },
@@ -29,8 +30,9 @@ const ADMIN = { agentId: "admin", name: "管理员", description: "", instructio
 const TRAVEL = { agentId: "a_travel", name: "出行", description: "管出行", instructions: "", models: ["m"], tools: [] as AgentToolAllow[], tier: 1 as AgentTier, domain: "travel" };
 const DEV = { agentId: "a_dev", name: "码农", description: "写代码", instructions: "", models: ["m"], tools: [] as AgentToolAllow[], tier: 1 as AgentTier, domain: "dev" };
 const BOOK = { agentId: "a_book", name: "订票员", description: "", instructions: "", models: ["m"], tools: [] as AgentToolAllow[], tier: 2 as AgentTier, domain: "travel", parentAgentId: "a_travel" };
-const TEAM = [ADMIN, TRAVEL, DEV, BOOK];
-type Spec = typeof ADMIN | typeof TRAVEL | typeof DEV | typeof BOOK;
+const APPS = { agentId: "a_apps", name: "应用专员", description: "做应用", instructions: "", models: ["m"], tools: [] as AgentToolAllow[], tier: 1 as AgentTier, domain: "apps" };
+const TEAM = [ADMIN, TRAVEL, DEV, BOOK, APPS];
+type Spec = typeof ADMIN | typeof TRAVEL | typeof DEV | typeof BOOK | typeof APPS;
 
 function newStore(): EventStore {
   return new EventStore(join(tempDir("mrotto-runtime-tiers-"), "session.db"));
@@ -51,6 +53,8 @@ function open(store: EventStore, o: {
   events?: SessionEvent[];
   onRosterChanged?: CloudSessionOpts["onRosterChanged"];
   meta?: ReturnType<typeof createInMemoryCloudSessionMeta>;
+  /** build_app（#1591）要的两样：接了 git（execInWorkspace）+ apps（表 + 上传） */
+  apps?: CloudSessionOpts["apps"];
 }): CloudSession {
   const home = o.home ?? true;
   store.append({ sessionId: "s1", ts: 1, type: "session_created", workspace: "/work", cloud: { workspaceId: "w1", chat: { kind: o.kind ?? "group" }, ...(home ? { home: true } : {}) } });
@@ -85,6 +89,17 @@ function open(store: EventStore, o: {
     sandboxApproval: async () => "ask",
     workspaceLock: createWorkspaceLock(),
     relayRemainingMicro: async () => null,
+    ...(o.apps === undefined ? {} : {
+      apps: o.apps,
+      git: {
+        tokenFor: () => null,
+        execInWorkspace: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+        execInSidecar: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+        clone: async () => ({ ok: true }),
+        sanitize: (t) => t,
+        githubApi: async () => ({ status: 201, json: {} }),
+      },
+    }),
   });
 }
 
@@ -144,5 +159,38 @@ describe("主场里任务那三把刀", () => {
     await session.settled();
     expect(tools["a_travel"]).not.toContain("create_task");
     store.close();
+  });
+});
+
+describe("build_app（#1591）挂给谁", () => {
+  const appsOpts = (): CloudSessionOpts["apps"] => ({ store: createInMemoryAppStore(), upload: async () => {} });
+  it("主场里：管理员与 apps 域的专员有；出行没有", async () => {
+    const store = newStore();
+    const tools: Record<string, string[]> = {};
+    const session = open(store, {
+      roster: ["admin", "a_travel", "a_apps"], apps: appsOpts(),
+      reply: (id, names) => { tools[id] = names; return { content: "好" }; },
+    });
+    await session.say("owner", "Stan", "@管理员 @出行 @应用专员 都来", true, ["admin", "a_travel", "a_apps"]);
+    await session.settled();
+    expect(tools["admin"]).toContain("build_app");
+    expect(tools["a_apps"]).toContain("build_app");
+    expect(tools["a_travel"]).not.toContain("build_app");
+    store.close();
+  });
+  it("没接 apps（探针 / 旧装配）或团队会话：谁都没有", async () => {
+    const store = newStore();
+    const tools: Record<string, string[]> = {};
+    const s1 = open(store, { roster: ["admin", "a_apps"], reply: (id, names) => { tools[id] = names; return { content: "好" }; } });
+    await s1.say("owner", "Stan", "@应用专员 来", true, ["a_apps"]);
+    await s1.settled();
+    expect(tools["a_apps"]).not.toContain("build_app");
+    store.close();
+    const store2 = newStore();
+    const s2 = open(store2, { roster: ["a_apps"], home: false, apps: appsOpts(), reply: (id, names) => { tools[id] = names; return { content: "好" }; } });
+    await s2.say("owner", "Stan", "@应用专员 来", true, ["a_apps"]);
+    await s2.settled();
+    expect(tools["a_apps"]).not.toContain("build_app");
+    store2.close();
   });
 });

@@ -75,6 +75,7 @@ export const PEN_VERDICTS: Record<SessionEvent["type"], PenVerdict> = {
   task_done: "executor",
   task_failed: "executor",
   task_collab: "executor",
+  app_card: "executor",
   outreach: "executor",
   friend_pick: "executor",
   memory_loaded: "executor",

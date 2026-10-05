@@ -17,6 +17,8 @@ export const DOMAIN_CATALOG = [
   { key: "research", label: "调研" },
   { key: "design", label: "设计" },
   { key: "schedule", label: "日程" },
+  /** Otto 应用的专员（#1591，spec §8 第 2 条）：写小网页、调 build_app */
+  { key: "apps", label: "应用" },
 ] as const;
 
 export type CatalogDomain = (typeof DOMAIN_CATALOG)[number]["key"];
@@ -100,6 +102,8 @@ const CATALOG_FACE: Readonly<Record<CatalogDomain, DomainFace>> = {
   research: { tools: READ_TOOLS, connectors: true },
   design: { tools: RW, connectors: true },
   schedule: { tools: READ_TOOLS, connectors: true },
+  // 写文件、跑命令都要（在沙箱里写应用、打包）；不碰连接器——应用的数据走它自己的格子
+  apps: { tools: ALL, connectors: false },
 };
 
 /** 这个域默认的工具面（spec §2.2）：管理员全部；清单里的按上表；自定义域**只读 + 不碰连接器**——主人自己加。
