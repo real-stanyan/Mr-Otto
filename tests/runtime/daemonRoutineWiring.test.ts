@@ -22,9 +22,9 @@ describe("daemon.ts：定时任务的接线（#1283）", () => {
   it("到点先验主人（现查 workspaceFacts，不是主场回 null）、找私聊走 findDmSession、开房走 openOriginRoom（开着就用、归档回 null）", () => {
     expect(src).toMatch(/const routineRooms = \{[\s\S]*homeOwnerOf: async \(w: string\) => \{\s*const f = await workspaceFacts\(w\);\s*return f\.kind === "home" \? f\.ownerUid : null;\s*\},[\s\S]*findDm: \(w: string, a: string\) => findDmSession\(w, \[a\]\),[\s\S]*openOriginRoom<CloudSession>\(/);
   });
-  it("openOriginRoom 的 row 回调只有一份（sessionRowOf），外联与定时任务共用", () => {
+  it("openOriginRoom 的 row 回调只有一份（sessionRowOf），外联、定时任务与改设置的车道朝向（#1621）共用", () => {
     expect(src.match(/async function sessionRowOf\(/g)).toHaveLength(1);
-    expect(src.match(/row: sessionRowOf,/g)).toHaveLength(2);
+    expect(src.match(/row: sessionRowOf,/g)).toHaveLength(3);
     expect(src.match(/select\("workspace_id,publisher_uid,archived"\)/g)).toHaveLength(1);
   });
 });
