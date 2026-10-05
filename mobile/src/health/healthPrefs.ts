@@ -1,9 +1,11 @@
 // Apple 健康开关（#1656，spec §2.1）：默认关，存在这台手机的 kv-store（同外观偏好——属于这台手机，不跟账号走）。
 // 打开 = 先弹 iOS 的 HealthKit 授权页，再向云端声明「这台能读健康」（cloudClient 订阅这里的变化重发 caps）。
-// iOS 不告诉 App 哪几类被拒了：授权页点了「不允许」开关照样是开的，只是读出来是空——设置页的说明写清去哪改。
+// iOS 不告诉 App 哪几类被拒了：授权页点了「不允许」开关照样是开的，只是读出来是空——详情页的说明写清去哪改。
+// 入口在「应用」页（#1671：健康是「手机上接的」第一行 + 目录「这台手机」一类），设置页那个开关撤了。
 import AsyncStorage from "expo-sqlite/kv-store";
 import { useSyncExternalStore } from "react";
 import type { HealthQuery } from "../../../src/shared/health.js";
+import type { HealthAppState } from "../../../src/shared/mobileHealthApp.js";
 import { OttoHealth } from "../../modules/otto-health/index.js";
 import { createStore } from "../externalStore.js";
 
@@ -21,6 +23,13 @@ export function healthEnabled(): boolean {
 
 export function useHealthEnabled(): boolean {
   return useSyncExternalStore(store.subscribe, () => store.get().on);
+}
+
+/** 「应用」页 / 目录里那一行该画成哪样（#1671）：设备读不了健康时不论开关一律灰掉 */
+export function useHealthAppState(): HealthAppState {
+  const on = useHealthEnabled();
+  if (!healthAvailable()) return "unavailable";
+  return on ? "on" : "off";
 }
 
 /** 开关变了（cloudClient 用它重发 caps）。不回退订：订阅方是模块顶层，活到进程结束 */
