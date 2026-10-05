@@ -166,7 +166,7 @@
 //      于是那条 turn 的回复广播给了一间已经关掉的房间（钱照付、人收不到）。
 
 import { applyVoiceCallEvent, inVoiceCall, relayOutsideCallText, voiceCallGreetingText, voiceCallOf, type VoiceCallState } from "../../../src/shared/voiceCall.js";
-import { applyChatRosterEvent, chatHumansOf, chatRosterOf, narrowRoster, type ChatHuman, type ChatRoster } from "../../../src/shared/chatRoster.js";
+import { applyChatRosterEvent, CHAT_GROUP_MAX, chatHumansOf, chatRosterOf, narrowRoster, type ChatHuman, type ChatRoster } from "../../../src/shared/chatRoster.js";
 import { cutSpeakerLeak, SYSTEM_SPEAKER_NAME } from "../../../src/shared/speakerLeak.js";
 import type { CsChatInfo } from "../../../src/shared/remote/cloudSession.js";
 import { createInviteToCallTool } from "./inviteToCallTool.js";
@@ -762,7 +762,7 @@ export interface CloudSession {
 
 export type ChatUpdateOutcome =
   | { kind: "ok"; agentIds: string[]; humans: ChatHuman[]; changed: boolean }
-  | { kind: "not_group" | "unknown_agent" | "degraded"; message: string };
+  | { kind: "not_group" | "unknown_agent" | "degraded" | "too_many"; message: string };
 
 export type VoiceCallOutcome = { kind: "ok" } | { kind: "unknown_agent" | "archived"; message: string };
 
@@ -3469,6 +3469,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         return { kind: "unknown_agent", message: `有 ${missing} 只智能体已经不在了（名单可能刚变过，刷新再试）` };
       }
       const next = members.map((a) => a.agentId);
+      // 上限同 group（#1606）：管理员私聊的 bring_agent 没有别的闸，超了 0064 的约束照样拒写投影——日志与列表就此分叉
+      if (next.length > CHAT_GROUP_MAX && next.length > current.length) {
+        return { kind: "too_many", message: `一条对话最多 ${CHAT_GROUP_MAX} 只智能体` };
+      }
       const humansBefore = chatHumans ?? [];
       const humansNext = patch.humans === undefined ? [...humansBefore] : patch.humans.map((h) => ({ uid: h.uid, name: h.name }));
       const sameAgents = current.length === next.length && next.every((id) => current.includes(id));

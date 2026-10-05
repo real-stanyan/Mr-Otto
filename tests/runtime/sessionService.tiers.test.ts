@@ -17,6 +17,7 @@ import type { ModelAdapter, ModelReply } from "../../src/model/adapter.js";
 import type { ExecutionWorld } from "../../src/world/executionWorld.js";
 import type { PxCallDeps } from "../../services/runtime/src/pxTools.js";
 import type { AgentToolAllow } from "../../src/shared/agentToolAllow.js";
+import { CHAT_GROUP_MAX } from "../../src/shared/chatRoster.js";
 import type { AgentTier } from "../../src/shared/agentTier.js";
 import { tempDir } from "../helpers/tempDir.js";
 import { createInMemoryAgentWriter } from "../../services/runtime/src/agentRegistry.js";
@@ -60,7 +61,7 @@ function open(store: EventStore, o: {
   store.append({ sessionId: "s1", ts: 1, type: "session_created", workspace: "/work", cloud: { workspaceId: "w1", chat: { kind: o.kind ?? "group" }, ...(home ? { home: true } : {}) } });
   store.append({
     sessionId: "s1", ts: 2, type: "chat_roster_changed", ignorable: true,
-    agents: o.roster.map((id) => ({ agentId: id, name: TEAM.find((a) => a.agentId === id)!.name })),
+    agents: o.roster.map((id) => ({ agentId: id, name: (o.team ?? TEAM).find((a) => a.agentId === id)!.name })),
     ...(o.humans ? { humans: o.humans } : {}),
   });
   const team = o.team ?? TEAM;
@@ -254,6 +255,29 @@ describe("bring_agent / dismiss_agent", () => {
     await session.settled();
     expect(session.chat()?.agentIds).toEqual(["admin"]);
     expect(written.at(-1)).toEqual(["admin"]);
+    store.close();
+  });
+  it("管理员私聊满 CHAT_GROUP_MAX 只：再拉回一句、名单不动（超了 0064 的约束写不进投影，#1606）", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const extra = Array.from({ length: CHAT_GROUP_MAX }, (_, i) => ({ ...TRAVEL, agentId: `a_x${i}`, name: `专员${i}`, domain: `d${i}` }));
+    const team = [ADMIN, ...extra];
+    const full = team.slice(0, CHAT_GROUP_MAX).map((a) => a.agentId);
+    let step = 0;
+    const session = open(store, {
+      roster: full, kind: "dm", team, events,
+      reply: (id) => {
+        if (id !== "admin") return { content: "好" };
+        step++;
+        if (step === 1) return { content: "", toolCalls: [{ id: "t1", name: "bring_agent", args: { name: extra.at(-1)!.name } }] };
+        return { content: "好" };
+      },
+    });
+    await session.say("owner", "Stan", "再来一只", false, undefined);
+    await session.settled();
+    const results = events.filter((e) => e.type === "tool_result").map((e) => (e.type === "tool_result" ? e.output : ""));
+    expect(results[0]).toContain(`最多 ${CHAT_GROUP_MAX} 只`);
+    expect(session.chat()?.agentIds).toEqual(full);
     store.close();
   });
   it("不能拉子工；拉已经在场的只回一句", async () => {
