@@ -130,7 +130,7 @@ export function checkScenario(r: ScenarioResult, city: City, opts: { chineseOk?:
   const said = g.filter((e): e is Extract<SessionEvent, { type: "assistant_message" }> => e.type === "assistant_message");
   for (let i = 1; i < said.length; i++) {
     const a = said[i]!;
-    const prev = said.slice(Math.max(0, i - 4), i).find((b) => b.agentId === a.agentId && a.ts - b.ts < 120_000 && similar(a.content, b.content) > 0.6);
+    const prev = said.slice(Math.max(0, i - 4), i).find((b) => b.agentId === a.agentId && a.ts - b.ts < 120_000 && similar(a.content, b.content) > 0.5);
     if (prev) findings.push({ severity: "warn", check: "同一只管理员重复说话", detail: `${personaByUid.get(seatUidOf(a.agentId ?? "") ?? "")?.adminName}：「${a.content.slice(0, 60)}」` });
   }
 
@@ -184,5 +184,5 @@ function similar(a: string, b: string): number {
   const grams = (s: string): Set<string> => { const out = new Set<string>(); const t = s.toLowerCase().replace(/\s+/g, " "); for (let i = 0; i < t.length - 1; i++) out.add(t.slice(i, i + 2)); return out; };
   const x = grams(a); const y = grams(b);
   let n = 0; for (const k of x) if (y.has(k)) n++;
-  return n / Math.max(1, Math.min(x.size, y.size));
+  return n / Math.max(1, x.size + y.size - n); // Jaccard：两句大半相同才算
 }
