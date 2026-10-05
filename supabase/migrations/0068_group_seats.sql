@@ -27,4 +27,9 @@ create unique index if not exists ws_sessions_one_seat_per_group
   where chat_kind = 'seat';
 
 -- 群座位里定的提醒到点回那个座位跑（管理员的话经桥回到群里），不回私聊。缺席 = 那只的私聊（改动前的口径）
+-- 定时任务多一种形状 monthly（每月几号，#1682 日常能力）：表级兜底只认 kind，同 0066
+alter table public.agent_routines drop constraint if exists agent_routines_schedule_shape;
+alter table public.agent_routines add constraint agent_routines_schedule_shape
+  check (jsonb_typeof(schedule) = 'object' and schedule->>'kind' in ('once', 'daily', 'weekly', 'every', 'monthly'));
+
 alter table public.agent_routines add column if not exists session_id uuid;

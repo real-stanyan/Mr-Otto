@@ -28,10 +28,12 @@ const SCHEDULE_SCHEMA = {
   type: "object",
   description:
     "四种形状之一：{kind:'once', at:'YYYY-MM-DDTHH:mm'}（一次性，墙上时间）/ {kind:'daily', time:'HH:mm'} / {kind:'weekly', days:[1..7], time:'HH:mm'}（1 = 周一 … 7 = 周日）" +
-    " / {kind:'every', minutes:N, from:'HH:mm', to:'HH:mm', days?:[1..7]}（时段内每隔 N 分钟，N 在 5..720，不跨夜，days 不传 = 每天）。" +
+    " / {kind:'every', minutes:N, from:'HH:mm', to:'HH:mm', days?:[1..7]}（时段内每隔 N 分钟，N 在 5..720，不跨夜，days 不传 = 每天）" +
+    " / {kind:'monthly', days:[1..31], time:'HH:mm'}（每月几号；那个月没有这一天就落在月底，31 = 每月月底）。" +
+    "「每月 1 号交房租」「每月 15 号还信用卡」用 monthly，别用一次性的凑。" +
     "「营业时间里每 10 分钟看一次」这种用一条 every，别拆成很多条 daily。",
   properties: {
-    kind: { type: "string", enum: ["once", "daily", "weekly", "every"] },
+    kind: { type: "string", enum: ["once", "daily", "weekly", "every", "monthly"] },
     at: { type: "string" }, time: { type: "string" }, days: { type: "array", items: { type: "integer" } },
     minutes: { type: "integer" }, from: { type: "string" }, to: { type: "string" },
   },
@@ -72,7 +74,7 @@ export function createRoutineTools(deps: RoutineToolDeps): Tool[] {
       description:
         "你能定时：用户要你到点提醒 / 到点做某事时用它，不要叫用户到点再来喊你。" +
         "给自己记一条定时任务：到点我会在这条私聊里收到一句「定时任务到点」，然后按任务去做。" +
-        "一次性的（kind once）跑完就自动停用；每天 / 每周几的（daily / weekly）长期有效。" +
+        "一次性的（kind once）跑完就自动停用；每天 / 每周几 / 每月几号的（daily / weekly / monthly）长期有效。" +
         "时间写**墙上时间**，不带时区；tz 不传 = 主人设备的时区。人说的是相对时间（「今天下午三点」「明早」）就按对话里的「现在是 / 今天是」换算。" +
         "**任务里要打给好友的，先问清好友在哪个城市，换成 IANA 时区名用 tz 传进来；没问到别建。**" +
         "建好之后用人话复述一遍「下次执行」的时间给用户确认。",

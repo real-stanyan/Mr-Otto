@@ -129,3 +129,25 @@ describe("文案", () => {
     expect(routineNoteText({ title: "早报", reason: "skipped_quota", plannedAt, tz: SH })).toBe("定时任务「早报」这次没跑（原定 2026-10-05 09:00（Asia/Shanghai，周一），本周额度快用完了）");
   });
 });
+
+describe("monthly（每月几号，#1682）", () => {
+  const tz = "America/New_York";
+  const at = (s: string): number => wallClockToUtc({ y: Number(s.slice(0, 4)), m: Number(s.slice(5, 7)), d: Number(s.slice(8, 10)), hh: Number(s.slice(11, 13)), mm: Number(s.slice(14, 16)) }, tz);
+  it("每月 1 号 9 点：过了这个月的就到下个月", () => {
+    expect(nextRunAt({ kind: "monthly", days: [1], time: "09:00" }, tz, at("2026-10-06T12:00"))).toBe(at("2026-11-01T09:00"));
+    expect(nextRunAt({ kind: "monthly", days: [1], time: "09:00" }, tz, at("2026-11-01T08:59"))).toBe(at("2026-11-01T09:00"));
+  });
+  it("31 号在小月落到月底；2 月落到 28 号", () => {
+    expect(nextRunAt({ kind: "monthly", days: [31], time: "18:00" }, tz, at("2026-11-02T00:00"))).toBe(at("2026-11-30T18:00"));
+    expect(nextRunAt({ kind: "monthly", days: [30], time: "18:00" }, tz, at("2027-02-01T00:00"))).toBe(at("2027-02-28T18:00"));
+  });
+  it("一月两次（1 号和 15 号）", () => {
+    expect(nextRunAt({ kind: "monthly", days: [15, 1], time: "09:00" }, tz, at("2026-10-06T12:00"))).toBe(at("2026-10-15T09:00"));
+  });
+  it("校验与文案", () => {
+    expect(parseRoutineSchedule({ kind: "monthly", days: [15, 1, 1], time: "09:00" })).toEqual({ kind: "monthly", days: [1, 15], time: "09:00" });
+    expect(() => parseRoutineSchedule({ kind: "monthly", days: [32], time: "09:00" })).toThrow(/1\.\.31/);
+    expect(() => parseRoutineSchedule({ kind: "monthly", days: [], time: "09:00" })).toThrow(/至少/);
+    expect(scheduleText({ kind: "monthly", days: [1, 31], time: "09:00" }, tz)).toBe("每月1 号、月底 09:00 · America/New_York");
+  });
+});
