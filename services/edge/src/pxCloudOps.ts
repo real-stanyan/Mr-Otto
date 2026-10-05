@@ -97,11 +97,15 @@ function upstreamText(entry: CatalogEntry, code: string, message: string): strin
   return code === "upstream_auth" && entry.auth === "token" ? CLOUD_TEXT.badToken : `没接上：${message}`;
 }
 
-/** 记下的 clientInformation 若是预置客户端（只记了名字），补上现取的 secret 再外呼；不是预置的原样返回；
-    预置但此刻取不到 = null。**补出来的这份只给外呼用，绝不写回箱 / pending**（密钥只存 Worker secret 一处） */
-function resolveClient(d: CloudOpsDeps, ci: Record<string, unknown>): Record<string, unknown> | null {
-  if (ci.preset !== "google") return ci;
-  const p = d.presetClient?.(ci.preset) ?? null;
+/** 是不是预置客户端**只看目录条目**（catalogId 对应的 presetClient），绝不看存下来的 clientInformation.preset——
+    普通 DCR 应用的 clientInformation 是厂商注册回包原样，厂商回一个 `preset:"google"` 就能骗我们把 secret 发给它自己的
+    token 端点。条目不是预置的：原样返回、永不补 secret。条目是预置的：存的名字得对得上，再补上现取的 secret；
+    对不上 / 此刻取不到 = null。**补出来的这份只给外呼用，绝不写回箱 / pending**（密钥只存 Worker secret 一处） */
+function resolveClient(d: CloudOpsDeps, catalogId: string, ci: Record<string, unknown>): Record<string, unknown> | null {
+  const entry = (d.catalog ?? MCP_CATALOG).find((e) => e.id === catalogId);
+  if (entry?.presetClient === undefined) return ci;
+  if (ci.preset !== entry.presetClient) return null;
+  const p = d.presetClient?.(entry.presetClient) ?? null;
   return p ? { ...ci, client_secret: p.client_secret } : null;
 }
 
@@ -158,7 +162,9 @@ export async function cloudConnect(
       d.log?.(`[px-cloud] register ${serverId} ${reg.code}: ${reg.message}`);
       return fail(reg.code === "no_dcr" ? 422 : 502, reg.code, reg.code === "no_dcr" ? CLOUD_TEXT.noDcr : `没接上：${reg.message}`);
     }
-    client = reg.client;
+    // 厂商回包原样落盘，但 preset 是我们自己的标记字段，不收厂商的（belt-and-braces，resolveClient 本就不看它）
+    const { preset: _drop, ...rest } = reg.client;
+    client = rest as typeof reg.client;
   }
   const state = makeState(uid, d.random);
   const { verifier, challenge } = await pkcePair(d.random);
@@ -205,7 +211,7 @@ export async function cloudCallback(
   if (q.error) return { ok: false, message: q.error };
   if (!q.code) return { ok: false, message: CLOUD_TEXT.unknown };
 
-  const client = resolveClient(d, pending.clientInformation);
+  const client = resolveClient(d, pending.catalogId, pending.clientInformation);
   if (!client) {
     const name = (d.catalog ?? MCP_CATALOG).find((e) => e.id === pending.catalogId)?.name ?? pending.catalogId;
     d.log?.(`[px-cloud] callback ${pending.catalogId} preset_unconfigured`);
@@ -295,7 +301,7 @@ export async function cloudRefresh(d: CloudOpsDeps, serverId: string): Promise<C
   }
   const snapshotRefresh = refreshTokenOf(svc.oauth);
   const stored = svc.oauth.clientInformation;
-  const client = stored ? resolveClient(d, stored) : undefined;
+  const client = stored ? resolveClient(d, svc.catalogId, stored) : undefined;
   if (client === null) {
     // 预置客户端此刻取不到 secret：是我们没配好，不是用户登录坏了——按抖动处理，不标 needs_login（#1619）
     d.log?.(`[px-cloud] refresh ${serverId} preset_unconfigured`);

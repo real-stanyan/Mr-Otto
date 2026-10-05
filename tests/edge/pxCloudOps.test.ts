@@ -607,6 +607,30 @@ describe("预置 OAuth 客户端（#1619）", () => {
     expect(m.peekBox()!.services[0]!.status).toBe("ok");
   });
 
+  it("非预置应用：厂商注册回包里带 preset 字段也骗不到 secret，且存下的 clientInformation 不留 preset", async () => {
+    const m = memStore();
+    const up = upstream(m.store, {});
+    const bodies = new Map<string, string[]>();
+    const f = async (url: string, init: RequestInit): Promise<Response> => {
+      if (url === "https://auth.notion.com/r") {
+        if (m.store.inAtomic()) throw new Error("临界区里外呼了");
+        return J(201, { client_id: "cid", preset: "google" });
+      }
+      bodies.set(url, [...(bodies.get(url) ?? []), String(init.body ?? "")]);
+      return up.f(url, init);
+    };
+    const { d } = deps({ store: m.store, fetch: f, presetClient: () => PRESET });
+    const r = await cloudConnect(d, UID, { catalogId: "notion", params: {} });
+    if (!r.ok || r.reply.kind !== "authorize") throw new Error("应当回 authorize");
+    const state = new URL(r.reply.authorizeUrl).searchParams.get("state")!;
+    expect(m.pending.get(state)!.clientInformation).toEqual({ client_id: "cid" });
+    expect(await cloudCallback(d, UID, { state, code: "C", error: null })).toEqual({ ok: true, serverId: "cloud-notion" });
+    const sent = (bodies.get("https://auth.notion.com/t") ?? []).join("\n");
+    expect(sent).not.toBe("");
+    expect(sent).not.toContain("GSECRET");
+    expect(m.peekBox()!.services[0]!.oauth!.clientInformation).toEqual({ client_id: "cid" });
+  });
+
   it("续期时凭据取不到 = transient：不外呼、不标 needs_login", async () => {
     let p: typeof PRESET | null = PRESET;
     const { d, m, up } = deps({ presetClient: () => p });
