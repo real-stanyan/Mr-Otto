@@ -7,10 +7,10 @@
 // 地方都是：先把换 token / tools/list 这些网络活干完，再进 `store.atomic` 读出最新的箱改一处写回；临界区里
 // 没有 fetch（测试的假上游在临界区里被打到会直接抛）。
 
-import { MCP_CATALOG, type CatalogEntry, type PresetClientName } from "../../../src/shared/mcpCatalog.js";
+import { MCP_CATALOG, isPreviewTester, type CatalogEntry, type PresetClientName } from "../../../src/shared/mcpCatalog.js";
 import { fillHttpEntry, missingParams } from "../../../src/shared/mcpCatalogFill.js";
 import {
-  CLOUD_TEXT, cloudServerId, cloudView, emptyCloudBox, ensureHomeGrant, markNeedsLogin, presetUnconfiguredText, removeCloudService,
+  CLOUD_TEXT, cloudServerId, previewOnlyText, cloudView, emptyCloudBox, ensureHomeGrant, markNeedsLogin, presetUnconfiguredText, removeCloudService,
   setCloudGrant, upsertCloudService, withCloudOAuth,
   type CloudBox, type CloudOAuth, type CloudServiceInput, type CloudViewItem, type ConnectDone, type ConnectReply,
 } from "../../../src/shared/remote/pxCloud.js";
@@ -110,7 +110,7 @@ function resolveClient(d: CloudOpsDeps, catalogId: string, ci: Record<string, un
 }
 
 export async function cloudConnect(
-  d: CloudOpsDeps, uid: string, req: { catalogId: string; params: Record<string, string> }
+  d: CloudOpsDeps, uid: string, req: { catalogId: string; params: Record<string, string>; email?: string }
 ): Promise<{ ok: true; reply: ConnectReply } | OpFail> {
   const entry = (d.catalog ?? MCP_CATALOG).find((e) => e.id === req.catalogId);
   if (!entry) return fail(404, "unknown_app", "目录里没有这个应用");
@@ -120,6 +120,8 @@ export async function cloudConnect(
   const { url, headers } = fillHttpEntry(entry, req.params);
   if (/\{\w+\}/.test(url)) return fail(400, "missing_params", "还缺参数");
   if (!/^https:\/\//.test(url)) return fail(400, "bad_url", "这个应用的地址不是 https，不能在云端接");
+  // 预览期条目只对内测账号开放（#1636）：邮箱取自 edge 验过的 JWT，不信客户端报的；在任何外呼与限速记账之前
+  if (entry.preview && !isPreviewTester(req.email)) return fail(403, "preview_only", previewOnlyText(entry.name));
   const limited = await admit(d);
   if (limited) return limited;
   const serverId = cloudServerId(entry.id);

@@ -428,7 +428,9 @@ export class Escrow extends DurableObject<Env> {
       if (op === "cloud_view") return json(200, { apps: await cloudViewOf(d, uid) });
       if (op === "cloud_connect") {
         const params = (b.params ?? {}) as Record<string, string>;
-        const r = await cloudConnect(d, uid, { catalogId: String(b.catalogId ?? ""), params });
+        const r = await cloudConnect(d, uid, {
+          catalogId: String(b.catalogId ?? ""), params, ...(typeof b.email === "string" ? { email: b.email } : {}),
+        });
         return r.ok ? json(200, r.reply) : toRes(r, null);
       }
       if (op === "cloud_callback") {

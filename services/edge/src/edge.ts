@@ -223,16 +223,17 @@ export function createEdge(deps: EdgeDeps): (req: Request) => Promise<Response> 
       JWT 校验、不提前报错"的纪律（ADR-0199）：没带这个 header、带了但比不中，
       两种情况都直接往下走 Authorization 那条老路，响应形状不因为多试了一次
       secret 比对而变化 */
-  async function pxIdentify(req: Request): Promise<{ userId: string } | Response> {
+  async function pxIdentify(req: Request): Promise<{ userId: string; email: string } | Response> {
     const svc = req.headers.get("x-runtime-secret");
     if (svc !== null && config.runtimeSecret && timingSafeEqual(svc, config.runtimeSecret)) {
-      return { userId: RUNTIME_SERVICE_UID };
+      return { userId: RUNTIME_SERVICE_UID, email: "" };
     }
     const m = /^Bearer (.+)$/.exec(req.headers.get("authorization") ?? "");
     if (!m) return apiError(401, "缺少凭据：Authorization: Bearer <Supabase JWT>", "no_token");
     const verified = await verifyJwt(m[1]!, config.jwtSecret, Math.floor(now() / 1000));
     if (!verified.ok) return apiError(401, verified.reason, "bad_token");
-    return { userId: verified.claims.sub };
+    // email 只给预览期条目的内测闸用（#1636）：验过签的 claim，不是客户端报的
+    return { userId: verified.claims.sub, email: verified.claims.email };
   }
 
   /** 好友代理云端执行面（ADR-0197）。edge 只做：验人 → 关系闸 → 转给 hostUid
@@ -343,7 +344,7 @@ export function createEdge(deps: EdgeDeps): (req: Request) => Promise<Response> 
         if (!b || typeof b.catalogId !== "string" || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(b.catalogId) || !okParams) {
           return apiError(400, "connect 要 catalogId 与字符串参数", "bad_request");
         }
-        return forward(uid, "cloud_connect", { uid, catalogId: b.catalogId, params });
+        return forward(uid, "cloud_connect", { uid, catalogId: b.catalogId, params, email: who.email });
       }
       if (pathname === "/px/v1/cloud/grant" && req.method === "POST") {
         const b = (await req.json().catch(() => null)) as { serverId?: unknown; workspaceId?: unknown; on?: unknown } | null;

@@ -3,7 +3,7 @@
 // 接上之后这一页换成详情页（返回直接回应用列表），toast 说一句——判据是重拉回来的视图（ConnectAppDialog 的 landed）。
 import { useFocusEffect } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Text, View } from "react-native";
 import { MCP_CATALOG } from "../../../src/shared/mcpCatalog.js";
 import { CATALOG_FOOTER, CONNECTED_MARK, catalogEmpty, connectCatalog, connectedToast } from "../../../src/shared/mobileConnectors.js";
@@ -14,6 +14,7 @@ import { Field, Group, Inset, ListPage, Note, Row } from "../ui.js";
 import { AppTile } from "./AppTile.js";
 import { ConnectAppDialog } from "./ConnectAppDialog.js";
 import { refreshConnectors, useConnectors } from "./connectorsStore.js";
+import { supabase } from "../supabase.js";
 
 type Props = NativeStackScreenProps<RootStackParams, "ConnectApp">;
 
@@ -22,7 +23,12 @@ export function ConnectAppScreen({ navigation }: Props) {
   const cloud = useConnectors();
   const [q, setQ] = useState("");
   const [picked, setPicked] = useState<string | null>(null);
-  const groups = useMemo(() => connectCatalog(cloud.apps, q), [cloud.apps, q]);
+  // 预览期条目（Gmail，#1636）只对内测账号列出：判据是当前登录的邮箱
+  const [email, setEmail] = useState<string | null>(null);
+  useEffect(() => {
+    void supabase.auth.getSession().then(({ data }) => setEmail(data.session?.user.email ?? null));
+  }, []);
+  const groups = useMemo(() => connectCatalog(cloud.apps, q, email), [cloud.apps, q, email]);
   const entry = picked === null ? null : MCP_CATALOG.find((e) => e.id === picked) ?? null;
   // 「已接入」那一格跟着云端视图走：从外面切回来时拉一次新的
   useFocusEffect(
