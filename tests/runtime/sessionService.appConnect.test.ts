@@ -7,7 +7,7 @@ import { createWikiService, type WikiService } from "../../services/runtime/src/
 import { createMemoryWikiFs } from "../../services/runtime/src/wikiFs.js";
 import { createInMemoryWikiJournal } from "../../services/runtime/src/wikiJournal.js";
 import { EventStore } from "../../src/session/store.js";
-import type { AppConnectEvent, RequestEnvelopeEvent, ToolResultEvent, UserMessageEvent } from "../../src/session/events.js";
+import type { AppConnectEvent, ApprovalRequestEvent, RequestEnvelopeEvent, ToolResultEvent, UserMessageEvent } from "../../src/session/events.js";
 import type { ModelAdapter, ModelReply } from "../../src/model/adapter.js";
 import type { ExecutionWorld } from "../../src/world/executionWorld.js";
 import { pxToolName, type PxCallDeps } from "../../services/runtime/src/pxTools.js";
@@ -50,12 +50,16 @@ const outreachSeed = (store: EventStore): void => {
   store.append({ sessionId: SID, ts: 2, type: "chat_roster_changed", agents: [{ agentId: ADMIN_AGENT_ID, name: "运维" }], humans: [{ uid: PEER, name: "小红" }], ignorable: true });
 };
 
-function openWith(store: EventStore, o: { adapter: ModelAdapter; approveAll?: boolean; px?: PxCallDeps; now?: () => number; hostUids?: string[]; agents?: CloudSessionOpts["agents"] }): CloudSession {
-  return createCloudSession({
+function openWith(store: EventStore, o: { adapter: ModelAdapter; approveAll?: boolean; px?: PxCallDeps; now?: () => number; hostUids?: string[]; agents?: CloudSessionOpts["agents"]; autoApprove?: boolean }): CloudSession {
+  let s!: CloudSession;
+  s = createCloudSession({
     sessionMeta: createInMemoryCloudSessionMeta(),
     workspaceId: "w1", sessionId: SID, ownerUid: OWNER, createdByUid: OWNER, store, world: fakeWorld,
     agents: o.agents ?? (async () => [OPS]), adapterFor: () => o.adapter, px: o.px ?? basePx, hostUids: async () => o.hostUids ?? [OWNER],
-    onEvent: () => {},
+    // 受监督轮里连接器要批：autoApprove 时主人当场批（同 friendRelay.test 的写法）
+    onEvent: (e) => {
+      if (o.autoApprove === true && e.type === "approval_request") void s.approve((e as ApprovalRequestEvent).callId, OWNER, "Stan", "approved");
+    },
     onUsage: () => {}, wiki: testWiki(), mentionInbox: createInMemoryMentionInbox(),
     agentWriter: createInMemoryAgentWriter(), isMember: async () => true, contextWindowOf: () => undefined,
     sandboxApproval: async () => "ask", workspaceLock: createWorkspaceLock(), relayRemainingMicro: async () => null,
@@ -63,6 +67,7 @@ function openWith(store: EventStore, o: { adapter: ModelAdapter; approveAll?: bo
     outreach: null, approveAll: o.approveAll ?? true, callback: null,
     ...(o.now !== undefined ? { now: o.now } : {}),
   } as CloudSessionOpts);
+  return s;
 }
 
 /** 第一轮一次调若干把 request_app_connect，之后说一句收口 */
@@ -127,6 +132,19 @@ describe("request_app_connect 发卡（#1666）", () => {
     await s.settled();
     expect(cards(store)).toHaveLength(0);
     expect(results(store)[0]!.output).toContain("已经连上了");
+    store.close();
+  });
+
+  it("快照里有 cloud-supabase 但这只的白名单没放它：照样发卡（它手上没那把刀，不能说「直接用」）", async () => {
+    const store = newStore();
+    dmSeed(store);
+    const fetchImpl = (async () => Response.json({ servers: [{ serverId: "cloud-supabase", toolDefs: [] }] })) as unknown as typeof fetch;
+    const narrow = { ...OPS, tools: [{ serverId: "cloud-github", tools: [] }] as AgentToolAllow[] };
+    const s = openWith(store, { adapter: callsOnce([{ app: "supabase" }]), px: { ...basePx, fetchImpl }, agents: async () => [narrow] });
+    await s.say(OWNER, "Stan", "建表", false, [], undefined, []);
+    await s.settled();
+    expect(cards(store)).toHaveLength(1);
+    expect(results(store)[0]!.output).toBe(appConnectToolText("Supabase"));
     store.close();
   });
 
@@ -262,6 +280,40 @@ describe("连接器 409 needs_login 兜底发卡（#1666）", () => {
     const rs = results(store);
     expect(rs).toHaveLength(1);
     expect(rs[0]).toMatchObject({ status: "error", output: "这个应用要在手机上重新登录" });
+    store.close();
+  });
+
+  it("受监督的轮（朋友带话那一轮）回 409：不发卡，模型收到 edge 原 message——主人点卡起的会是免审批的主人轮，朋友的请求不能借这一下升级", async () => {
+    const store = newStore();
+    dmSeed(store);
+    const s = openWith(store, { adapter: callsPx(1), px: { ...basePx, fetchImpl: needsLoginFetch([]) }, autoApprove: true });
+    expect(await s.relayFromFriend!({ text: "[系统] 小红让带话：帮我查一下库" })).toBe("ok");
+    await s.settled();
+    expect(store.ofType(SID, "approval_request")).toHaveLength(1); // 确实是受监督轮：连接器要批
+    expect(cards(store)).toHaveLength(0);
+    const rs = results(store);
+    expect(rs).toHaveLength(1);
+    expect(rs[0]).toMatchObject({ status: "error", output: "这个应用要在手机上重新登录" });
+    store.close();
+  });
+
+  it("主人点了正常发出的卡，app_connected 起的那一轮不受监督：连接卡那把刀亮着、连接器不要批", async () => {
+    const store = newStore();
+    dmSeed(store);
+    store.append({
+      sessionId: SID, ts: Date.now(), type: "app_connect", connectId: "card-1", phase: "offered", fromAgentId: ADMIN_AGENT_ID,
+      catalogId: "supabase", appName: "Supabase", why: "要建表", reason: "missing", ignorable: true,
+    });
+    const okFetch = (async (url: string) =>
+      String(url).includes("/px/v1/grants")
+        ? Response.json({ servers: [{ serverId: "cloud-supabase", toolDefs: [{ name: "list", description: "d", inputSchema: {} }] }] })
+        : Response.json({ content: [{ type: "text", text: "ok" }] })) as unknown as typeof fetch;
+    const s = openWith(store, { adapter: callsPx(1), px: { ...basePx, fetchImpl: okFetch } });
+    expect(await s.answerAppConnect("card-1", OWNER, "connected")).toEqual({ ok: true });
+    await s.settled();
+    expect(toolNames(store)).toContain(TOOL);
+    expect(store.ofType(SID, "approval_request")).toHaveLength(0);
+    expect(results(store)).toHaveLength(1);
     store.close();
   });
 

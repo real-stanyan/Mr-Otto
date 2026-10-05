@@ -1930,7 +1930,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     const appConnectTool =
       !opts.approveAll || isOutreach || isPair
         ? null
-        : createRequestAppConnectTool({ offer: (o) => offerAppConnect({ agentId: spec.agentId, ...o, reason: "missing" }) });
+        : createRequestAppConnectTool({
+            // 白名单现取这一轮的 spec（engine 按 agent 缓存，这里闭包里的 spec 是第一次开口时的）
+            offer: (o) => offerAppConnect({ agentId: spec.agentId, ...o, reason: "missing", tools: (turnSpec !== null && turnSpec.agentId === spec.agentId ? turnSpec : spec).tools }),
+          });
     // 定时任务三把刀（#1283）：只在主场私聊里挂；亮不亮按「主人亲口 && 不受监督」现算（routine 轮算主人亲口，Task 8）
     const routineTools =
       opts.routines === null || !opts.approveAll || chatKind !== "dm"
@@ -3113,10 +3116,16 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
             ? {
                 onNeedsLogin: ({ hostUid, serverId }: { hostUid: string; serverId: string }): string | null => {
                   if (hostUid !== opts.ownerUid) return null;
+                  // 与 request_app_connect 的亮刀条件同一套（tools() 里那句）：受监督轮 / 接力棒上 / L2 不发卡，回 edge 原话。
+                  // 主人一点卡，起的是「主人亲口、免审批」的一轮（app_connected 开场白算主人说的）——朋友带话那一轮
+                  // 若能发卡，朋友的请求就借主人这一下变成了不受监督的轮（#1666 终审 Critical）。
+                  // 调用时现读：supervisedTurn() 会因折进别人的话在一轮中途收紧
+                  const me = turnSpec !== null && turnSpec.agentId === spec.agentId ? turnSpec : null;
+                  if (supervisedTurn() || currentOpeningDepth > 0 || (me !== null && tierOf(me) > 1)) return null;
                   const catalogId = catalogIdOfServer(serverId);
                   const r = catalogId === null ? null : resolveConnectApp(catalogId);
                   if (r === null || r.kind !== "ok") return null;
-                  const said = offerAppConnect({ agentId: spec.agentId, catalogId: r.entry.id, appName: r.entry.name, why: "它的登录过期了，要重新登录才能接着用", reason: "needs_login" });
+                  const said = offerAppConnect({ agentId: spec.agentId, catalogId: r.entry.id, appName: r.entry.name, why: "它的登录过期了，要重新登录才能接着用", reason: "needs_login", tools: spec.tools });
                   // 真发出了新卡才说「已经请主人重新登录」；已有开着的卡 / 本小时发满了，卡没新发，
                   // 照 offerAppConnect 自己那句说（并补上这次调用失败的原因），不能谎称已发
                   return said === appConnectToolText(r.entry.name)
@@ -3375,10 +3384,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     notify(store.append({ sessionId, ts: Date.now(), type: "app_connect", ...e, ignorable: true }));
   };
   /** 发一张「请主人连 X」的卡；回给模型的那句话。已经能用 / 已有开着的卡 / 这个小时发够了，都不发（#1666） */
-  const offerAppConnect = (o: { agentId: string; catalogId: string; appName: string; why: string; reason: "missing" | "needs_login" }): string => {
+  const offerAppConnect = (o: { agentId: string; catalogId: string; appName: string; why: string; reason: "missing" | "needs_login"; tools: readonly AgentToolAllow[] }): string => {
     const t = now();
-    // 「已经连上了」只对 missing 成立；needs_login 恰恰是「连着、但登录过期」——授权快照里必有它，不能拿来拦卡
-    if (o.reason === "missing" && grantsSnapshot?.value.some((g) => g.serverId === cloudServerIdOf(o.catalogId))) return `${o.appName} 已经连上了，直接用它的工具。`;
+    // 「已经连上了」只对 missing 成立；needs_login 恰恰是「连着、但登录过期」——授权快照里必有它，不能拿来拦卡。
+    // 快照先过这只的白名单（同 runJob 建刀那句 filterGrantedByAllow）：被白名单挡掉的应用连着也不在它手上，
+    // 说「直接用它的工具」它找不到刀（#1666 终审 Minor）
+    if (o.reason === "missing" && grantsSnapshot !== null && filterGrantedByAllow(grantsSnapshot.value, o.tools).some((g) => g.serverId === cloudServerIdOf(o.catalogId))) return `${o.appName} 已经连上了，直接用它的工具。`;
     if (openCardFor(appConnectFold, o.catalogId, t) !== null) return `连 ${o.appName} 的卡已经在会话里了，等主人点。这一轮别再试它。`;
     const sent = pruneBridgeWindow(appConnectOffered, t);
     if (!bridgeWindowAllows(sent, t, APP_CONNECT_PER_HOUR_MAX)) {
