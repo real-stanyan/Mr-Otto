@@ -4,6 +4,7 @@
 import type { SessionEvent } from "../session/events.js";
 import { openTurns } from "./turnLedger.js";
 import type { LaneItem } from "./pairChat.js";
+import { stripEmotionTags } from "./voiceProsody.js";
 
 /** 任务里的一行：车道的一行，再多一格「这是管理员下发的」（接力开场白：谁 @ 了谁） */
 export interface LaneTaskItem extends LaneItem {
@@ -87,8 +88,9 @@ export function laneTasksOf(events: readonly SessionEvent[], selfUid: string | u
       inCall = on;
     } else if (e.type === "assistant_message") {
       if (e.content.trim() === "") continue;
+      // 情绪记号落日志不落界面（ADR-0355）：车道这条显示路径也剥一次（#1614 真机：抽屉里每句都带「（平）」）
       attach(
-        { key: `a${e.seq}`, ts: e.ts, who: "agent", text: e.content, ...(e.agentId !== undefined ? { agentId: e.agentId } : {}) },
+        { key: `a${e.seq}`, ts: e.ts, who: "agent", text: stripEmotionTags(e.content), ...(e.agentId !== undefined ? { agentId: e.agentId } : {}) },
         () => start({ key: `a${e.seq}`, ts: e.ts, startedBy: "agent", kind: "message", title: titleOf(e.content) }),
       );
     } else if (e.type === "turn_ended" && e.outcome === "error") {
