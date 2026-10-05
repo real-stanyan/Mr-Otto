@@ -219,9 +219,18 @@ export async function answerHealthQuery(
   q: HealthQuery,
   deps: { enabled: () => boolean; read: (q: HealthQuery) => Promise<unknown> },
 ): Promise<HealthResult> {
-  if (!deps.enabled()) return { ok: false, error: "用户在手机上关掉了 Apple 健康" };
+  const off: HealthResult = { ok: false, error: "用户在手机上关掉了 Apple 健康" };
+  if (!deps.enabled()) return off;
   try {
     const raw = await deps.read(q);
+    // 读的这几秒里用户可能把开关关了：关了就一个字节都不交出去（spec §3.4）
+    if (!deps.enabled()) return off;
+    if (typeof raw === "object" && raw !== null) {
+      // 合法但太大是另一回事：别让 parseHealthResult 的尺寸闸把它说成「格式不对」，让模型知道该缩小范围
+      if (new TextEncoder().encode(JSON.stringify({ ok: true, ...raw })).byteLength > HEALTH_RESULT_MAX_BYTES) {
+        return { ok: false, error: "数据太多，请缩短日期范围或少选几类再读" };
+      }
+    }
     const parsed = typeof raw === "object" && raw !== null ? parseHealthResult({ ok: true, ...raw }) : null;
     return parsed ?? { ok: false, error: "手机读出来的数据格式不对" };
   } catch (e) {

@@ -106,6 +106,19 @@ describe("answerHealthQuery", () => {
     const r = await answerHealthQuery(q, { enabled: () => true, read: async () => ({ days: "x" }) });
     expect(r).toEqual({ ok: false, error: "手机读出来的数据格式不对" });
   });
+  it("读的途中开关被关掉：丢掉读到的数据，回 ok:false（spec §3.4）", async () => {
+    let on = true;
+    const r = await answerHealthQuery(q, {
+      enabled: () => on,
+      read: async () => { on = false; return { days: [{ date: "2026-10-04", steps: 3 }], workouts: [] }; },
+    });
+    expect(r).toEqual({ ok: false, error: "用户在手机上关掉了 Apple 健康" });
+  });
+  it("合法但太大（> 64KB）：说数据太多，不说格式不对", async () => {
+    const days = Array.from({ length: 2000 }, (_, i) => ({ date: "2026-10-04", steps: i, distanceM: i, activeKcal: i, flights: i, exerciseMin: i }));
+    const r = await answerHealthQuery(q, { enabled: () => true, read: async () => ({ days, workouts: [] }) });
+    expect(r).toEqual({ ok: false, error: "数据太多，请缩短日期范围或少选几类再读" });
+  });
   it("原生抛错", async () => {
     const r = await answerHealthQuery(q, { enabled: () => true, read: async () => { throw new Error("boom"); } });
     expect(r).toEqual({ ok: false, error: "手机读健康数据出错：boom" });
