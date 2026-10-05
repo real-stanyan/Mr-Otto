@@ -18,6 +18,7 @@ import { ChatInfoScreen } from "../chat/ChatInfoScreen.js";
 import { ChatScreen } from "../chat/ChatScreen.js";
 import { FriendChatScreen } from "../friends/FriendChatScreen.js";
 import { LaneAgentsScreen } from "../friends/LaneAgentsScreen.js";
+import { PeerLaneAgentsScreen } from "../friends/PeerLaneAgentsScreen.js";
 import { FriendScreen } from "../friends/FriendScreen.js";
 import { GroupsScreen } from "../friends/GroupsScreen.js";
 import { RequestsScreen } from "../friends/RequestsScreen.js";
@@ -94,6 +95,7 @@ export function RootNavigator() {
         <Root.Screen name="Chat" component={ChatScreen} options={{ title: "" }} />
         <Root.Screen name="FriendChat" component={FriendChatScreen} options={{ title: "" }} />
         <Root.Screen name="LaneAgents" component={LaneAgentsScreen} options={{ title: "带进来的智能体" }} />
+        <Root.Screen name="PeerLaneAgents" component={PeerLaneAgentsScreen} options={{ title: "" }} />
         {/* 人与人的通话页（#1534）：整屏、没有导航条，手势也不许划走（挂断才走） */}
         <Root.Screen name="HumanCall" component={HumanCallScreen} options={{ headerShown: false, gestureEnabled: false }} />
         <Root.Screen name="ChatInfo" component={ChatInfoScreen} options={{ title: "聊天信息" }} />

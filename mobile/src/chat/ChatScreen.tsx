@@ -15,7 +15,7 @@
 // · 通话：点「语音通话」整屏升起（CallOverlay）；收起回到这里、头部下面一颗胶囊（点它回去）；离开这一页 = 这台停听、
 //   通话还在（A4 原样）。
 // · 已读：这一页开着时列表不给它画未读；离开时游标推到此刻（seenStore）。
-import { useFocusEffect } from "@react-navigation/native";
+import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { FlatList, Pressable, StyleSheet, Text, View } from "react-native";
@@ -77,6 +77,8 @@ import { uploadMediaFile } from "../friends/friendsApi.js";
 import { fileSizeOf, sha256OfFile } from "../media/hash.js";
 import { PendingMediaBubble } from "../media/MediaBubble.js";
 import { pickFromCamera, pickFromLibrary, pickedKind, prepareAsset, type PickedAsset } from "../media/prepareMedia.js";
+import { PasteDialog, pastedAssets, usePastedImages } from "../media/pasteImages.js";
+import type { PastedImage } from "../../../src/shared/pastedImages.js";
 import { MentionSheet } from "./MentionSheet.js";
 import { DispatchDialog } from "./DispatchDialog.js";
 import { dispatchOpening, quoteLinesFromRows, quoteWindow } from "../../../src/shared/dispatchQuote.js";
@@ -711,10 +713,15 @@ export function ChatScreen({ route, navigation }: Props) {
   const plus: PlusItem[] = [];
   // 图片 / 视频（#1491 P3）：相册一次最多挑 9 样；拍摄是拍照或录一段（≤60 秒）。要会话已经建好（草稿私聊的第一句先是字）、
   // 外联会话只读
-  if (ready && session !== null && !isOutreach && ws !== null) {
+  const canMedia = ready && session !== null && !isOutreach && ws !== null;
+  if (canMedia) {
     plus.push({ key: "album", icon: "image", label: "相册", onPress: () => void sendPicked(pickFromLibrary) });
     plus.push({ key: "camera", icon: "camera", label: "拍摄", onPress: () => void sendPicked(pickFromCamera) });
   }
+  // 输入框里粘贴图片（#1645）：能发图、这一页在最上面时才收；先问一句再走 sendPicked
+  const focused = useIsFocused();
+  const [pasted, setPasted] = useState<{ key: number; visible: boolean; images: PastedImage[] } | null>(null);
+  usePastedImages(focused && canMedia && !callOnly, (images) => setPasted({ key: Date.now(), visible: true, images }));
   if (offerPhone) plus.push({ key: "call", icon: "phone", label: "语音通话", onPress: () => void onStartCall() });
   const openPicker = (kind: "group" | "add" | "invite"): void => {
     setPickError(null);
@@ -1056,6 +1063,22 @@ export function ChatScreen({ route, navigation }: Props) {
             // 从私聊拉人建群：换成那个新群（返回回到列表，不回到这条私聊）
             if (sid !== null && navigation.isFocused()) navigation.replace("Chat", { kind: "group", sessionId: sid });
           }}
+        />
+      ) : null}
+
+      {pasted !== null ? (
+        <PasteDialog
+          key={pasted.key}
+          visible={pasted.visible}
+          images={pasted.images}
+          to={title}
+          onCancel={() => setPasted((p) => (p === null ? p : { ...p, visible: false }))}
+          onSend={() => {
+            const images = pasted.images;
+            setPasted((p) => (p === null ? p : { ...p, visible: false }));
+            void sendPicked(async () => pastedAssets(images));
+          }}
+          onExited={() => setPasted(null)}
         />
       ) : null}
 

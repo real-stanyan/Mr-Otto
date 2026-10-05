@@ -3,7 +3,7 @@
 // · 小圆脸压住头像下沿一点（像挂在头像上），彼此叠一点；最多三格（超过三只画两张脸 +「+n」），不然靠屏幕边那一侧会出界。
 // · 朋友带的私人智能体只知道几只、不知道是谁（pair_presence），画成同样大小的空心灰圆。
 // · 车道还没连上：脸淡一些（原横幅上的「（连接中）」）。
-// · 点我自己的头像进编辑页（带上 / 移除 / 给谁看）；朋友的头像不可点。
+// · 点我自己的头像进编辑页（带上 / 移除 / 给谁看）；点朋友的头像进只读页看 TA 带来的（#1653）。
 import { Pressable, Text, View } from "react-native";
 import { usePalette } from "../theme.js";
 import { FaceTile, PersonTile } from "../wx/Avatar.js";
