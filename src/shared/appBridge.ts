@@ -24,7 +24,8 @@ export const APP_BRIDGE_JS = `(function(){
   window.addEventListener("error", function (e) { report((e && (e.message || (e.error && e.error.message))) || "出错了"); });
   window.addEventListener("unhandledrejection", function (e) { report((e && e.reason && (e.reason.message || e.reason)) || "出错了"); });
   // 宿主推下来的事件（#1675 房间）：宿主 injectJavaScript("window.__ottoEvent(name, payload)")，按名字分发给 otto.on 注册的回调
-  var handlers = {};
+  // 没有原型的空表：事件名撞上 constructor / __proto__ / toString 也只是一格普通的键，otto.on 不会拿到原型上的函数去 push
+  var handlers = Object.create(null);
   window.__ottoEvent = function (name, payload) {
     var hs = handlers[name];
     if (!hs) return;

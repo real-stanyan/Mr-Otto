@@ -78,6 +78,20 @@ describe("房间（#1675）", () => {
     void (otto.room.set as (k: string, v: unknown, o: unknown) => Promise<unknown>)("board", { x: 1 }, { ifRev: 2 });
     expect(JSON.parse(posted.at(-1)!)).toMatchObject({ method: "room.set", args: ["board", { x: 1 }, { ifRev: 2 }] });
   });
+  it("事件名撞上 Object 原型上的名字（constructor / __proto__ / toString）也照常注册、分发，不抛", () => {
+    const w: Record<string, unknown> = { ReactNativeWebView: { postMessage: () => {} }, addEventListener: () => {} };
+    new Function("window", APP_BRIDGE_JS)(w);
+    const otto = w.otto as { on(n: string, cb: (p: unknown) => void): void; off(n: string, cb: (p: unknown) => void): void };
+    const fire = w.__ottoEvent as (n: string, p: unknown) => void;
+    const got: unknown[] = [];
+    for (const n of ["constructor", "__proto__", "toString"]) {
+      expect(() => fire(n, 0)).not.toThrow();
+      expect(() => otto.off(n, () => {})).not.toThrow();
+      expect(() => otto.on(n, (p) => got.push([n, p]))).not.toThrow();
+      fire(n, 1);
+    }
+    expect(got).toEqual([["constructor", 1], ["__proto__", 1], ["toString", 1]]);
+  });
   it("bridgeEventJs：名字与载荷都过 JSON", () => {
     expect(bridgeEventJs("room.message", { from: "u", msg: "hi" })).toBe(`window.__ottoEvent("room.message", {"from":"u","msg":"hi"}); true;`);
   });
