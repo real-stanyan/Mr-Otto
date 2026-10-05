@@ -641,7 +641,8 @@ function normalizeChatInfo(v: unknown): CsChatInfo | null | undefined {
   if (v === undefined) return undefined;
   if (v === null || typeof v !== "object") return null;
   const o = v as Record<string, unknown>;
-  if (o.kind !== "dm" && o.kind !== "group" && o.kind !== "outreach" && o.kind !== "pair") return null;
+  // admins（协议 29，#1605）：类型里加了、这里漏了——welcome 整帧被丢，「管理员之间」一直转圈（#1680）
+  if (o.kind !== "dm" && o.kind !== "group" && o.kind !== "outreach" && o.kind !== "pair" && o.kind !== "admins") return null;
   // 这里不用 normalizeChatAgentIds：下行名单可以是空的（群里的智能体全被删了）
   if (!Array.isArray(o.agentIds) || !o.agentIds.every((x) => typeof x === "string")) return null;
   // humans 缺席按空（下行容错：协议号相等时它总在，缺了只可能是一个不该发生的实现漏写——
@@ -671,12 +672,19 @@ function normalizeChatInfo(v: unknown): CsChatInfo | null | undefined {
     (pb.facing === "self" || pb.facing === "both")
       ? { peerUid: pb.peerUid, facing: pb.facing as "self" | "both" }
       : undefined;
+  // admins 同理：可选的非关键字段，形状不对当缺席（缺了只是少认出「对面是哪位朋友」）
+  const ab = o.admins as Record<string, unknown> | null | undefined;
+  const admins =
+    ab !== null && typeof ab === "object" && typeof ab.peerUid === "string" && USER_UID_RE.test(ab.peerUid) && typeof ab.peerName === "string"
+      ? { peerUid: ab.peerUid, peerName: ab.peerName }
+      : undefined;
   return {
     kind: o.kind,
     agentIds: o.agentIds as string[],
     humans,
     ...(outreach !== undefined ? { outreach } : {}),
     ...(pair !== undefined ? { pair } : {}),
+    ...(admins !== undefined ? { admins } : {}),
   };
 }
 
