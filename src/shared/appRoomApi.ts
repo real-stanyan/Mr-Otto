@@ -102,11 +102,27 @@ export interface RoomLinkHandlers {
   status?(s: string): void;
 }
 
+export interface RoomLink {
+  send(msg: unknown): Promise<void>;
+  /** 两条频道都真拆完（服务端回了 leave）才落地——之前同名 channel() 还会拿回那条正在 leaving 的旧频道 */
+  close(): Promise<void>;
+}
+
+/** 这个 client 上这间房已有的频道（room-sys / room）先拆干净再订：realtime-js 的 channel(topic) 见到同名
+    （topic 带 realtime: 前缀）就把那条原样还回去，哪怕它还在 leaving；在它上面 subscribe 是空操作，
+    等 leave 落地它被拆掉，新订阅就成了一条不报错、不收事件的死链 */
+export async function releaseRoomChannels(client: SupabaseClient, roomId: string): Promise<void> {
+  const topics = new Set([`realtime:${roomSysTopic(roomId)}`, `realtime:${roomTopic(roomId)}`]);
+  const stale = client.getChannels().filter((ch) => topics.has(ch.topic));
+  await Promise.all(stale.map((ch) => client.removeChannel(ch)));
+}
+
 /** 订一间房（migration 0067 的两个私有频道）：
     - room-sys:<id>：数据库触发器发的 change / members / closed——成员只读，**系统事件只信这一条**；
     - room:<id>：成员之间的即时消息 msg（成员可写；在这条上冒充 change / closed 的一律不听）。
-    send 过速率闸与 4 KB 上限；自己发的不回送（self: false） */
-export function subscribeRoom(client: SupabaseClient, roomId: string, selfUid: string, h: RoomLinkHandlers): { send(msg: unknown): Promise<void>; close(): void } {
+    send 过速率闸与 4 KB 上限；自己发的不回送（self: false）。
+    同一间房重订之前，调用方要先 await 上一条的 close() 与 releaseRoomChannels() */
+export function subscribeRoom(client: SupabaseClient, roomId: string, selfUid: string, h: RoomLinkHandlers): RoomLink {
   const gate = createRateGate(ROOM_MSG_PER_SEC);
   const sys = client
     .channel(roomSysTopic(roomId), { config: { private: true } })
@@ -136,9 +152,8 @@ export function subscribeRoom(client: SupabaseClient, roomId: string, selfUid: s
       if (!gate()) throw new Error("发得太快了（每秒最多 20 条）");
       await chat.send({ type: "broadcast", event: "msg", payload: { from: selfUid, msg } });
     },
-    close() {
-      void client.removeChannel(sys);
-      void client.removeChannel(chat);
+    async close() {
+      await Promise.all([client.removeChannel(sys), client.removeChannel(chat)]);
     },
   };
 }

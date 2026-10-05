@@ -9,7 +9,7 @@ import * as Haptics from "expo-haptics";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
 import type { AppRow, AppVersionRow } from "../../../src/shared/apps.js";
 import { encodeRoomInvite, familyOf, type RoomMember, type RoomRow } from "../../../src/shared/appRoom.js";
-import { createRoom, fetchMembers, fetchRoom, inviteToRoom, joinRoom, leaveRoom, listRooms, pingRoom, roomData, subscribeRoom } from "../../../src/shared/appRoomApi.js";
+import { createRoom, fetchMembers, fetchRoom, inviteToRoom, joinRoom, leaveRoom, listRooms, pingRoom, releaseRoomChannels, roomData, subscribeRoom, type RoomLink } from "../../../src/shared/appRoomApi.js";
 import { APP_BRIDGE_JS, appAskText, appFixText, bridgeDenied, bridgeEventJs, bridgeReplyJs, parseBridgeError, parseBridgeRequest, type BridgeRequest } from "../../../src/shared/appBridge.js";
 import { appData, appPageOk, fetchAppVersion, fetchApps } from "../../../src/shared/appsApi.js";
 import { ADMIN_AGENT_ID } from "../../../src/shared/workspaceAgents.js";
@@ -28,6 +28,10 @@ import { markAppOpened } from "./recentApps.js";
 import { appFileUri, ensureAppFiles } from "./appFiles.js";
 
 type Props = NativeStackScreenProps<RootStackParams, "MiniApp">;
+
+/** 房间频道断了的重订（spec §5.2）：等 2s 起翻倍、单次封顶 30s，连败 6 次放弃（订上了清零；从后台回来重新算） */
+const RELINK_TRIES_MAX = 6;
+const RELINK_WAIT_MAX_MS = 30_000;
 
 type Loaded = { app: AppRow; version: AppVersionRow; dirUri: string; uid: string; room: RoomRow | null; members: RoomMember[] };
 
@@ -54,7 +58,13 @@ export function MiniAppScreen({ route, navigation }: Props) {
   const [sharing, setSharing] = useState<{ key: number; visible: boolean; mode: "share" | "invite" } | null>(null);
   /** room.invite() 的回执在选人框关掉时给（选了谁 / 取消 = 空） */
   const inviteDone = useRef<((uids: string[]) => void) | null>(null);
-  const roomLink = useRef<ReturnType<typeof subscribeRoom> | null>(null);
+  const roomLink = useRef<RoomLink | null>(null);
+  /** 上一条房间链拆完的那一刻：新订阅排在它后面（同名频道还在 leaving 时 subscribe 是空操作） */
+  const prevClose = useRef<Promise<void>>(Promise.resolve());
+  /** 连着重订失败了几次（跨 effect 重跑留着） */
+  const relinkFails = useRef(0);
+  /** 真进过后台没有：拉通知栏 / 控制中心 / 弹窗只是 inactive → active，socket 好好的，不重订 */
+  const sawBackground = useRef(false);
   /** 重订房间频道的计数（spec §5.2）：回前台 / 频道断了各加一，订阅 effect 跟着重跑并 resync */
   const [relink, setRelink] = useState(0);
   const [shareBusy, setShareBusy] = useState(false);
@@ -216,10 +226,12 @@ export function MiniAppScreen({ route, navigation }: Props) {
   useEffect(() => {
     if (loaded === null || loaded.room === null) return;
     const roomId = loaded.room.id;
-    /** 自己关的（离开页面 / 重订前）——之后频道报的 CLOSED 不算断 */
+    const uid = loaded.uid;
+    /** 自己关的（离开页面 / 重订前）——之后频道报的 CLOSED 不算断，也不再订 */
     let closing = false;
     let retry: ReturnType<typeof setTimeout> | null = null;
     let synced = false;
+    let link: RoomLink | null = null;
     const push = (js: string): void => { if (!closing) web.current?.injectJavaScript(js); };
     const refreshMembers = (): void => {
       void fetchMembers(supabase, roomId).then((m) => {
@@ -231,45 +243,70 @@ export function MiniAppScreen({ route, navigation }: Props) {
         push(bridgeEventJs("room.members", { members: m }));
       });
     };
-    /** 频道断了：退避一下再重订（服务端一直拒时不至于打转） */
+    /** 频道断了：指数退避再重订，连败到顶就放弃（服务端一直拒时不至于一直打） */
     const again = (): void => {
       if (closing || retry !== null) return;
-      retry = setTimeout(() => { retry = null; if (!closing) setRelink((n) => n + 1); }, 2000);
+      if (relinkFails.current >= RELINK_TRIES_MAX) return;
+      const wait = Math.min(2000 * 2 ** relinkFails.current, RELINK_WAIT_MAX_MS);
+      relinkFails.current += 1;
+      retry = setTimeout(() => { retry = null; if (!closing) setRelink((n) => n + 1); }, wait);
     };
-    const link = subscribeRoom(supabase, loaded.room.id, loaded.uid, {
-      change: (e) => push(bridgeEventJs("room.change", e)),
-      members: refreshMembers,
-      closed: () => {
-        const cur = loadedRef.current;
-        if (cur !== null && cur.room !== null) {
-          const next = { ...cur, room: { ...cur.room, closed: true } };
-          loadedRef.current = next;
-          setLoaded(next);
-        }
-        push(bridgeEventJs("room.closed", {}));
-      },
-      message: (from, msg) => push(bridgeEventJs("room.message", { from, msg })),
-      status: (s) => {
+    const before = prevClose.current;
+    const started = before
+      .then(() => releaseRoomChannels(supabase, roomId))
+      .then(() => {
         if (closing) return;
-        if (s === "CHANNEL_ERROR" || s === "TIMED_OUT" || s === "CLOSED") again();
-        // 重订上了（不是第一次订）：断着的那段可能漏了推送，全量补一遍
-        else if (s === "SUBSCRIBED" && relink > 0 && !synced) {
-          synced = true;
-          void roomData.list(supabase, roomId, "").then((rows) => {
-            for (const e of rows) push(bridgeEventJs("room.change", e));
-          }, () => undefined);
-          refreshMembers();
-        }
-      },
-    });
-    roomLink.current = link;
-    return () => { closing = true; if (retry !== null) clearTimeout(retry); link.close(); };
+        link = subscribeRoom(supabase, roomId, uid, {
+          change: (e) => push(bridgeEventJs("room.change", e)),
+          members: refreshMembers,
+          closed: () => {
+            const cur = loadedRef.current;
+            if (cur !== null && cur.room !== null) {
+              const next = { ...cur, room: { ...cur.room, closed: true } };
+              loadedRef.current = next;
+              setLoaded(next);
+            }
+            push(bridgeEventJs("room.closed", {}));
+          },
+          message: (from, msg) => push(bridgeEventJs("room.message", { from, msg })),
+          status: (s) => {
+            if (closing) return;
+            if (s === "CHANNEL_ERROR" || s === "TIMED_OUT" || s === "CLOSED") again();
+            else if (s === "SUBSCRIBED") {
+              relinkFails.current = 0;
+              // 重订上了（不是第一次订）：断着的那段可能漏了推送，全量补一遍
+              if (relink > 0 && !synced) {
+                synced = true;
+                void roomData.list(supabase, roomId, "").then((rows) => {
+                  for (const e of rows) push(bridgeEventJs("room.change", e));
+                }, () => undefined);
+                refreshMembers();
+              }
+            }
+          },
+        });
+        roomLink.current = link;
+      })
+      .catch(() => { if (!closing) again(); });
+    // 收尾：还没订上的不会再订（closing）；订上了的拆掉——下一条订阅等它拆完
+    return () => {
+      closing = true;
+      if (retry !== null) clearTimeout(retry);
+      prevClose.current = started.then(() => link?.close()).catch(() => undefined);
+    };
   }, [loaded?.room?.id, relink]);
 
-  // 回前台就重订（spec §5.2：后台里 socket 多半被系统掐了）
+  // 真从后台回来才重订（spec §5.2：后台里 socket 多半被系统掐了）
   useEffect(() => {
     if (loaded === null || loaded.room === null) return;
-    const sub = AppState.addEventListener("change", (st) => { if (st === "active") setRelink((n) => n + 1); });
+    const sub = AppState.addEventListener("change", (st) => {
+      if (st === "background") sawBackground.current = true;
+      else if (st === "active" && sawBackground.current) {
+        sawBackground.current = false;
+        relinkFails.current = 0;
+        setRelink((n) => n + 1);
+      }
+    });
     return () => sub.remove();
   }, [loaded?.room?.id]);
 

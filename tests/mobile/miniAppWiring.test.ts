@@ -101,13 +101,22 @@ describe("房间模式（#1675）", () => {
     expect(src).toContain("进不了这一局的那一版（先在私聊里点加入）");
   });
   it("订阅推成 otto 事件；离开页面退订", () => {
-    expect(src).toMatch(/subscribeRoom\(supabase, loaded\.room\.id, loaded\.uid, \{/);
+    expect(src).toMatch(/const roomId = loaded\.room\.id;\s*const uid = loaded\.uid;/);
+    expect(src).toMatch(/link = subscribeRoom\(supabase, roomId, uid, \{/);
     expect(src).toMatch(/bridgeEventJs\("room\.change", e\)/);
     expect(src).toMatch(/bridgeEventJs\("room\.message", \{ from, msg \}\)/);
-    expect(src).toMatch(/return \(\) => \{ closing = true; if \(retry !== null\) clearTimeout\(retry\); link\.close\(\); \};/);
+    expect(src).toMatch(/closing = true;\s*if \(retry !== null\) clearTimeout\(retry\);\s*prevClose\.current = started\.then\(\(\) => link\?\.close\(\)\)/);
   });
   it("回前台 / 频道断了就重订，重订后 resync（全量 room.change + room.members）；自己关的不算断", () => {
-    expect(src).toMatch(/AppState\.addEventListener\("change", \(st\) => \{ if \(st === "active"\) setRelink\(\(n\) => n \+ 1\); \}\)/);
+    expect(src).toMatch(/AppState\.addEventListener\("change", \(st\) => \{/);
+    // 只认真从后台回来（拉通知栏 / 控制中心是 inactive → active，socket 好好的，不掐）
+    expect(src).toMatch(/if \(st === "background"\) sawBackground\.current = true;\s*else if \(st === "active" && sawBackground\.current\) \{/);
+    // 新订阅排在上一条真拆完、这间房残留频道清掉之后（realtime-js 同名频道还在 leaving 时 subscribe 是空操作）
+    expect(src).toMatch(/const started = before\s*\.then\(\(\) => releaseRoomChannels\(supabase, roomId\)\)\s*\.then\(\(\) => \{\s*if \(closing\) return;/);
+    // 退避 2s 起翻倍、封顶 30s，连败 6 次放弃；订上了清零
+    expect(src).toMatch(/const RELINK_TRIES_MAX = 6;/);
+    expect(src).toMatch(/Math\.min\(2000 \* 2 \*\* relinkFails\.current, RELINK_WAIT_MAX_MS\)/);
+    expect(src).toMatch(/if \(relinkFails\.current >= RELINK_TRIES_MAX\) return;/);
     expect(src).toMatch(/if \(s === "CHANNEL_ERROR" \|\| s === "TIMED_OUT" \|\| s === "CLOSED"\) again\(\);/);
     expect(src).toMatch(/if \(closing \|\| retry !== null\) return;/);
     expect(src).toMatch(/void roomData\.list\(supabase, roomId, ""\)\.then\(/);
