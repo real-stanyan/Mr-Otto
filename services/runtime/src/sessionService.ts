@@ -1055,6 +1055,24 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     routineTurn = routineTurn || covered.some((u) => u.greeting === "routine");
     ownerSpoke = ownerSpoke && t.ownerSpoke && depth === 0 && !rerunTurn;
   };
+  /** 这一轮能不能读健康数据（#1656）：人亲口 = 这一轮覆盖的每一条开场白都是同一个人亲手发的，没有招呼 / 接力 */
+  const healthEligible = (initiator: string, covered: readonly UserMessageEvent[], depth: number): boolean =>
+    healthTurnEligible({
+      approveAll: opts.approveAll, ownerUid: opts.ownerUid, initiator,
+      depth, routine: routineTurn, report: reportTurn, rerun: rerunTurn,
+      soleSpeaker: covered.every((u) => u.fromUid === initiator && u.relay === undefined && u.greeting === undefined),
+    });
+  /** 一轮跑着的时候又落了条别人的话（或招呼 / 接力）→ 之后每圈不再亮 read_health（#1656）。只收紧不放松。
+      与 tightenSupervision 分开：它在团队会话（approveAll 为假）里直接返回，而团队会话没有审批卡兜底——
+      成员 B 的一句话折进成员 A 的这一轮，模型就能读 A 的手机回答 B。工具表每圈重算，所以改旗就够 */
+  const tightenHealth = (e: SessionEvent): void => {
+    if (currentAgentId === null || !healthTurn) return;
+    if (e.type === "user_message") {
+      if (e.greeting !== undefined || e.relay !== undefined || (e.fromUid !== undefined && e.fromUid !== currentInitiator)) healthTurn = false;
+    } else if (e.type === "chat_message" && e.fromUid !== undefined && e.fromUid !== "system" && e.fromUid !== currentInitiator) {
+      healthTurn = false;
+    }
+  };
   const supervisedTurn = (): boolean => opts.approveAll && (guestTurn() || reportTurn || (foldedNonOwner && !collabAccepted()));
   /** 这一刻正在跑 turn 的是哪只 agent（#928）。approval_request 落盘时读它——
       群里两只 agent 各自弹出的审批卡，日志里要能分清是谁要的 */
@@ -1326,6 +1344,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     deltas.flush();
     lastSeqSeen = e.seq;
     tightenSupervision(e);
+    tightenHealth(e);
     if (e.type === "turn_ended" && e.agentId) lastTurnEndedTs.set(e.agentId, e.ts);
     // 尾段下界跟着走（#958）。**别把它读成「这里是唯一的落盘口，所以折叠结果
     // 精确等于对整份日志折叠一次」**（复审 Minor ③）：那句话不真——daemon.ts 往
@@ -1788,7 +1807,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 回电那把刀（#1411）：推送开着才挂，每只都挂、不过审批门（客人点起的那一轮由下面 guestTurn 掀成要群主批）。
     // 打给叫起这一轮的那个人；名字现取（改名后下一通来电写的是新名字）
     // read_health（#1656）：daemon 接了健康通道才建；挂不挂由 tools() 每圈按 healthTurn + 发起人此刻有没有能力连接现判
-    const healthTool = opts.health === undefined ? null : createReadHealthTool({ gateway: opts.health, initiator: () => currentInitiator });
+    const healthGateway = opts.health ?? null;
+    const healthTool = healthGateway === null ? null : createReadHealthTool({ gateway: healthGateway, initiator: () => currentInitiator, allowed: () => healthTurn });
     const callUserTool =
       ringer === null
         ? null
@@ -1967,7 +1987,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           // 只给 apps 域的专员（#1591 真机：管理员拿着这把刀就自己下场了，主人要的是专人专管）
           ...(buildAppTool !== null && me !== null && domainOf(me) === "apps" ? [buildAppTool] : []),
           // 手机不在线时不亮（#1656）：亮出来只会换一句「没连着」；调用时仍会现选一次 cid（中途可能换了连接）
-          ...(healthTool !== null && healthTurn && currentInitiator !== null && opts.health!.cidOf(currentInitiator) !== null ? [healthTool] : []),
+          ...(healthTool !== null && healthGateway !== null && healthTurn && currentInitiator !== null && healthGateway.cidOf(currentInitiator) !== null ? [healthTool] : []),
           ...px,
         ];
         // 汇报轮同理（#1441）：supervisedTurn = 客人那一轮 或 汇报轮
@@ -2832,11 +2852,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     foldedNonOwner = false;
     rerunTurn = false;
     ownerSpoke = true;
-    applyTraits(traitOpenings(job), openingDepth);
-    healthTurn = healthTurnEligible({
-      approveAll: opts.approveAll, ownerUid: opts.ownerUid, initiator: job.fromUid,
-      depth: openingDepth, routine: routineTurn, report: reportTurn, rerun: rerunTurn,
-    });
+    const traitCovered = traitOpenings(job);
+    applyTraits(traitCovered, openingDepth);
+    healthTurn = healthEligible(job.fromUid, traitCovered, openingDepth);
     currentAgentId = job.agentId;
     // 停止键的 idle 判据（#957 A-2 复审）：从**这一刻**起这条会话就欠着一轮，
     // 哪怕 engine 还要几次网络往返之后才拿得到。界面上那行此刻已经在转了
@@ -3031,7 +3049,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 开场白（汇报 / 客人的话）可能已经落盘——job 早已出队，它们自己另排一个 job，却已经在这一轮
       // 引擎读的日志里。与 engine 起跑是同一段同步代码，之后落的由 tightenSupervision 接着收紧
       const lastCovered = traitOpenings(job);
-      applyTraits(lastCovered, lastCovered.reduce((m, u) => Math.max(m, relayDepthOf(u)), 0));
+      const lastDepth = lastCovered.reduce((m, u) => Math.max(m, relayDepthOf(u)), 0);
+      applyTraits(lastCovered, lastDepth);
+      // 健康旗同样最后一刻再算一次，只往严的一边改（#1656）
+      healthTurn = healthTurn && healthEligible(job.fromUid, lastCovered, lastDepth);
       turnBoundary = lastSeqSeen;
       currentEngine = engine;
       // 开场白早在 say() 那一刻就落盘了（#932 坑 ②），这里只是对它起 turn——

@@ -11,19 +11,24 @@ export const READ_HEALTH_TOOL_NAME = READ_HEALTH_TOOL;
 
 export type HealthGateway = Pick<HealthBroker, "cidOf" | "request">;
 
-/** 这一轮能不能读健康数据：人亲口说的（不是接力棒 / 定时任务 / 汇报 / 重启补跑）；主场里（个人空间、私密车道、
+/** 这一轮能不能读健康数据：人亲口说的（人亲口 = 这一轮覆盖的每一条开场白都是同一个人亲手发的，没有招呼 / 接力；
+    系统替人落的开场白带着人的 fromUid，不能凭它算亲口——soleSpeaker 由调用方按开场白逐条核）。不是接力棒 / 定时任务 / 汇报 / 重启补跑；主场里（个人空间、私密车道、
     好友群）只认主人——客人那一轮读不到主人的手机，也不该读他们自己的（数据会落进主人的日志）。团队会话里哪位成员
     亲口都行：读的是他自己的手机，回答在他自己选的群里 */
 export function healthTurnEligible(t: {
   approveAll: boolean; ownerUid: string; initiator: string | null;
-  depth: number; routine: boolean; report: boolean; rerun: boolean;
+  depth: number; routine: boolean; report: boolean; rerun: boolean; soleSpeaker: boolean;
 }): boolean {
   if (t.initiator === null || t.initiator === "system") return false;
+  if (!t.soleSpeaker) return false;
   if (t.depth > 0 || t.routine || t.report || t.rerun) return false;
   return t.approveAll ? t.initiator === t.ownerUid : true;
 }
 
-export function createReadHealthTool(deps: { gateway: HealthGateway; initiator: () => string | null }): Tool {
+/** allowed：调用那一刻这一轮还算「人亲口」吗（sessionService 传 healthTurn）。引擎的工具表中途只长不缩（engine
+    refreshToolsKeepingNames：模型见过的名字必须还查得到），所以一轮中途别人的话折进来之后，tools() 不亮它也撤不掉
+    已经亮出去的这把刀——闸得落在调用口上 */
+export function createReadHealthTool(deps: { gateway: HealthGateway; initiator: () => string | null; allowed: () => boolean }): Tool {
   return {
     def: {
       name: READ_HEALTH_TOOL_NAME,
@@ -44,6 +49,7 @@ export function createReadHealthTool(deps: { gateway: HealthGateway; initiator: 
     },
     requiresApproval: false,
     async run(args, _world, ctx) {
+      if (!deps.allowed()) throw new Error("这一轮已经不是他一个人亲口问的了（中途有别人的话并进来），读不了他的健康数据。");
       const q = parseHealthQuery(args);
       if (q === null) {
         throw new Error(`参数不对：metrics 取 ${HEALTH_METRICS.join(" / ")} 里的一个或几个；from、to 是 YYYY-MM-DD，from 不晚于 to，跨度不超过 ${HEALTH_MAX_SPAN_DAYS} 天。`);
