@@ -2556,7 +2556,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         // 这两种对话在手机上没有审批卡可点，掀成要批只会让卡等两分钟超时、整条对话堵住。刀干脆不亮：
         // 它用主人已经说过、写给朋友看的东西回话；要动主人的东西，回一句「得问 X 本人」。
         // message_friend_agent 例外（只说话，同下面那条不掀的例外）
-        if ((isPair || isAdmins) && guestTurn()) return list.filter((t) => t.def.name === MESSAGE_FRIEND_AGENT_TOOL_NAME);
+        // 主人和自己管理员的私聊里，对面管理员的协作回话接力进来的那一轮（#1683 模拟：Bea 的管理员回了话，Paolo 的专员接着要做 Excel、
+        // 写笔记，每一步都弹卡，Paolo 不在，两分钟超时全拒）：同车道，刀不亮——把对面说的转告主人，要动手等主人下一句
+        if ((isPair || isAdmins || chatKind === "dm") && guestTurn()) return list.filter((t) => t.def.name === MESSAGE_FRIEND_AGENT_TOOL_NAME);
         // 车道里一轮跑到一半混进了别人的话（对面管理员的回话接力进来、朋友插了一句）：同样没有卡可点（#1526）。
         // 不掀审批，那一下调用直接拒、说清为什么——#1682 模拟里一张 invite_collaborator 的卡在私密车道里干等了十分钟
         const lane = isPair || isAdmins;

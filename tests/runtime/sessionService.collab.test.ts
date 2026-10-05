@@ -249,6 +249,13 @@ describe("A 家：invite_collaborator 的落点", () => {
     expect(b.requests[0]).toMatchObject({ ownerUid: "u_a", peerUid: "u_m", origin: { workspaceId: "wa", sessionId: "s1" }, event: { quote: { ownerName: "Arjun Mehta" } } });
     const req = store.load("s1").find((e): e is CollabRequestEvent => e.type === "collab_request")!;
     expect(taskFoldOf(store.load("s1"), "wa").get(req.taskId)!.collaborator).toMatchObject({ uid: "u_m", state: "pending" });
+    // 对面管理员的回话接力进来：那一轮刀不亮（同车道）——转告主人，要动手等主人下一句；不弹没人点的卡
+    const before = tools.length;
+    s.receiveCollabReply({ fromUid: "u_m", text: "Within policy: SGD 23.8/head.", fromAgentId: "admin", fromAgentName: "Abacus" });
+    await s.settled();
+    expect(tools.length).toBeGreaterThan(before);
+    expect(tools[tools.length - 1]).toEqual([]);
+    expect(store.load("s1").some((e) => e.type === "approval_request")).toBe(false);
     store.close();
   });
 
