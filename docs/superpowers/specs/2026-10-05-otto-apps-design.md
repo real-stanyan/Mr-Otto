@@ -110,7 +110,7 @@ app.js / app.css 任意数量的静态文件
 | **4 原生包那批** | `expo-calendar`（系统日历）、将来要的别的原生件 | 不能（TestFlight） |
 | **5 对外** | 应用发布成 `mrotto.agency/a/<id>` 公开网页（edge 托管），店主做的东西给顾客用 | edge 部署 |
 
-**实施状态（2026-10-05）**：第 1 期拆成 a（runtime 半）与 b（手机半），plan 在 `docs/superpowers/plans/2026-10-05-otto-apps-p1.md`。1a 已做：`src/shared/apps.ts` / `build_app` / `app_card` / `apps` 域 / 0063。plan 对本文的三处小修也生效：**不打 zip**（按文件表逐个传与下，对象路径 `<uid>/<appId>/<version>/<path>`）；`build_app` 只给管理员与 apps 域专员；`ask` 第一期只走聊天那一侧。1b 未做。
+**实施状态（2026-10-05）**：第 1 期拆成 a（runtime 半）与 b（手机半），plan 在 `docs/superpowers/plans/2026-10-05-otto-apps-p1.md`。1a 已做：`src/shared/apps.ts` / `build_app` / `app_card` / `apps` 域 / 0063。plan 对本文的三处小修也生效：**不打 zip**（按文件表逐个传与下，对象路径 `<uid>/<appId>/<version>/<path>`）；`build_app` 只给管理员与 apps 域专员；`ask` 第一期只走聊天那一侧。1b 已做（手机半：应用页「我的应用」、`MiniAppScreen` WebView 宿主 + 桥 storage / nav / share / ask / haptic、聊天里的应用卡）；桥的 notify / remind / camera 与 ask 的回路在第 2 期。
 
 ## 6. 否掉的备选
 
