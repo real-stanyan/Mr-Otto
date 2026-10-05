@@ -58,6 +58,7 @@ const DURABLE = [
   "collab_decision",
   "outreach",
   "friend_pick",
+  "app_connect",
   "chat_roster_changed",
   "executor_changed",
   "memory_loaded",

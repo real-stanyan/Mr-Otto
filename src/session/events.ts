@@ -112,8 +112,9 @@ export interface UserMessageEvent extends SessionEventBase {
       与别的 greeting 两处不同：① 它**算主人亲口**（openingTraits 的 ownerSpoke 放行它——任务原话是主人写的）；
       ② 手机时间线**画它**（一条居中灰条「⏰ 定时任务「x」」）：别的 greeting 都有前一条可见事件解释「为什么它开口了」，
       这条没有。桌面照旧藏。同样不进协议位
-      friend_relay（#1655）：朋友在外联里让管理员带话，落在主人的管理员私聊里，受监督；owner_reply（#1655）：主人的回话落回外联，起一轮让管理员转告朋友。*/
-  greeting?: "voice_call" | "new_agent" | "callback" | "outreach" | "outreach_report" | "admin_intro" | "pair_call_summary" | "routine" | "dnd_report" | "collab_accept" | "escalation" | "friend_relay" | "owner_reply";
+      friend_relay（#1655）：朋友在外联里让管理员带话，落在主人的管理员私聊里，受监督；owner_reply（#1655）：主人的回话落回外联，起一轮让管理员转告朋友。
+      app_connected / app_declined（#1666）：连接卡的结局，算主人亲口（只有主人点得出来）。*/
+  greeting?: "voice_call" | "new_agent" | "callback" | "outreach" | "outreach_report" | "admin_intro" | "pair_call_summary" | "routine" | "dnd_report" | "collab_accept" | "escalation" | "friend_relay" | "owner_reply" | "app_connected" | "app_declined";
   /** 这句话是**在语音通话里说出来的**（#1233）。缺席 = 打字打的 / 旧日志。
       **只是记号**：起 turn、排队、护栏、接力链首、派活全都不看它，模型投影
       （deriveMessages）读都不读——对模型来说这就是一条普通的用户消息，和从前
@@ -876,6 +877,24 @@ export interface FriendPickEvent extends SessionEventBase {
   ignorable: true;
 }
 
+/** 智能体要用一个还没连上的连接器目录应用时，在会话里弹的一张连接卡（#1666）。`offered` 开头（带应用、理由与缘由），
+    之后至多一条 `connected` / `dismissed`。过期（offered 超过 24 小时）与被顶掉（之后同一应用又出了一张新卡）
+    不落事件，读的时候算（appConnect.ts 的 appConnectStatus）。**叫 `fromAgentId` 不叫 `agentId`**：同 outreach / friend_pick。
+    模型不可见（`ignorable`）：出卡由 request_app_connect 的 tool_result 告诉它，结局由 `app_connected` / `app_declined`
+    开场白告诉它 */
+export interface AppConnectEvent extends SessionEventBase {
+  type: "app_connect";
+  connectId: string;
+  phase: "offered" | "connected" | "dismissed";
+  fromAgentId: string;
+  /** offered 才有 */
+  catalogId?: string;
+  appName?: string;
+  why?: string;
+  reason?: "missing" | "needs_login";
+  ignorable: true;
+}
+
 /** 聊天名单变了（#1280，spec §5.1）。`agents` 是变动之后的**完整**名单，名字是写入那一刻的
     快照（同 voice_call_changed：改名不改史）。最新一条胜出，投影在 src/shared/chatRoster.ts；
     一条都没有 = 这条会话没有名单这回事（团队会话 / 存量日志）= 整份团队名单都在。
@@ -1417,6 +1436,7 @@ export type SessionEvent =
   | AppCardEvent
   | OutreachEvent
   | FriendPickEvent
+  | AppConnectEvent
   | ChatRosterChangedEvent
   | ExecutorChangedEvent
   | MemoryLoadedEvent
@@ -1496,6 +1516,7 @@ const KNOWN_EVENT_TYPES_MAP: Record<SessionEvent["type"], true> = {
   app_card: true,
   outreach: true,
   friend_pick: true,
+  app_connect: true,
   chat_roster_changed: true,
   executor_changed: true,
   memory_loaded: true,

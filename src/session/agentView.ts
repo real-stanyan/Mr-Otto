@@ -131,6 +131,8 @@ const OTHER_AGENT_VERDICTS: Record<SessionEvent["type"], OtherAgentVerdict> = {
   outreach: "keep",
   // 选人卡（#1520）：同 outreach，故意叫 fromAgentId，这张表轮不到它，仍要表态
   friend_pick: "keep",
+  // 连接卡（#1666）：同 friend_pick，故意叫 fromAgentId，这张表轮不到它，仍要表态
+  app_connect: "keep",
   background_task_started: "drop",
   background_task_completed: "drop",
   image_described: "drop",

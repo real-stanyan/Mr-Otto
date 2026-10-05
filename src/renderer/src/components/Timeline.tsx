@@ -708,6 +708,9 @@ export const EventRow = memo(function EventRow({ event, isLast = false }: { even
     // 选人卡（#1520）：手机上画，本机会话不会出现它
     case "friend_pick":
       return null;
+    // 连接卡（#1666）：手机上画，本机会话不会出现它
+    case "app_connect":
+      return null;
 
     // lifecycle 事件（ADR-0004）：聊天区是对话投影，系统脉搏不在这渲染（回放里看）。
     // 唯一例外：turn 暴死——错误从此是日志事实，重开 app 还在

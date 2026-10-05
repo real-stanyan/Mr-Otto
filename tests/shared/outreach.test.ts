@@ -124,6 +124,10 @@ describe("openingTraits（#1441 复审：job 折叠开场白时一律往严算�
     expect(o.openingTraits([plain, { fromUid: OWNER, greeting: "new_agent" }], OWNER)).toMatchObject({ ownerSpoke: false, nonOwner: false });
     expect(o.openingTraits([plain, {}], OWNER)).toMatchObject({ ownerSpoke: false, nonOwner: true });
   });
+  it("连接卡结局开场白（#1666）同 collab_accept：只有主人点得出来，算主人亲口，不是汇报", () => {
+    expect(o.openingTraits([{ fromUid: OWNER, greeting: "app_connected" }], OWNER)).toMatchObject({ ownerSpoke: true, report: false });
+    expect(o.openingTraits([{ fromUid: OWNER, greeting: "app_declined" }], OWNER)).toMatchObject({ ownerSpoke: true, report: false });
+  });
   it("一条都没有：不算主人亲口", () => {
     expect(o.openingTraits([], OWNER).ownerSpoke).toBe(false);
   });
