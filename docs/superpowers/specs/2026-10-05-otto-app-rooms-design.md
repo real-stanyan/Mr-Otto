@@ -105,7 +105,7 @@ app_room_pings    id bigserial · room_id · from_uid · text（1–80）· crea
 otto.room.current()                    → 当前房间 {id, title, hostUid, version, me:{uid,name}, members:[{uid,name,status}]} | null
 otto.room.create({title})              → 建一间并进去（宿主重载进房间模式）
 otto.room.invite()                     → 宿主弹好友选择（同分享那个选人框）→ 发邀请卡 → 回被邀的 uid 列表
-otto.room.list()                       → 我在的、属于这个应用一家子的房间 [{id,title,hostUid,closed,updatedAt}]
+otto.room.rooms()                      → 我在的、属于这个应用一家子的房间 [{id,title,hostUid,closed,updatedAt}]
 otto.room.open(id)                     → 宿主重载进那一间
 otto.room.leave()                      → 离开（房主 = 关房）
 otto.room.get(key) / list(prefix)      → 值 / [{key,value,rev,by}]
@@ -146,7 +146,7 @@ otto.on(event, cb) / otto.off(event, cb)
 ## 7. 应用专员那一侧
 
 - `tierPrompt` 的 appsLine 加一句房间：「要和好友一起玩 / 一起记的，清单声明 `room`，用 `otto.room`（create / invite / get / set(ifRev) / send / ping，`otto.on('room.change'|'room.message')`）；
-  个人的东西仍放 `otto.storage`；回合制落子用 ifRev 防抢写，落完 ping 对方」。完整 API 写进沙箱里的 `/work/.otto/appcheck/BRIDGE.md`（专员会读这个目录，见 #1661 C2 的工具调用）。
+  个人的东西仍放 `otto.storage`；回合制落子用 ifRev 防抢写，落完 ping 对方」。完整 API 写进 `build_app` 的工具说明（专员写应用之前就看得到；沙箱里的 `/work/.otto/appcheck/` 要第一次 build_app 才生成，不适合放文档）。
 - 管理员那段：「和好友一起玩 / 一起记」的需求是应用域的活，照常派；不再说「做不了」。
 
 ## 8. 测试
