@@ -6,7 +6,8 @@ import HealthKit
 // · 心率 / 血氧：min / avg / max；静息心率、HRV：avg
 // · 体重 / 体脂：每天最后一条
 // · 站立小时：appleStandHour 里 stood 的样本数
-// · 睡眠：按一夜（相邻样本间隔 < 2 小时合为一段）归到醒来那天，段内按分期累加分钟；
+// · 睡眠：按一夜（相邻样本间隔 <= 2 小时合为一段）归到醒来那天，段内按分期累加分钟；
+//   样本前后各多取 12 小时（头一天的前半夜 / to 当天晚上才开始的下一夜），段尾不在 (start, end] 的整段丢；
 //   一段里有 Apple Watch 来源时只用手表的（防手表 + 手机重复计）。
 //   iOS 16 起手表把一夜写成很多短的分期小段，若逐条按各自结束时间归日，一夜会被午夜劈成两天。
 // · 训练：HKWorkout 列表
@@ -122,10 +123,12 @@ struct HealthReader {
     }
 
     if metrics.contains("sleep") {
-      // 按一夜归日：多取前 12 小时，让头一天前一晚的前半夜也在手里；
+      // 按一夜归日：前后各多取 12 小时。前面让头一天前一晚的前半夜也在手里；
+      // 后面让 to 当天 23:00 才开始的那一夜完整落进来——不然它在午夜前断开的那几段会单独成一个段尾 <= end 的残段，
+      // 被记到 to 头上，还和当天早上醒来的真夜晚加在一起；取全后它的段尾 > end，被下面的过滤整段丢掉。
       // 按开始时间排序，相邻样本间隔 <= 2 小时就并进同一段（段尾取见过的最大 endDate），段尾落在 (start, end] 的才要，
       // 以段尾 - 1 秒所在的日子为键（醒来那天；恰好 00:00 醒的算前一天结束）。
-      let raw = try await samples(HKCategoryType(.sleepAnalysis), start: start.addingTimeInterval(-12 * 3600), end: end) as? [HKCategorySample] ?? []
+      let raw = try await samples(HKCategoryType(.sleepAnalysis), start: start.addingTimeInterval(-12 * 3600), end: end.addingTimeInterval(12 * 3600)) as? [HKCategorySample] ?? []
       let sorted = raw.sorted { $0.startDate < $1.startDate }
       var sessions: [(end: Date, samples: [HKCategorySample])] = []
       for s in sorted {
