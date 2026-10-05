@@ -731,6 +731,50 @@ describe("选人卡一行（#1520）", () => {
   });
 });
 
+describe("连接卡一行（#1666）", () => {
+  const offer = (connectId: string, ts = DAY) => e({
+    type: "app_connect", connectId, phase: "offered", fromAgentId: "a_000000000002", ts,
+    catalogId: "notion", appName: "Notion", why: "要把会议纪要存进你的 Notion", reason: "missing", ignorable: true,
+  });
+  const rowsOf = (events: SessionEvent[], now = DAY, selfUid = "me") =>
+    chatRows({ events, ws: WS, selfUid, now, ownerUid: "me" }).filter((r) => r.kind === "app_connect");
+
+  it("offered 的位置出一行，带应用、为什么、是谁发的；还开着 = open；主人点得了", () => {
+    seq = 0;
+    expect(rowsOf([offer("c1")])).toEqual([{
+      kind: "app_connect", key: "app_connect-c1", ts: DAY, seq: 0, connectId: "c1", agentId: "a_000000000002", name: "运维",
+      catalogId: "notion", appName: "Notion", why: "要把会议纪要存进你的 Notion", reason: "missing", status: "open", canAct: true, waitingFor: "Stan",
+    }]);
+  });
+
+  it("needs_login 卡带上 reason：手机据此在自己的视图还说「好着」时也给「重新登录」", () => {
+    seq = 0;
+    const relogin = e({
+      type: "app_connect", connectId: "c2", phase: "offered", fromAgentId: "a_000000000002", ts: DAY,
+      catalogId: "notion", appName: "Notion", why: "它的登录过期了", reason: "needs_login", ignorable: true,
+    });
+    expect(rowsOf([relogin])[0]).toMatchObject({ reason: "needs_login" });
+  });
+
+  it("canAct 只给主人：客人看到的是只读的卡", () => {
+    seq = 0;
+    expect(rowsOf([offer("c1")], DAY, "u_guest")[0]).toMatchObject({ canAct: false, waitingFor: "Stan" });
+  });
+
+  it("之后落 connected：同一行变 connected，不多出行", () => {
+    seq = 0;
+    const done = e({ type: "app_connect", connectId: "c1", phase: "connected", fromAgentId: "a_000000000002", ignorable: true });
+    const rows = rowsOf([offer("c1"), done]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ status: "connected" });
+  });
+
+  it("过了 24 小时：expired", () => {
+    seq = 0;
+    expect(rowsOf([offer("c1")], DAY + 24 * 60 * 60_000 + 1)[0]).toMatchObject({ status: "expired" });
+  });
+});
+
 describe("任务卡（#1571 第 4 步）", () => {
   it("一个任务一张卡，在 task_created 的位置；状态 / 派给谁 / 问主人的话从日志折出来；别的 task_* 事件不占行", () => {
     const events = [

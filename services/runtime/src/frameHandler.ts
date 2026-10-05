@@ -987,6 +987,23 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           return;
         }
 
+        case "app_connect": {
+          // 应用连接卡（#1666）：谁能点、卡还开没开着，全判在 CloudSession.answerAppConnect（读日志折出来的卡），
+          // 这一层只做在籍复查与回执。回执带 connectId：同 pick_friend，一张卡一条。ok:false 一律带 message（客户端的兜底句只是最后一道）。
+          // 不进限速桶：同 pick_friend——卡一次性，用过即失效
+          if (!(await requireStillMemberIn(session, workspaceId, cid, entry.uid, () =>
+            deps.send(cid, { t: "app_connect_result", connectId: msg.connectId, ok: false, message: NOT_MEMBER_MESSAGE })
+          ))) return;
+          const r = await session.answerAppConnect(msg.connectId, entry.uid, msg.outcome);
+          if (!r.ok) {
+            deps.log(`连接卡被拒 connectId=${msg.connectId} uid=${entry.uid}：${r.message}`);
+            deps.send(cid, { t: "app_connect_result", connectId: msg.connectId, ok: false, message: r.message });
+          } else {
+            deps.send(cid, { t: "app_connect_result", connectId: msg.connectId, ok: true });
+          }
+          return;
+        }
+
         case "stop": {
           // 停一轮正在跑的 turn（#957 A-2）。谁能停 = **与审批逐字同一条判据**
           // （发起人或 owner），由 CloudSession.stop 里的 router.canDecide 判——

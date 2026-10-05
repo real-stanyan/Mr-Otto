@@ -8,6 +8,7 @@ import type { ApprovalRequestEvent, ChatRosterChangedEvent, FriendPickCandidate,
 import { ACTIVITY_ORDER, ACTIVITY_TEXT, activityFace, activityFoldOf, activityOf, type ActivityFold, type AgentActivity } from "./agentActivity.js";
 import { groupRows, rosterRows } from "./agentRoster.js";
 import { callRingFoldOf, RING_STATUS_TEXT, ringCardStatus, type RingCardStatus } from "./callRing.js";
+import { appConnectFoldOf, appConnectStatus, type AppConnectStatus } from "./appConnect.js";
 import { splitBubbles } from "./chatBubbles.js";
 import { escalationNoteText } from "./escalation.js";
 import { chatMediaItemsOf, type ChatMediaItem } from "./chatMedia.js";
@@ -116,6 +117,19 @@ export type ChatRow =
     /** 只读时「等谁选」写谁：主人的名字，不知道主人是谁时 null */
     waitingFor: string | null;
   }
+  /** 连接卡（#1666）：智能体要用一个还没连上的应用时发的那张。一张卡一行，在 `offered` 的位置；状态取这张卡最后一条，
+      过期 / 被新卡顶掉读的时候算（appConnectStatus，`now` 由调用方递）。按哪个按钮不在这里——手机按自己的云端视图判 */
+  | {
+    kind: "app_connect"; key: string; ts: number; seq: number; connectId: string; agentId: string; name: string;
+    catalogId: string; appName: string; why: string;
+    /** 为什么发的卡（#1666 终审）：needs_login = 连接器回了 409，登录过期——手机的视图还说「好着」时也给重新登录（appConnectActionFor） */
+    reason: "missing" | "needs_login";
+    status: AppConnectStatus;
+    /** 我点得了吗：只有这条会话的主人 */
+    canAct: boolean;
+    /** 只读时「等谁连」写谁：主人的名字，不知道主人是谁时 null（同选人卡的 waitingFor） */
+    waitingFor: string | null;
+  }
   | {
     kind: "approval"; key: string; ts: number; callId: string; title: string;
     fields: { label: string; value: string }[]; summary: string; canDecide: boolean; waitingFor: string;
@@ -222,6 +236,7 @@ export function chatRows(o: {
   // 外联（#1441）：状态要看这一通后面的事件，同回电那样在循环外先折一遍
   const outreaches = outreachFoldOf(o.events);
   const picks = friendPickFoldOf(o.events);
+  const connects = appConnectFoldOf(o.events);
   // 任务卡（#1571）：整条日志折一次，每张卡读折好的那一行
   const tasks: ReadonlyMap<string, TaskRow> = taskFoldOf(o.events, o.ws.id);
   // 读健康数据那一行（#1656）：结果要对回调用时的参数（哪几类、哪几天），先把 read_health 的调用收一遍
@@ -295,6 +310,22 @@ export function chatRows(o: {
           status: friendPickStatus(st, o.now), pickedUid: st.uid, message: st.message,
           // 同审批卡的 iAmOwner：ownerUid 缺席 = 不知道谁是主人，那就谁都不当主人（runtime 反正会拒）
           canPick: o.ownerUid !== undefined && o.ownerUid !== "" && o.ownerUid === o.selfUid,
+          waitingFor: o.ownerUid !== undefined && o.ownerUid !== "" ? labelOf(o.ws, o.ownerUid) : null,
+        });
+      }
+      continue;
+    }
+    // 连接卡（#1666）：同选人卡，只在 offered 的位置画一行；之后的 connected / dismissed 只改这一行的状态。
+    // 要在 rowOf 之前认出来：桌面把 app_connect 整条藏了
+    if (e.type === "app_connect") {
+      const st = e.phase === "offered" ? connects.get(e.connectId) : undefined;
+      if (st !== undefined) {
+        items.push({
+          kind: "app_connect", key: `app_connect-${e.connectId}`, ts: e.ts, seq: e.seq, connectId: e.connectId, agentId: st.fromAgentId,
+          name: agentNameOf(o.ws, st.fromAgentId), catalogId: st.catalogId, appName: st.appName, why: st.why, reason: st.reason,
+          status: appConnectStatus(st, o.now),
+          // 同选人卡的 canPick：ownerUid 缺席 = 谁都不当主人（runtime 反正会拒）
+          canAct: o.ownerUid !== undefined && o.ownerUid !== "" && o.ownerUid === o.selfUid,
           waitingFor: o.ownerUid !== undefined && o.ownerUid !== "" ? labelOf(o.ws, o.ownerUid) : null,
         });
       }

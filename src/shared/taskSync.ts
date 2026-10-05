@@ -80,6 +80,7 @@ export const PEN_VERDICTS: Record<SessionEvent["type"], PenVerdict> = {
   collab_decision: "executor",
   outreach: "executor",
   friend_pick: "executor",
+  app_connect: "executor", // 连接卡（#1666）
   memory_loaded: "executor",
   workspace_memory_loaded: "executor",
   workspace_wiki_loaded: "executor",

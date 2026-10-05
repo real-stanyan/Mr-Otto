@@ -193,6 +193,7 @@ function pendingAfter(
       case "call_ring":
       case "outreach":
       case "friend_pick":
+      case "app_connect": // 连接卡（#1666）
       case "task_created":
       case "task_assigned":
       case "task_progress":

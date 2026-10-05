@@ -12,7 +12,9 @@ import { parseHealthQuery, parseHealthResult, type HealthQuery, type HealthResul
 import { b64decode, b64encode } from "./b64.js";
 import { MAX_FRAME_BYTES } from "./wire.js";
 
-/** 29（#1656）：Apple 健康三帧——上行 `caps`（这台设备能替智能体读健康数据）与 `health_result`，下行 `health_query`
+/** 30（#1666）：连接卡。CsUp 加 app_connect（主人在卡上点了「连上了 / 不用了」），CsDown 加 app_connect_result（带 connectId）。
+    加帧照样进位（握手精确相等）：老 runtime 会把 app_connect 当未知帧丢掉，卡一直转圈。
+    29（#1656）：Apple 健康三帧——上行 `caps`（这台设备能替智能体读健康数据）与 `health_result`，下行 `health_query`
     （runtime 定向发给声明了能力的那一条 cid）。另：#1605 / #1648 的几条帧注释写着「协议 29」而常量当时没进位，
     这一次进位把它们一并落实。
     28（#1520）：`CsUp` 加 `pick_friend`（点选人卡上的一位，uid null = 都不是），`CsDown` 加
@@ -152,7 +154,7 @@ import { MAX_FRAME_BYTES } from "./wire.js";
     少一格状态。**加一个枚举值同理**：老客户端的 isValidCsDeniedCode 认不出
     `rate_limited`，decodeCsDown 回 null，那一帧被静默忽略，于是 create()
     要白等满超时才回一句"云端无响应"——把"你被限速了"说成"对面没回话"。 */
-export const CS_PROTOCOL_VERSION = 29;
+export const CS_PROTOCOL_VERSION = 30;
 export const CS_MAX_TEXT_BYTES = 64 * 1024;
 
 /** 一次回多少字节的文件内容（#1056）。中继单帧上限是 256 KiB（wire.ts 的
@@ -382,6 +384,8 @@ export type CsUp =
   | { t: "approve"; callId: string; decision: "approved" | "denied" }
   /** 点选人卡（#1520）：uid = 卡上的一位，null = 都不是。只有主人本人点得动，判在 runtime */
   | { t: "pick_friend"; pickId: string; uid: string | null }
+  /** 应用连接卡（#1666）：主人在卡上点了「连上了 / 不用了」。判在 runtime */
+  | { t: "app_connect"; connectId: string; outcome: "connected" | "dismissed" }
   /** 读这个团队此刻的路由 + Git 凭据清单（控制房帧，协议 8；协议 15 多了后者）：
       回 `workspace_state`。任何在籍成员都能读——路由本来就在 welcome 上给所有人看，
       凭据清单里没有 token（有哪几台主机不是秘密，那把钥匙才是） */
@@ -546,6 +550,9 @@ export type CsDown =
   /** pick_friend 的回执（#1520）。pickId 让客户端把它跟自己发出去的那次点选对上号——
       `pendingPick` 按 pickId 分 Map，理由同 approve_result */
   | { t: "pick_friend_result"; pickId: string; ok: boolean; message?: string }
+  /** app_connect 的回执（#1666）。connectId 让客户端把它跟自己发出去的那次点按对上号——
+      `pendingConnect` 按 connectId 分 Map，理由同 pick_friend_result */
+  | { t: "app_connect_result"; connectId: string; ok: boolean; message?: string }
   /** stop 的回执（#957 第三批）。ok=false 常见两种：没有在跑的 turn、或
       发起人/owner 之外的人点了停。 */
   | { t: "stop_result"; ok: boolean; message?: string }
@@ -870,6 +877,13 @@ export function decodeCsUp(b64: string): CsUp | null {
     if (t === "pick_friend") {
       if (typeof obj.pickId === "string" && (obj.uid === null || typeof obj.uid === "string")) {
         return { t: "pick_friend", pickId: obj.pickId, uid: obj.uid };
+      }
+      return null;
+    }
+
+    if (t === "app_connect") {
+      if (typeof obj.connectId === "string" && (obj.outcome === "connected" || obj.outcome === "dismissed")) {
+        return { t: "app_connect", connectId: obj.connectId, outcome: obj.outcome };
       }
       return null;
     }
@@ -1237,6 +1251,19 @@ export function decodeCsDown(b64: string): CsDown | null {
         (obj.message === undefined || typeof obj.message === "string")
       ) {
         const result: CsDown = { t: "pick_friend_result", pickId: obj.pickId, ok: obj.ok };
+        if (typeof obj.message === "string") result.message = obj.message;
+        return result;
+      }
+      return null;
+    }
+
+    if (t === "app_connect_result") {
+      if (
+        typeof obj.connectId === "string" &&
+        typeof obj.ok === "boolean" &&
+        (obj.message === undefined || typeof obj.message === "string")
+      ) {
+        const result: CsDown = { t: "app_connect_result", connectId: obj.connectId, ok: obj.ok };
         if (typeof obj.message === "string") result.message = obj.message;
         return result;
       }

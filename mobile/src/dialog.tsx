@@ -28,8 +28,11 @@ const RADIUS = 22;
 /** 卡与可用区上下边之间至少留这么多（键盘起着时贴着键盘顶也不好看） */
 const EDGE = 12;
 
-export function Dialog({ visible, onExited, dismissible = false, onDismiss, wide = false, children }: {
+export function Dialog({ visible, onShown, onExited, dismissible = false, onDismiss, wide = false, children }: {
   visible: boolean;
+  /** Modal 真的摊开在屏幕上之后调一次（RN Modal 的 onShow）：叠在一张还在退场的 Modal 上时 iOS 会静默丢掉这一层，
+      想知道「它到底出来了没有」的调用方（连接卡的自动弹窗）据此判，不凭「我让它开了」 */
+  onShown?: () => void;
   /** 退场放完、Modal 收起之后调一次：「有值才画」的调用方在这里才真的把自己卸掉 */
   onExited?: () => void;
   /** 点暗幕 / 安卓返回键能退（岔路口那一类，spec §4）。表单 / 确认类不给 */
@@ -84,7 +87,7 @@ export function Dialog({ visible, onExited, dismissible = false, onDismiss, wide
     if (dismissible) onDismiss?.();
   };
   return (
-    <Modal transparent visible animationType="none" statusBarTranslucent onRequestClose={dismiss}>
+    <Modal transparent visible animationType="none" statusBarTranslucent onRequestClose={dismiss} {...(onShown === undefined ? {} : { onShow: onShown })}>
       <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: c.scrim, opacity: k }]} />
       {/* 退场途中不接手指：已经在关的弹窗再被点一下「发送」，就是一次谁都看不见的请求 */}
       <KeyboardAvoidingView
