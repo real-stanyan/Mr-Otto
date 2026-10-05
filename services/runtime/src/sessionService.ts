@@ -1157,6 +1157,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       团队会话恒为假（approveAll 为假），一个字不变 */
   /** 协作请求推给主人的时刻（#1605）：同一条隔一小时以上才再提醒 */
   const collabPushedAt = new Map<string, number>();
+  /** 先到的协作决定（#1682 人与人模拟）：发起这一侧是「送过去 → 对面收下 → 才在本地落 collab_request」，
+      对面按好友权限秒定（仅聊天 = 直接回绝）时，决定比本地那条请求先到，原来直接丢掉——主人那边永远停在「等对面点头」。
+      先存着，本地请求一落就补上 */
+  const earlyCollabDecisions = new Map<string, CollabDecisionEvent>();
   /** 管理员车道里主人接了的请求还活着（#1605）：对面管理员接力进来的那几轮按主人自己的规矩走，不再是客人轮 */
   const collabAccepted = (): boolean => isAdmins && [...collabRequests.values()].some((r) => r.decision === "accepted" && r.via !== "tier_agents");
   const guestTurn = (): boolean => opts.approveAll && currentInitiator !== null && currentInitiator !== opts.ownerUid && !collabAccepted();
@@ -2321,6 +2325,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
               notify(store.append({ sessionId, ts: Date.now(), type: "task_collab", taskId: task.id, withUid: pairFacts.peerUid, withName: pairFacts.peerName, byAgentId: spec.agentId, ignorable: true }));
               const { seq: _seq, ...rest } = draft;
               notify(store.append({ ...rest, ts: Date.now() }));
+              const early = earlyCollabDecisions.get(requestId);
+              if (early !== undefined) {
+                earlyCollabDecisions.delete(requestId);
+                const { seq: _s2, sessionId: _sid2, ts: _ts2, ...d } = early;
+                notify(store.append({ ...d, sessionId, ts: Date.now() }));
+              }
               return null;
             },
             redeliver: async (requestId) => {
@@ -2442,10 +2452,24 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         // 它用主人已经说过、写给朋友看的东西回话；要动主人的东西，回一句「得问 X 本人」。
         // message_friend_agent 例外（只说话，同下面那条不掀的例外）
         if ((isPair || isAdmins) && guestTurn()) return list.filter((t) => t.def.name === MESSAGE_FRIEND_AGENT_TOOL_NAME);
+        // 车道里一轮跑到一半混进了别人的话（对面管理员的回话接力进来、朋友插了一句）：同样没有卡可点（#1526）。
+        // 不掀审批，那一下调用直接拒、说清为什么——#1682 模拟里一张 invite_collaborator 的卡在私密车道里干等了十分钟
+        const lane = isPair || isAdmins;
+        const laneGuard = (t: Tool): Tool =>
+          !lane || t.def.name === MESSAGE_FRIEND_AGENT_TOOL_NAME
+            ? t
+            : (Object.create(t, {
+                run: {
+                  value: async (args: unknown, w: ExecutionWorld, ...rest: unknown[]) => {
+                    if (supervisedTurn()) throw new Error("这一轮里混进了别人的话，车道里没法让主人点头：这件事先不动手，回一句说明，等主人下一句再办。");
+                    return (t.run as (a: unknown, w: ExecutionWorld, ...r: unknown[]) => ReturnType<Tool["run"]>)(args, w, ...rest);
+                  },
+                },
+              }) as Tool);
         return opts.approveAll
           ? list.map((t) =>
               // message_friend_agent（#1542）不掀：它只往对面车道落一句两个人都看得到的话，与回话是同一种东西
-              Object.create(t, { requiresApproval: { get: () => t.requiresApproval || (supervisedTurn() && t.def.name !== MESSAGE_FRIEND_AGENT_TOOL_NAME && !(ownerReportTurn && t.def.name === CALL_USER_TOOL_NAME)), enumerable: true } }) as Tool,
+              Object.create(laneGuard(t), { requiresApproval: { get: () => t.requiresApproval || (!lane && supervisedTurn() && t.def.name !== MESSAGE_FRIEND_AGENT_TOOL_NAME && !(ownerReportTurn && t.def.name === CALL_USER_TOOL_NAME)), enumerable: true } }) as Tool,
             )
           : list;
       },
@@ -4280,7 +4304,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     receiveCollabDecision(e) {
       if (archived) return;
       const r = collabRequests.get(e.requestId);
-      if (r === undefined || r.decision !== null) return;
+      if (r === undefined) {
+        // 本地那条请求还没落（见 earlyCollabDecisions）：存着等它
+        earlyCollabDecisions.set(e.requestId, e);
+        return;
+      }
+      if (r.decision !== null) return;
       const { seq: _seq, sessionId: _sid, ts: _ts, ...rest } = e;
       notify(store.append({ ...rest, sessionId, ts: Date.now() }));
     },

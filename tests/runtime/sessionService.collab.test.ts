@@ -208,6 +208,40 @@ describe("A 家：invite_collaborator 的落点", () => {
     expect(store.load("s1").filter((e) => e.type === "assistant_message").length).toBeGreaterThanOrEqual(3);
     store.close();
   });
+
+
+  describe("对面秒回的决定比本地请求先到（#1682 人与人模拟）", () => {
+  it("仅聊天档秒回绝：决定在本地 collab_request 落盘前就到了——先存着，请求一落就补上，任务折成 declined", async () => {
+    const store = newStore();
+    const holder: { s: CloudSession | null } = { s: null };
+    const bridge: AdminsBridge = {
+      async deliverRequest(o) {
+        // 对面按权限秒定：送过去的这一刻就回绝（本地那条请求还没落）
+        holder.s!.receiveCollabDecision({ sessionId: "x", seq: 1, ts: 1, type: "collab_decision", requestId: o.event.requestId, decision: "declined", byUid: null, via: "tier_chat", ignorable: true });
+        return null;
+      },
+      async deliverBack() {},
+    };
+    let round = 0;
+    holder.s = openPair(store, {
+      bridge,
+      reply: (_names, transcript) => {
+        round++;
+        if (round === 1) return { content: "", toolCalls: [{ id: "c1", name: "create_task", args: { title: "借梯子", brief: "问问" } }] };
+        if (round === 2) return { content: "", toolCalls: [{ id: "c2", name: "invite_collaborator", args: { taskId: idIn(transcript), note: "借梯子" } }] };
+        return { content: "交过去了。" };
+      },
+    });
+    await holder.s.say("u_a", "继爸", "@雨姐 问问对面有没有梯子", true, ["admin"]);
+    await holder.s.settled();
+    const log = store.load("s1");
+    const req = log.find((e): e is CollabRequestEvent => e.type === "collab_request")!;
+    const dec = log.find((e): e is CollabDecisionEvent => e.type === "collab_decision")!;
+    expect(dec).toMatchObject({ requestId: req.requestId, decision: "declined", via: "tier_chat" });
+    expect(dec.seq).toBeGreaterThan(req.seq);
+    store.close();
+  });
+  });
 });
 
 describe("A 家开房时重送还在等点头的请求（#1605 真机）", () => {
