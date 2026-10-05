@@ -159,6 +159,7 @@ describe("提示词（spec §5）", () => {
     expect(p).toContain("不把密码、token、密钥写进它的说明或职责"); // #1585
     expect(p).toContain("不报沙箱路径、文件名、taskId"); // #1661 真机：总结里报 /work/apps/…
     expect(p).toContain("**没有外网**"); // #1661 C5：管理员让专员 fetch 天气接口，build_app 拒收
+    expect(p).toContain("个人数据只存在它自己的格子里（房间里和好友共享的数据除外）"); // #1675：有了房间，「数据只在自己格子里」不再全对
     expect(tierPrompt({ agent: admin, ownerName: "Stan", roster: [admin] })).toContain("还没有专员");
   });
   it("L1：只做本域；域外转管理员；有子工写子工；不找别的专员", () => {
