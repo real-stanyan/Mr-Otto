@@ -92,15 +92,34 @@ describe("房间模式（#1675）", () => {
     expect(src).toMatch(/case "storage\.get": return appData\.get\(supabase, l\.app\.id, l\.uid, a0\);/);
     expect(src).toMatch(/case "room\.set": return roomData\.set\(supabase, needRoom\(l\)\.id, a0, a1, req\.args\[2\]\);/);
     expect(src).toMatch(/case "room\.ping": return pingRoom\(supabase, needRoom\(l\)\.id, a0\);/);
-    expect(src).toMatch(/case "room\.rooms": return \(await listRooms\(supabase, familyOf\(l\.app\)\)\) \?\? \[\];/);
+    expect(src).toMatch(/case "room\.rooms": return \(\(await listRooms\(supabase, familyOf\(l\.app\)\)\) \?\? \[\]\)\.map\(roomSummary\);/);
+    expect(src).toMatch(/updatedAt: new Date\(r\.updatedTs\)\.toISOString\(\)/);
+    expect(src).toMatch(/case "room\.send": \{\s*needRoom\(l\);/);
+  });
+  it("room.open 进一间只是被邀请的房：先 joinRoom 再换页；房间模式读不到那一版给明白话", () => {
+    expect(src).toMatch(/if \(mine\?\.status === "invited"\) await joinRoom\(supabase, a0\);\s*navigation\.replace\("MiniApp", \{ appId: l\.app\.id, roomId: a0 \}\);/);
+    expect(src).toContain("进不了这一局的那一版（先在私聊里点加入）");
   });
   it("订阅推成 otto 事件；离开页面退订", () => {
     expect(src).toMatch(/subscribeRoom\(supabase, loaded\.room\.id, loaded\.uid, \{/);
     expect(src).toMatch(/bridgeEventJs\("room\.change", e\)/);
     expect(src).toMatch(/bridgeEventJs\("room\.message", \{ from, msg \}\)/);
-    expect(src).toMatch(/return \(\) => link\.close\(\);/);
+    expect(src).toMatch(/return \(\) => \{ closing = true; if \(retry !== null\) clearTimeout\(retry\); link\.close\(\); \};/);
   });
-  it("邀请：先 inviteToRoom 再发邀请信封", () => {
-    expect(src).toMatch(/await inviteToRoom\(supabase, room\.id, p\.uid\);\s*await sendToFriend\(p\.uid, encodeRoomInvite\(/);
+  it("回前台 / 频道断了就重订，重订后 resync（全量 room.change + room.members）；自己关的不算断", () => {
+    expect(src).toMatch(/AppState\.addEventListener\("change", \(st\) => \{ if \(st === "active"\) setRelink\(\(n\) => n \+ 1\); \}\)/);
+    expect(src).toMatch(/if \(s === "CHANNEL_ERROR" \|\| s === "TIMED_OUT" \|\| s === "CLOSED"\) again\(\);/);
+    expect(src).toMatch(/if \(closing \|\| retry !== null\) return;/);
+    expect(src).toMatch(/void roomData\.list\(supabase, roomId, ""\)\.then\(/);
+    expect(src).toMatch(/\}, \[loaded\?\.room\?\.id, relink\]\);/);
+  });
+  it("邀请：先 inviteToRoom 再发邀请信封；卡上是房主那份应用；上一个没回的 invite 先回空", () => {
+    expect(src).toMatch(/await inviteToRoom\(supabase, room\.id, (\w+)\);\s*await sendToFriend\(\1, encodeRoomInvite\(/);
+    expect(src).toMatch(/appId: room\.hostAppId, version: room\.hostVersion/);
+    expect(src).toMatch(/inviteDone\.current\?\.\(\[\]\);\s*inviteDone\.current = resolve;/);
+  });
+  it("房间模式下分享 / 让管理员修：分享卡用我自己那份的 currentVersion；修的那句标明是房主那一版", () => {
+    expect(src).toMatch(/version: loaded\.app\.currentVersion/);
+    expect(src).toMatch(/`\$\{loaded\.app\.name\}（房主那一版）`/);
   });
 });
