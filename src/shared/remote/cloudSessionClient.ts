@@ -221,6 +221,8 @@ export interface CloudSessionClient {
   approve(callId: string, decision: "approved" | "denied"): Promise<CloudAck>;
   /** 点选人卡（#1520）：等 pick_friend_result。同一张卡回执没到时再点一次直接回失败（手滑连点） */
   pickFriend(pickId: string, uid: string | null): Promise<CloudAck>;
+  /** 应用连接卡（#1666）：等 app_connect_result。同一张卡回执没到时再按一次直接回失败（手滑连点） */
+  answerAppConnect(connectId: string, outcome: "connected" | "dismissed"): Promise<CloudAck>;
   /** 收尾一条云会话（控制房 RPC，协议 9，#993）：不依赖「正开着它」——归档
       入口在侧栏那条会话行的 ⋮ 里，同本地会话。resolve 的是 `archive_result` */
   archive(workspaceId: string, sessionId: string): Promise<FriendsResult<null>>;
@@ -365,6 +367,8 @@ interface ActiveSession {
   pendingApprove: Map<string, CsPending>;
   /** 还没等到 pick_friend_result 的那几次点选（#1520），按 pickId 分 */
   pendingPick: Map<string, CsPending>;
+  /** 还没等到 app_connect_result 的那几次点按（#1666），按 connectId 分 */
+  pendingConnect: Map<string, CsPending>;
   /** 还没等到 `stop_result` 的那一次停（#957 第三批） */
   pendingStop: CsPending | null;
   /** 还没等到 `call_result` 的那一次改名单（#1163） */
@@ -524,6 +528,18 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     }
   }
 
+  /** 按 connectId 收口一次连接卡点按（#1666），与 settlePick 同构；connectId 缺席 = 收口全部 */
+  function settleConnect(session: ActiveSession, connectId: string | null, result: CloudAck): void {
+    const ids = connectId === null ? [...session.pendingConnect.keys()] : [connectId];
+    for (const id of ids) {
+      const pending = session.pendingConnect.get(id);
+      if (!pending) continue;
+      session.pendingConnect.delete(id);
+      clearTimeout(pending.timer);
+      pending.settle(result);
+    }
+  }
+
   /** 往前翻那一次的收口（#1280）。三类调用点同 settleSay：回执到达、超时、连接进终态 */
   function settlePaging(session: ActiveSession, result: FriendsResult<{ hasOlder: boolean }>): void {
     const pending = session.paging;
@@ -543,6 +559,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     settleCall(session, result);
     settleApprove(session, null, result);
     settlePick(session, null, result);
+    settleConnect(session, null, result);
     // 翻页那一条也在这儿收口，理由同上面三条：漏了就是顶上那行「读取中…」
     // 永远转下去。它回的是 FriendsResult 不是 CloudAck——「没读到更早的消息」
     // 没有「不确定有没有生效」那一档，重试是安全的
@@ -726,6 +743,9 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
         return;
       case "pick_friend_result":
         settlePick(session, msg.pickId, msg.ok ? { ok: true } : { ok: false, message: msg.message ?? "没选上" });
+        return;
+      case "app_connect_result":
+        settleConnect(session, msg.connectId, msg.ok ? { ok: true } : { ok: false, message: msg.message ?? "没记上" });
         return;
       case "stop_result":
         settleStop(session, msg.ok ? { ok: true } : { ok: false, message: msg.message ?? "没能停下这一轮" });
@@ -1090,6 +1110,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
       pendingSay: null,
       pendingApprove: new Map(),
       pendingPick: new Map(),
+      pendingConnect: new Map(),
       pendingStop: null,
       pendingCall: null,
       // welcome 之前一律按团队会话的老路算：那一刻还不知道这是不是一条聊天
@@ -1217,6 +1238,22 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
         settlePick(session, pickId, { ok: false, message: ACK_TIMEOUT_MESSAGE, ...ACK_UNKNOWN });
       }, ACK_TIMEOUT_MS);
       session.pendingPick.set(pickId, { settle: resolve, timer });
+    });
+  }
+
+  /** 应用连接卡（#1666）：整套照 pickFriend——等 app_connect_result，同一个 connectId 重复按下才拒绝（手滑连点） */
+  async function answerAppConnect(connectId: string, outcome: "connected" | "dismissed"): Promise<CloudAck> {
+    const r = requireReady();
+    if (!r.ok) return r;
+    const session = r.session;
+    if (session.pendingConnect.has(connectId)) return { ok: false, message: "这张卡的回执还没到，稍等" };
+    const sent = sendFrame(session, { t: "app_connect", connectId, outcome });
+    if (!sent.ok) return sent;
+    return new Promise<CloudAck>((resolve) => {
+      const timer = setTimeout(() => {
+        settleConnect(session, connectId, { ok: false, message: ACK_TIMEOUT_MESSAGE, ...ACK_UNKNOWN });
+      }, ACK_TIMEOUT_MS);
+      session.pendingConnect.set(connectId, { settle: resolve, timer });
     });
   }
 
@@ -1361,5 +1398,5 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     sendCaps(active);
   }
 
-  return { refreshCaps, currentSessionId, activeSummary, create, join, leave, say, approve, pickFriend, archive, remove, chatUpdate, collabDecide, humanCall, appAccept, appDelete, stop, call, backlogPage, workspaceState, workspaceGitCredential, workspaceFiles, workspaceFilesSearch, workspaceWikiWrite };
+  return { refreshCaps, currentSessionId, activeSummary, create, join, leave, say, approve, pickFriend, answerAppConnect, archive, remove, chatUpdate, collabDecide, humanCall, appAccept, appDelete, stop, call, backlogPage, workspaceState, workspaceGitCredential, workspaceFiles, workspaceFilesSearch, workspaceWikiWrite };
 }

@@ -3,8 +3,8 @@ import { describe, expect, it } from "vitest";
 import { CS_PROTOCOL_VERSION, decodeCsDown, decodeCsUp, encodeCs } from "../../../src/shared/remote/cloudSession.js";
 
 describe("health 帧", () => {
-  it("协议号 29（#1656 健康三帧）", () => {
-    expect(CS_PROTOCOL_VERSION).toBe(29);
+  it("协议号 30（#1666 连接卡帧之后；健康三帧是 29）", () => {
+    expect(CS_PROTOCOL_VERSION).toBe(30);
   });
   it("caps 往返；health 不是布尔就拒", () => {
     expect(decodeCsUp(encodeCs({ t: "caps", health: true }))).toEqual({ t: "caps", health: true });
