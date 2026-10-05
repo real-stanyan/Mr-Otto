@@ -32,6 +32,7 @@ export function tierPrompt(o: { agent: NamedAgent; ownerName: string; roster: re
       `没有合适域的专员就用 create_agent 建一只（带上域），建好把任务派给它，别硬派给别的域，也别自己下场。` +
       // 真机 2026-10-05（#1591）：「做一个带日历的记事本」管理员自己写了、自己 build_app——主人要的是专人专管
       `做应用（小工具、记事本、表单这种能点开用的页面）是「应用」域的活：派给应用专员，没有就建一只；你自己不写页面。` +
+      `和好友一起玩 / 一起记（对战、AA 账本、默契测试）也是应用域的活：应用有「房间」能邀好友进来，照常派。` +
       // 真机 2026-10-05（#1661 C5）：「实时天气」管理员让专员 fetch Open-Meteo，build_app 拒收，专员白干一场才报回来
       `应用跑在主人手机的沙箱里，**没有外网**（不能 fetch 任何网址，build_app 会拒），数据只存在它自己的格子里。要实时数据（天气、汇率、行情、新闻）的应用，派之前先跟 ${w} 说清这一点并给替代（手动录入 / 你现在查好写进去、标明是几点的数据），等 ${w} 选了再派。` +
       `建人时**不把密码、token、密钥写进它的说明或职责**——那两格会进它的 brief、进别人的花名册；要用后台就让 ${w} 接应用（连接器），存不了的明说。` +
@@ -49,7 +50,7 @@ export function tierPrompt(o: { agent: NamedAgent; ownerName: string; roster: re
     const peerLine = peers > 0 ? "同域还有别的专员，但你们之间不互相派活。" : "";
     // 应用专员（#1591）：先定设计系统再写页面；文件放固定目录；打完用 build_app
     const appsLine = domainOf(o.agent) === "apps"
-      ? "你做的是 Otto 应用（跑在主人手机里沙箱 WebView 的小网页）：先在 manifest.json 的 design 里定好色板 / 字号 / 间距 / 组件，再按它写页面，别一页一个样；文件写在 /work/apps/<slug>/ 下（manifest.json + index.html + 多页 + css/js），没有外网、要数据走 window.otto（storage / ask / nav / share）——storage 存在 Otto 云端、跟着主人账号，换手机也在，不用也别退到 localStorage；需求要联网（fetch 任何网址、实时天气汇率之类）的，别写——build_app 会拒，先回报管理员说做不到和替代方案；写完调 build_app。改需求 = 改文件再 build_app 出下一版。"
+      ? "你做的是 Otto 应用（跑在主人手机里沙箱 WebView 的小网页）：先在 manifest.json 的 design 里定好色板 / 字号 / 间距 / 组件，再按它写页面，别一页一个样；文件写在 /work/apps/<slug>/ 下（manifest.json + index.html + 多页 + css/js），没有外网、要数据走 window.otto（storage / ask / nav / share）——storage 存在 Otto 云端、跟着主人账号，换手机也在，不用也别退到 localStorage；要和好友一起玩 / 一起记的，清单加 room、用 otto.room（建房 / 邀请 / 共享数据 set 带 ifRev / 即时消息 send / ping 叫人，API 见 build_app 的说明）；需求要联网（fetch 任何网址、实时天气汇率之类）的，别写——build_app 会拒，先回报管理员说做不到和替代方案；写完调 build_app。改需求 = 改文件再 build_app 出下一版。"
       : "";
     // 管理员可以改名（主人给它起的名字）：@ 要点到它的名字才接得上，所以这里读名册里那一行，不写死「管理员」
     const adminRow = o.roster.find((a) => a.agentId === ADMIN_AGENT_ID);

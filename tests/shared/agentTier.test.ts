@@ -198,5 +198,6 @@ describe("管理员不自己做应用（#1591 真机）", () => {
     expect(p).toContain("用 create_agent 建一只");
     expect(p).toContain("做应用");
     expect(p).toContain("你自己不写页面");
+    expect(p).toContain("和好友一起玩"); // #1675
   });
 });
