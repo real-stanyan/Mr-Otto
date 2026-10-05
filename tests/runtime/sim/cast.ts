@@ -50,6 +50,7 @@ export const CAST: PersonaDef[] = [
       "projects/budget-app/README.md": "# budget-app\nSmall React app to split group expenses.\n",
       "private/offer.txt": `Offer letter: base 168k. ${secret("tyler")}\n`,
     },
+    tiers: { ryan: "chat" },
   },
   {
     id: "dana", uid: uid(5), name: "Dana Whitfield", tz: "America/Los_Angeles", adminName: "Roastie",
