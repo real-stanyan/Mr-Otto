@@ -344,6 +344,8 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
     deny(cid, "not_authorized");
     cids.delete(cid);
     deps.dropCid?.(cid);
+    // 健康能力表同样要摘：这条连接已被踢，留着的话 read_health 还会把问题发给它，用户白等 30 秒才得到「没连着」
+    deps.health?.gone(cid);
     return false;
   }
 
@@ -830,7 +832,8 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
       switch (msg.t) {
         case "caps": {
           // 能力声明（#1656）：只记「这条连接能读健康」，读谁的由 read_health 按这一轮的发起人现选。
-          // 不复查在籍、不进限速：它不读写会话状态，被踢的人留着一条能力也只会让 runtime 来问他自己
+          // 不复查在籍、不进限速：它不读写会话状态。被踢的人之后若再发 say/approve 等帧，
+          // requireStillMember 会把这条 cid 从能力表里摘掉（deps.health.gone），不会留着等 30 秒超时
           deps.health?.setCaps(cid, entry.uid, msg.health);
           return;
         }

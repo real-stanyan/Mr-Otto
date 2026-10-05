@@ -2480,4 +2480,16 @@ describe("Apple 健康（#1656）", () => {
     fh.onGone("c1");
     expect(calls).toEqual(["gone c1"]);
   });
+  it("被踢出团队（在籍复查翻 false）时也从能力表摘掉这条 cid", async () => {
+    let member = true;
+    const { calls, health } = recorder();
+    const m = makeDeps({ health, isMember: async () => member, getSession: () => fakeSession() });
+    const fh = createFrameHandler(m.deps);
+    await fh.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    await fh.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "caps", health: true }));
+    member = false;
+    await fh.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "say", text: "还在吗", mention: false }));
+    // 不摘的话这条 cid 会一直留在能力表里：read_health 把问题发给一条已被踢的连接，用户白等 30 秒才得到「没连着」
+    expect(calls).toEqual(["caps c1 u1 true", "gone c1"]);
+  });
 });
