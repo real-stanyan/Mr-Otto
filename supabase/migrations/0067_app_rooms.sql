@@ -1,5 +1,5 @@
 -- 0067 Otto 应用的房间（#1675，spec docs/superpowers/specs/2026-10-05-otto-app-rooms-design.md §3）
--- 一局 / 一本共享的账 = 一间房：成员共读写的键值（app_room_data）+ 成员间即时消息（Realtime broadcast，不落库）。
+-- 一局 / 一本共享的账 = 一间房：成员共读写的键值（app_room_data）+ 成员间即时消息（Realtime broadcast，只在 realtime.messages 里留保留期，不进我们的表）。
 -- 写只走下面的 RPC（比较后再写、人数上限、好友判据、限速都要在一个事务里判）；表对 authenticated 只开 select。
 
 create table if not exists public.app_rooms (
@@ -60,15 +60,30 @@ $$;
 revoke all on function public.is_room_member(uuid) from public, anon;
 grant execute on function public.is_room_member(uuid) to authenticated;
 
--- broadcast 频道名 room:<uuid> → 是不是成员。名字不合形状回 false（不让 ::uuid 的转换报错把策略炸掉）
-create or replace function public.room_topic_member(p_topic text) returns boolean
+-- broadcast 两种频道：
+--   room:<uuid>      成员互发的即时消息（应用自己的 msg）——joined 成员读、写（没关房才能写）；
+--   room-sys:<uuid>  触发器发的系统事件（change / members / closed）——成员只能读，客户端写不了，所以伪造不了。
+-- 名字不合形状回 false（不让 ::uuid 的转换报错把策略炸掉）。只问当前登录的人，不带 uid 参数。
+create or replace function public.room_topic_readable(p_topic text) returns boolean
 language plpgsql stable security definer set search_path = public as $$
 begin
-  if p_topic is null or p_topic !~ '^room:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' then return false; end if;
-  return public.is_room_member(substring(p_topic from 6)::uuid);
+  if p_topic is null or p_topic !~ '^(room|room-sys):[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' then return false; end if;
+  return public.is_room_member(substring(p_topic from position(':' in p_topic) + 1)::uuid);
 end $$;
-revoke all on function public.room_topic_member(text) from public, anon;
-grant execute on function public.room_topic_member(text) to authenticated;
+revoke all on function public.room_topic_readable(text) from public, anon;
+grant execute on function public.room_topic_readable(text) to authenticated;
+
+create or replace function public.room_topic_writable(p_topic text) returns boolean
+language plpgsql stable security definer set search_path = public as $$
+declare v_room uuid;
+begin
+  if p_topic is null or p_topic !~ '^room:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' then return false; end if;
+  v_room := substring(p_topic from 6)::uuid;
+  if not public.is_room_member(v_room) then return false; end if;
+  return not exists (select 1 from public.app_rooms where id = v_room and closed);
+end $$;
+revoke all on function public.room_topic_writable(text) from public, anon;
+grant execute on function public.room_topic_writable(text) to authenticated;
 
 -- 读：房主 / 被邀的 / 成员看得到房间与名单；数据只有 joined 成员看得到；pings 客户端不读（runtime 用 service role）
 drop policy if exists app_rooms_select on public.app_rooms;
@@ -265,19 +280,19 @@ create policy "otto_apps_select_room" on storage.objects for select to authentic
   )
 );
 
--- 即时消息：私有 broadcast 频道 room:<id>，只许 joined 成员收发
+-- 即时消息：私有 broadcast——room:<id> joined 成员收发（关房后不能再发）；room-sys:<id> 成员只收（系统事件只有触发器能发）
 drop policy if exists "app_room_broadcast_select" on realtime.messages;
 create policy "app_room_broadcast_select" on realtime.messages for select to authenticated using (
-  realtime.messages.extension = 'broadcast' and public.room_topic_member(realtime.topic())
+  realtime.messages.extension = 'broadcast' and public.room_topic_readable(realtime.topic())
 );
 drop policy if exists "app_room_broadcast_insert" on realtime.messages;
 create policy "app_room_broadcast_insert" on realtime.messages for insert to authenticated with check (
-  realtime.messages.extension = 'broadcast' and public.room_topic_member(realtime.topic())
+  realtime.messages.extension = 'broadcast' and public.room_topic_writable(realtime.topic())
 );
 
 -- 变更推送：app_room_data / app_room_members 不进 supabase_realtime publication——
 -- postgres_changes 的 DELETE 事件不过 RLS，任何登录用户订阅这两张表都会收到别人房间的 (room_id, key) / (room_id, uid)。
--- 改成行触发器调 realtime.send 往私有 broadcast 频道 room:<id> 发：投递由上面 realtime.messages 的 select 策略把关，只有 joined 成员收得到。
+-- 改成行触发器调 realtime.send 往私有 broadcast 频道 room-sys:<id> 发（不是成员能写的 room:<id>：成员伪造不了 change / members / closed）：投递由上面 realtime.messages 的 select 策略把关，只有 joined 成员收得到。
 -- 只有 app_room_pings 留在 publication（runtime 用 service role 订，客户端没有它的 select 策略，也就收不到）。
 create or replace function public.app_room_data_notify() returns trigger
 language plpgsql security definer set search_path = public as $$
@@ -286,12 +301,12 @@ begin
     if tg_op = 'DELETE' then
       perform realtime.send(
         jsonb_build_object('key', old.key, 'removed', true),
-        'change', 'room:' || old.room_id, true
+        'change', 'room-sys:' || old.room_id, true
       );
     else
       perform realtime.send(
         jsonb_build_object('key', new.key, 'value', new.value, 'rev', new.rev, 'by', new.updated_by),
-        'change', 'room:' || new.room_id, true
+        'change', 'room-sys:' || new.room_id, true
       );
     end if;
   exception when others then
@@ -320,7 +335,7 @@ begin
   begin
     perform realtime.send(
       jsonb_build_object('uid', v_uid, 'status', v_status),
-      'members', 'room:' || v_room, true
+      'members', 'room-sys:' || v_room, true
     );
   exception when others then
     null; -- 同上：名单变动的通知丢了，不能回滚邀请 / 加入 / 离开本身
@@ -332,6 +347,30 @@ drop trigger if exists app_room_members_notify on public.app_room_members;
 create trigger app_room_members_notify
   after insert or update or delete on public.app_room_members
   for each row execute function public.app_room_members_notify();
+
+-- 关房：通知成员（room-sys 上只有触发器能发，所以「关了」这件事伪造不了）
+create or replace function public.app_room_closed_notify() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if old.closed is distinct from true and new.closed then
+    begin
+      perform realtime.send(
+        jsonb_build_object('closed', true),
+        'closed',
+        'room-sys:' || new.id,
+        true
+      );
+    exception when others then
+      null; -- 同上：通知丢了不能让关房本身回滚
+    end;
+  end if;
+  return null;
+end $$;
+revoke all on function public.app_room_closed_notify() from public, anon, authenticated;
+drop trigger if exists app_room_closed_notify on public.app_rooms;
+create trigger app_room_closed_notify
+  after update on public.app_rooms
+  for each row execute function public.app_room_closed_notify();
 
 do $$
 declare t text;

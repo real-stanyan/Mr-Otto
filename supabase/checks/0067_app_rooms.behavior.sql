@@ -43,14 +43,19 @@ begin
   if not ok then raise exception 'FAIL: 第一条 ping'; end if;
   ok := public.app_room_ping(r, '再叫一次');
   if ok then raise exception 'FAIL: 10 秒内第二条 ping 没被限'; end if;
-  -- broadcast 判据（room_topic_member / is_room_member 只问当前登录的人：先扮 B 再扮 C）
-  if not public.room_topic_member('room:' || r) then raise exception 'FAIL: 成员进不了频道'; end if;
-  if public.room_topic_member('room:nope') then raise exception 'FAIL: 坏频道名'; end if;
+  -- broadcast 判据（room_topic_readable / room_topic_writable / is_room_member 只问当前登录的人：先扮 B 再扮 C）
+  if not public.room_topic_readable('room:' || r) then raise exception 'FAIL: 成员读不了 room: 频道'; end if;
+  if not public.room_topic_readable('room-sys:' || r) then raise exception 'FAIL: 成员读不了 room-sys: 频道'; end if;
+  if not public.room_topic_writable('room:' || r) then raise exception 'FAIL: 成员写不了 room: 频道'; end if;
+  if public.room_topic_writable('room-sys:' || r) then raise exception 'FAIL: 成员写得了 room-sys: 频道（能伪造系统事件）'; end if;
+  if public.room_topic_readable('room:nope') or public.room_topic_writable('room:nope') or public.room_topic_readable('room-sys:nope') then raise exception 'FAIL: 坏频道名'; end if;
+  if public.room_topic_readable('other:' || r) or public.room_topic_writable('other:' || r) then raise exception 'FAIL: 别的前缀也放行了'; end if;
   if not public.is_room_member(r) then raise exception 'FAIL: B 应是成员'; end if;
 
   -- C：什么都读不到
   perform set_config('request.jwt.claims', json_build_object('sub', c, 'role', 'authenticated')::text, true);
-  if public.room_topic_member('room:' || r) then raise exception 'FAIL: 非成员进得了频道'; end if;
+  if public.room_topic_readable('room:' || r) or public.room_topic_readable('room-sys:' || r) then raise exception 'FAIL: 非成员读得了频道'; end if;
+  if public.room_topic_writable('room:' || r) or public.room_topic_writable('room-sys:' || r) then raise exception 'FAIL: 非成员写得了频道'; end if;
   if public.is_room_member(r) then raise exception 'FAIL: C 不该是成员'; end if;
   select count(*) into n from public.app_rooms where id = r;
   if n <> 0 then raise exception 'FAIL: 外人看得到房间'; end if;
@@ -67,6 +72,11 @@ begin
   end;
   select count(*) into n from public.app_room_data where room_id = r;
   if n <> 1 then raise exception 'FAIL: 关房后读不到'; end if;
+
+  -- 关房后 B：room: 不能再写（不能在关了的房间里继续广播），但两种频道照样能读
+  perform set_config('request.jwt.claims', json_build_object('sub', b, 'role', 'authenticated')::text, true);
+  if public.room_topic_writable('room:' || r) then raise exception 'FAIL: 关房后还能写 room: 频道'; end if;
+  if not public.room_topic_readable('room:' || r) or not public.room_topic_readable('room-sys:' || r) then raise exception 'FAIL: 关房后读不了频道'; end if;
 
   raise exception 'ALL PASS（整笔回滚）';
 end $$;

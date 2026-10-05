@@ -25,9 +25,25 @@ describe("0067 app rooms", () => {
     expect(sql).toContain("create policy app_versions_select_room on public.app_versions for select to authenticated");
     expect(sql).toContain(`create policy "otto_apps_select_room" on storage.objects for select to authenticated`);
   });
-  it("broadcast 私有频道按成员放行", () => {
+  it("broadcast 私有频道：读放行 room: 与 room-sys:，写只放 room:（且没关房）", () => {
     expect(sql).toContain("on realtime.messages for select to authenticated");
     expect(sql).toContain("on realtime.messages for insert to authenticated");
+    expect(sql).toMatch(/for select to authenticated using \(\s*realtime\.messages\.extension = 'broadcast' and public\.room_topic_readable\(realtime\.topic\(\)\)/);
+    expect(sql).toMatch(/for insert to authenticated with check \(\s*realtime\.messages\.extension = 'broadcast' and public\.room_topic_writable\(realtime\.topic\(\)\)/);
+    expect(sql).not.toContain("room_topic_member");
+    const writable = sql.match(/function public\.room_topic_writable[\s\S]*?end \$\$;/)?.[0] ?? "";
+    expect(writable).toContain("'^room:");
+    expect(writable).not.toContain("room-sys");
+    expect(writable).toContain("closed");
+    const readable = sql.match(/function public\.room_topic_readable[\s\S]*?end \$\$;/)?.[0] ?? "";
+    expect(readable).toContain("room-sys");
+  });
+  it("系统事件走 room-sys:<id>（成员只读、伪造不了）；关房时发 closed", () => {
+    expect(sql).not.toMatch(/'room:' \|\| (old|new|v_room)/);
+    expect((sql.match(/'room-sys:' \|\| /g) ?? []).length).toBeGreaterThanOrEqual(4);
+    expect(sql).toMatch(/create trigger \w+\s+after update on public\.app_rooms\s+for each row execute function/);
+    expect(sql).toMatch(/realtime\.send\(\s*jsonb_build_object\('closed', true\),\s*'closed',\s*'room-sys:' \|\| new\.id,\s*true\s*\)/);
+    expect(sql).toMatch(/old\.closed[\s\S]*?new\.closed/);
   });
   it("publication 只放 app_room_pings：postgres_changes 的 DELETE 绕过 RLS，data / members 不能进", () => {
     expect(sql).toMatch(/foreach t in array array\['app_room_pings'\] loop[\s\S]*alter publication supabase_realtime add table/);
@@ -38,13 +54,14 @@ describe("0067 app rooms", () => {
     for (const t of ["app_room_data", "app_room_members"]) {
       expect(sql).toMatch(new RegExp(`create trigger \\w+\\s+after insert or update or delete on public\\.${t}\\s+for each row execute function`));
     }
-    expect(sql).toMatch(/realtime\.send\(\s*jsonb_build_object\('key'[\s\S]*?'change',\s*'room:' \|\| [\s\S]*?true\s*\)/);
-    expect(sql).toMatch(/realtime\.send\(\s*jsonb_build_object\('uid'[\s\S]*?'members',\s*'room:' \|\| [\s\S]*?true\s*\)/);
-    expect((sql.match(/exception when others then\s+null;/g) ?? []).length).toBeGreaterThanOrEqual(2);
+    expect(sql).toMatch(/realtime\.send\(\s*jsonb_build_object\('key'[\s\S]*?'change',\s*'room-sys:' \|\| [\s\S]*?true\s*\)/);
+    expect(sql).toMatch(/realtime\.send\(\s*jsonb_build_object\('uid'[\s\S]*?'members',\s*'room-sys:' \|\| [\s\S]*?true\s*\)/);
+    expect((sql.match(/exception when others then\s+null;/g) ?? []).length).toBeGreaterThanOrEqual(3);
   });
   it("成员判据不带 uid 参数（只问 auth.uid()）", () => {
     expect(sql).toContain("function public.is_room_member(p_room uuid) returns boolean");
-    expect(sql).toContain("function public.room_topic_member(p_topic text) returns boolean");
+    expect(sql).toContain("function public.room_topic_readable(p_topic text) returns boolean");
+    expect(sql).toContain("function public.room_topic_writable(p_topic text) returns boolean");
     expect(sql).not.toMatch(/is_room_member\([^)]*,/);
   });
   it("并发：invite / set / ping 先锁房间行再判上限与限速", () => {
