@@ -1429,6 +1429,16 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     }, wait);
   }
   for (const id of collabRequests.keys()) armCollabExpiry(id);
+  // 开房时把这边还在等点头的请求再送一遍（#1605 真机 2026-10-05）：送不送到不能靠管理员自觉——它看见自己说过「交给了」
+  // 就只会复述，不会再调工具。对面按 requestId 去重，重送是安全的；只有发起这一侧（车道里、请求是这边落的）送
+  if (isPair && pairFacts !== undefined && (opts.adminsBridge ?? null) !== null) {
+    for (const r of collabRequests.values()) {
+      if (r.decision !== null || r.event.expiresTs <= Date.now() || r.event.fromUid !== opts.ownerUid) continue;
+      void opts.adminsBridge!.deliverRequest({ ownerUid: opts.ownerUid, peerUid: pairFacts.peerUid, event: r.event, origin: { workspaceId: opts.workspaceId, sessionId } })
+        .then((refused) => { if (refused !== null) console.warn(`[otto-runtime] 开房重送协作请求没送到（session=${sessionId} request=${r.event.requestId}）：${refused}`); })
+        .catch((err: unknown) => console.warn(`[otto-runtime] 开房重送协作请求失败（session=${sessionId}）：${err instanceof Error ? err.message : String(err)}`));
+    }
+  }
   /** B 的管理员这一轮说的话送回 A（#1605）：只送主人接了的那条请求的 origin；系统替它应的那句（ack）不送 */
   async function mirrorAdminsReply(spec: AgentSpec, scanFrom: number): Promise<void> {
     const bridge = opts.adminsBridge ?? null;
