@@ -23,6 +23,7 @@ import { RequestsScreen } from "../friends/RequestsScreen.js";
 import { useInbox } from "../inbox/useInbox.js";
 import { AppDetailScreen } from "../machine/AppDetailScreen.js";
 import { AppsScreen } from "../machine/AppsScreen.js";
+import { MiniAppScreen } from "../apps/MiniAppScreen.js";
 import { ConnectAppScreen } from "../machine/ConnectAppScreen.js";
 import { FilePreviewScreen } from "../machine/FilePreviewScreen.js";
 import { FilesScreen } from "../machine/FilesScreen.js";
@@ -111,6 +112,8 @@ export function RootNavigator() {
         <Root.Screen name="WikiEdit" component={WikiEditScreen} options={{ title: "改这一页", headerShadowVisible: false }} />
         <Root.Screen name="Usage" component={UsageScreen} options={{ title: "这周谁用得多" }} />
         <Root.Screen name="Apps" component={AppsScreen} options={{ title: "应用" }} />
+        {/* 标题由页面自己 setOptions（应用的名字） */}
+        <Root.Screen name="MiniApp" component={MiniAppScreen} options={{ title: "" }} />
         <Root.Screen name="ConnectApp" component={ConnectAppScreen} options={{ title: "接入应用" }} />
         <Root.Screen name="AppDetail" component={AppDetailScreen} options={{ title: "" }} />
         <Root.Screen name="Settings" component={SettingsScreen} options={{ title: "设置" }} />

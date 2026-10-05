@@ -21,6 +21,9 @@ import type { FaceState } from "../../../src/shared/ottoFace/index.js";
 import { memberAvatarOf } from "../../../src/shared/workspaceView.js";
 import type { WorkspaceSnapshot } from "../../../src/shared/workspaces.js";
 import { usePalette, withAlpha } from "../theme.js";
+import { useNavigation } from "@react-navigation/native";
+import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
+import type { RootStackParams } from "../nav/types.js";
 import { Button, useReduceMotion } from "../ui.js";
 import { FaceTile, PersonTile, tileRadius } from "../wx/Avatar.js";
 import { Icon } from "../wx/Icon.js";
@@ -241,6 +244,8 @@ export function ChatRowView({ row, ws, selfUid, selfName, selfAvatar, group, out
       return <ApprovalCard row={row} busy={deciding === row.callId || !decideReady} onDecide={onDecide} selfUid={selfUid} />;
     case "task":
       return <TaskCard row={row} />;
+    case "app":
+      return <AppCard row={row} />;
     default: {
       const unhandled: never = row;
       return unhandled;
@@ -616,5 +621,30 @@ function Dot({ delay }: { delay: number }) {
         transform: reduce ? [] : [{ translateY: k.interpolate({ inputRange: [0, 1], outputRange: [0, -3] }) }],
       }}
     />
+  );
+}
+
+/** 应用卡（#1591）：图标 + 名字 + 版本 + 这一版改了什么；点开进宿主。谁打的写在底下 */
+function AppCard({ row }: { row: Extract<ChatRow, { kind: "app" }> }) {
+  const { c } = usePalette();
+  const navigation = useNavigation<NativeStackNavigationProp<RootStackParams>>();
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`打开应用 ${row.name}`}
+      onPress={() => navigation.navigate("MiniApp", { appId: row.appId })}
+      style={({ pressed }) => [{ alignSelf: "stretch", marginHorizontal: 12 }, pressed && { opacity: 0.8 }]}
+    >
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 12, padding: 12, borderRadius: RADIUS, backgroundColor: withAlpha(c.brand, 0.08), borderWidth: 1, borderColor: withAlpha(c.brand, 0.25) }}>
+        <View style={{ width: 44, height: 44, borderRadius: 11, alignItems: "center", justifyContent: "center", backgroundColor: c.background }}>
+          <Text style={{ fontSize: 24 }}>{row.icon}</Text>
+        </View>
+        <View style={{ flex: 1, gap: 2 }}>
+          <Text numberOfLines={1} style={{ fontSize: 16, fontWeight: "600", color: c.foreground }}>{`${row.name} · v${row.version}`}</Text>
+          <Text numberOfLines={2} style={{ fontSize: 13, color: c.mutedForeground }}>{row.note !== "" ? row.note : `${row.byName} 打好了，点开就能用`}</Text>
+        </View>
+        <Icon name="chevron-right" size={16} stroke={2} color={c.faint} />
+      </View>
+    </Pressable>
   );
 }
