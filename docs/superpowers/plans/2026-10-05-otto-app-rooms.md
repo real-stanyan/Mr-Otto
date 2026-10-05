@@ -531,7 +531,8 @@ git commit -m "feat(apps): migration 0067——应用的房间：表、RPC、RLS
   export function roomMemberOf(raw: unknown): RoomMember | null
   export function roomEntryOf(raw: unknown): RoomEntry | null
   export function roomSetResultOf(raw: unknown): RoomSetResult | null
-  export const roomTopic: (roomId: string) => string            // "room:<id>"
+  export const roomTopic: (roomId: string) => string            // "room:<id>"（成员即时消息）
+  export const roomSysTopic: (roomId: string) => string         // "room-sys:<id>"（触发器发的系统事件，成员只读）
   export function encodeRoomInvite(card: AppShareCard, room: RoomInvite): string
   export function decodeRoomInvite(body: string): { card: AppShareCard; room: RoomInvite } | null
   export function roomInvitePreview(card: AppShareCard): string // "[邀请] <icon> <name>"
@@ -551,7 +552,7 @@ import { decodeAppCard, encodeAppCard, type AppShareCard } from "../../src/share
 import type { AppRow } from "../../src/shared/apps.js";
 import {
   createRateGate, decodeRoomInvite, encodeRoomInvite, familyOf, jsonBytes, myAppForHost, roomEntryOf, roomInvitePreview,
-  roomKeyOk, roomMemberOf, roomRowOf, roomSetResultOf, roomTopic,
+  roomKeyOk, roomMemberOf, roomRowOf, roomSetResultOf, roomSysTopic, roomTopic,
 } from "../../src/shared/appRoom.js";
 
 const U1 = "2819d0bb-933b-499d-be44-2bb51b5a8391";
@@ -590,6 +591,7 @@ describe("appRoom", () => {
   });
   it("频道名、键、字节数、速率闸", () => {
     expect(roomTopic(ROOM)).toBe(`room:${ROOM}`);
+    expect(roomSysTopic(ROOM)).toBe(`room-sys:${ROOM}`);
     expect(roomKeyOk("a")).toBe(true);
     expect(roomKeyOk("")).toBe(false);
     expect(roomKeyOk("x".repeat(201))).toBe(false);
@@ -681,6 +683,7 @@ export function roomSetResultOf(raw: unknown): RoomSetResult | null {
 }
 
 export const roomTopic = (roomId: string): string => `room:${roomId}`;
+export const roomSysTopic = (roomId: string): string => `room-sys:${roomId}`;
 
 export function encodeRoomInvite(card: AppShareCard, room: RoomInvite): string {
   const body = JSON.stringify({ otto: APP_CARD_KIND, v: 1, card, room: { id: room.id, title: room.title.slice(0, ROOM_TITLE_MAX) } });
@@ -779,7 +782,7 @@ git commit -m "feat(apps): appRoom 纯逻辑——限额、行解析、邀请信
     remove(client, roomId: string, key: unknown): Promise<void>;
   }
   export async function pingRoom(client: SupabaseClient, roomId: string, text: unknown): Promise<boolean>
-  export interface RoomLinkHandlers { change(e: RoomEntry | { key: string; removed: true }): void; members(): void; message(from: string, msg: unknown): void; status?(s: string): void }
+  export interface RoomLinkHandlers { change(e: RoomEntry | { key: string; removed: true }): void; members(): void; closed(): void; message(from: string, msg: unknown): void; status?(s: string): void }
   export function subscribeRoom(client: SupabaseClient, roomId: string, selfUid: string, h: RoomLinkHandlers): { send(msg: unknown): Promise<void>; close(): void }
   ```
   抛错 = 没做成（桥把那句话回给应用）；读不到回 null（同 appsApi 的纪律）。
@@ -797,24 +800,24 @@ const U1 = "2819d0bb-933b-499d-be44-2bb51b5a8391";
 
 function fakeClient(rpcReply: (fn: string, args: Record<string, unknown>) => { data: unknown; error: { message: string } | null }) {
   const calls: { fn: string; args: Record<string, unknown> }[] = [];
-  const handlers: { filter: unknown; cb: (p: unknown) => void }[] = [];
-  const sent: unknown[] = [];
-  let broadcastCb: ((p: { payload: unknown }) => void) | null = null;
-  const channel = {
-    on(kind: string, filter: unknown, cb: (p: unknown) => void) {
-      if (kind === "broadcast") broadcastCb = cb as (p: { payload: unknown }) => void;
-      else handlers.push({ filter, cb });
-      return channel;
-    },
-    subscribe() { return channel; },
-    async send(m: unknown) { sent.push(m); return "ok"; },
-  };
+  // 每个频道名一份：记下 opts 与按事件名注册的回调
+  const channels = new Map<string, { opts: unknown; on: Map<string, (p: { payload: unknown }) => void>; sent: unknown[] }>();
   const client = {
     async rpc(fn: string, args: Record<string, unknown>) { calls.push({ fn, args }); return rpcReply(fn, args); },
-    channel: () => channel,
+    channel(topic: string, opts: unknown) {
+      const c = { opts, on: new Map<string, (p: { payload: unknown }) => void>(), sent: [] as unknown[] };
+      channels.set(topic, c);
+      const api = {
+        on(kind: string, filter: { event: string }, cb: (p: { payload: unknown }) => void) { if (kind === "broadcast") c.on.set(filter.event, cb); return api; },
+        subscribe() { return api; },
+        async send(m: unknown) { c.sent.push(m); return "ok"; },
+      };
+      return api;
+    },
     removeChannel: async () => "ok",
   } as unknown as SupabaseClient;
-  return { client, calls, handlers, sent, fireBroadcast: (p: unknown) => broadcastCb?.({ payload: p }) };
+  const fire = (topic: string, event: string, payload: unknown) => channels.get(topic)?.on.get(event)?.({ payload });
+  return { client, calls, channels, fire };
 }
 
 describe("appRoomApi", () => {
@@ -837,27 +840,34 @@ describe("appRoomApi", () => {
     expect(await pingRoom(f.client, ROOM, "轮到你了")).toBe(false);
     await expect(pingRoom(f.client, ROOM, "  ")).rejects.toThrow();
   });
-  it("subscribeRoom：数据变更 → change；删除 → removed；broadcast → message；send 过大小限", async () => {
+  it("subscribeRoom：两个私有频道——room-sys:<id> 收 change / members / closed（只信这里），room:<id> 收发成员即时消息", async () => {
     const f = fakeClient(() => ({ data: null, error: null }));
     const got: unknown[] = [];
     const link = subscribeRoom(f.client, ROOM, U1, {
       change: (e) => got.push(["change", e]),
       members: () => got.push(["members"]),
+      closed: () => got.push(["closed"]),
       message: (from, msg) => got.push(["message", from, msg]),
     });
-    const dataH = f.handlers.find((h) => JSON.stringify(h.filter).includes("app_room_data"))!;
-    dataH.cb({ eventType: "UPDATE", new: { key: "board", value: { x: 1 }, rev: 2, updated_by: U1 } });
-    dataH.cb({ eventType: "DELETE", old: { room_id: ROOM, key: "board" } });
-    f.handlers.find((h) => JSON.stringify(h.filter).includes("app_room_members"))!.cb({ eventType: "UPDATE" });
-    f.fireBroadcast({ from: "other", msg: { go: 1 } });
+    expect(f.channels.get(`room-sys:${ROOM}`)?.opts).toEqual({ config: { private: true } });
+    expect(f.channels.get(`room:${ROOM}`)?.opts).toEqual({ config: { private: true, broadcast: { self: false } } });
+    f.fire(`room-sys:${ROOM}`, "change", { key: "board", value: { x: 1 }, rev: 2, by: U1 });
+    f.fire(`room-sys:${ROOM}`, "change", { key: "board", removed: true });
+    f.fire(`room-sys:${ROOM}`, "members", { uid: U1, status: "joined" });
+    f.fire(`room-sys:${ROOM}`, "closed", { closed: true });
+    f.fire(`room:${ROOM}`, "msg", { from: "other", msg: { go: 1 } });
+    // 成员在 room: 上伪造的系统事件一律不认
+    f.fire(`room:${ROOM}`, "change", { key: "board", value: { x: 9 }, rev: 99, by: "evil" });
+    f.fire(`room:${ROOM}`, "closed", { closed: true });
     expect(got).toEqual([
       ["change", { key: "board", value: { x: 1 }, rev: 2, by: U1 }],
       ["change", { key: "board", removed: true }],
       ["members"],
+      ["closed"],
       ["message", "other", { go: 1 }],
     ]);
     await link.send({ hi: 1 });
-    expect(f.sent[0]).toEqual({ type: "broadcast", event: "msg", payload: { from: U1, msg: { hi: 1 } } });
+    expect(f.channels.get(`room:${ROOM}`)?.sent[0]).toEqual({ type: "broadcast", event: "msg", payload: { from: U1, msg: { hi: 1 } } });
     await expect(link.send("x".repeat(5000))).rejects.toThrow("4 KB");
   });
 });
@@ -872,12 +882,12 @@ Expected: FAIL（模块不存在）
 
 ```ts
 // src/shared/appRoomApi.ts
-// appRoomApi —— 房间在客户端这一侧的 IO（#1675）：七个 RPC 的包装、读（RLS 已按成员圈）、订阅（postgres_changes + 私有 broadcast）。
+// appRoomApi —— 房间在客户端这一侧的 IO（#1675）：七个 RPC 的包装、读（RLS 已按成员圈）、订阅（两个私有 broadcast 频道）。
 // 判据在 appRoom.ts 与 migration 0067；这里先在客户端把明显不对的拦下（省一趟），服务端照样再判一遍。
 // 抛错 = 没做成（桥把那句话回给应用）；读不到回 null。
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
-  createRateGate, jsonBytes, roomEntryOf, roomKeyOk, roomMemberOf, roomRowOf, roomSetResultOf, roomTopic,
+  createRateGate, jsonBytes, roomEntryOf, roomKeyOk, roomMemberOf, roomRowOf, roomSetResultOf, roomSysTopic, roomTopic,
   ROOM_MSG_BYTES_MAX, ROOM_MSG_PER_SEC, ROOM_PING_TEXT_MAX, ROOM_TITLE_MAX, ROOM_VALUE_BYTES_MAX,
   type RoomEntry, type RoomMember, type RoomRow, type RoomSetResult,
 } from "./appRoom.js";
@@ -970,45 +980,54 @@ export async function pingRoom(client: SupabaseClient, roomId: string, text: unk
 export interface RoomLinkHandlers {
   change(e: RoomEntry | { key: string; removed: true }): void;
   members(): void;
+  closed(): void;
   message(from: string, msg: unknown): void;
   status?(s: string): void;
 }
 
-/** 订一间房：数据变更、名单变化、即时消息。send 过速率闸与 4 KB 上限；自己发的 broadcast 不回送（self: false） */
+/** 订一间房（migration 0067 的两个私有频道）：
+    - room-sys:<id>：数据库触发器发的 change / members / closed——成员只读，**系统事件只信这一条**；
+    - room:<id>：成员之间的即时消息 msg（成员可写；在这条上冒充 change / closed 的一律不听）。
+    send 过速率闸与 4 KB 上限；自己发的不回送（self: false） */
 export function subscribeRoom(client: SupabaseClient, roomId: string, selfUid: string, h: RoomLinkHandlers): { send(msg: unknown): Promise<void>; close(): void } {
   const gate = createRateGate(ROOM_MSG_PER_SEC);
-  const filter = `room_id=eq.${roomId}`;
-  const channel = client
-    .channel(roomTopic(roomId), { config: { private: true, broadcast: { self: false } } })
-    .on("postgres_changes", { event: "*", schema: "public", table: "app_room_data", filter }, (p: { eventType?: string; new?: unknown; old?: unknown }) => {
-      if (p.eventType === "DELETE") {
-        const key = (p.old as { key?: unknown } | undefined)?.key;
-        if (typeof key === "string") h.change({ key, removed: true });
+  const sys = client
+    .channel(roomSysTopic(roomId), { config: { private: true } })
+    .on("broadcast", { event: "change" }, (p: { payload?: unknown }) => {
+      const o = (p.payload ?? null) as { key?: unknown; value?: unknown; rev?: unknown; by?: unknown; removed?: unknown } | null;
+      if (o === null) return;
+      if (o.removed === true && typeof o.key === "string") {
+        h.change({ key: o.key, removed: true });
         return;
       }
-      const e = roomEntryOf(p.new);
+      const e = roomEntryOf({ key: o.key, value: o.value, rev: o.rev, updated_by: o.by });
       if (e !== null) h.change(e);
     })
-    .on("postgres_changes", { event: "*", schema: "public", table: "app_room_members", filter }, () => h.members())
+    .on("broadcast", { event: "members" }, () => h.members())
+    .on("broadcast", { event: "closed" }, () => h.closed())
+    .subscribe((s: string) => h.status?.(s));
+  const chat = client
+    .channel(roomTopic(roomId), { config: { private: true, broadcast: { self: false } } })
     .on("broadcast", { event: "msg" }, (p: { payload?: unknown }) => {
       const o = p.payload as { from?: unknown; msg?: unknown } | undefined;
       if (o !== undefined && typeof o.from === "string") h.message(o.from, o.msg ?? null);
     })
-    .subscribe((s: string) => h.status?.(s));
+    .subscribe();
   return {
     async send(msg) {
       if (jsonBytes(msg) > ROOM_MSG_BYTES_MAX) throw new Error("即时消息太大（最多 4 KB）");
       if (!gate()) throw new Error("发得太快了（每秒最多 20 条）");
-      await channel.send({ type: "broadcast", event: "msg", payload: { from: selfUid, msg } });
+      await chat.send({ type: "broadcast", event: "msg", payload: { from: selfUid, msg } });
     },
     close() {
-      void client.removeChannel(channel);
+      void client.removeChannel(sys);
+      void client.removeChannel(chat);
     },
   };
 }
 ```
 
-（supabase-js 的 `.on("postgres_changes", …)` 重载类型严格：若 tsc 对回调参数类型报错，回调参数按 `RealtimePostgresChangesPayload<Record<string, unknown>>` 标注、在函数体里再收窄；不要 `as any`。私有频道要求客户端已带用户 JWT：手机端 `supabase` 客户端登录后自动 `realtime.setAuth`；若 Task 11 发现收不到 broadcast，在 `subscribeRoom` 前 `await client.realtime.setAuth()`——那时再改并补测试。）
+（supabase-js 的 `.on("broadcast", …)` 回调参数类型若与上面的标注不合，按 supabase-js 导出的类型标注后在函数体里收窄；不要 `as any`。私有频道要求客户端已带用户 JWT：手机端 `supabase` 客户端登录后自动 `realtime.setAuth`；若 Task 11 发现收不到 broadcast，在 `subscribeRoom` 前 `await client.realtime.setAuth()`——那时再改并补测试。）
 
 - [ ] **Step 4: 跑，确认绿 + tsc**
 
@@ -1019,7 +1038,7 @@ Expected: PASS
 
 ```bash
 git add src/shared/appRoomApi.ts tests/shared/appRoomApi.test.ts
-git commit -m "feat(apps): appRoomApi——房间 RPC 包装、读、订阅（数据变更 + 名单 + 私有 broadcast）（#1675）"
+git commit -m "feat(apps): appRoomApi——房间 RPC 包装、读、订阅（room-sys 系统事件只读 + room 即时消息）（#1675）"
 ```
 
 ---
@@ -1218,7 +1237,7 @@ Expected: FAIL
 ```ts
         `要和好友一起玩 / 一起记的，清单 capabilities 加 room，用 otto.room：current()（不在房间回 null）/ create({title}) / invite()（弹好友选择）/ rooms() / open(id) / leave()；` +
         `共享数据 get(key) / list(prefix) / set(key, value, {ifRev}) → {ok, rev} 或 {ok:false, rev, value}（回合制落子带 ifRev 防抢写，0 = 只在还没有时写）/ remove(key)；` +
-        `即时消息 send(msg)（≤ 4 KB、每秒 ≤ 20 条）；ping(text) 推给其他成员（轮到谁了）；事件 otto.on('room.change' | 'room.message' | 'room.members', cb)。个人的东西仍放 otto.storage。`,
+        `即时消息 send(msg)（≤ 4 KB、每秒 ≤ 20 条）；ping(text) 推给其他成员（轮到谁了）；事件 otto.on('room.change' | 'room.message' | 'room.members' | 'room.closed', cb)。个人的东西仍放 otto.storage。`,
 ```
 
 （原 description 是一串 `+` 拼接、最后一段以 `` ` `` 收尾带逗号；把最后那段的逗号去掉、接 `+` 再接上面三段。）
@@ -1435,6 +1454,15 @@ function needRoom(l: Loaded): RoomRow {
           setLoaded(next);
           push(bridgeEventJs("room.members", { members: m }));
         });
+      },
+      closed: () => {
+        const cur = loadedRef.current;
+        if (cur !== null && cur.room !== null) {
+          const next = { ...cur, room: { ...cur.room, closed: true } };
+          loadedRef.current = next;
+          setLoaded(next);
+        }
+        push(bridgeEventJs("room.closed", {}));
       },
       message: (from, msg) => push(bridgeEventJs("room.message", { from, msg })),
     });
