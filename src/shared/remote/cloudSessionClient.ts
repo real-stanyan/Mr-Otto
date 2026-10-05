@@ -92,6 +92,7 @@ import type { ApprovalDecisionEvent, SessionEvent } from "../../session/events.j
 import type { ApprovalRequest, CloudAck, CloudSessionStatus, CloudWorkspaceState } from "../shellBridge.js";
 import type { FriendsResult } from "../friends.js";
 import type { ChatMediaRef } from "../chatMedia.js";
+import type { HealthQuery, HealthResult } from "../health.js";
 
 /** 控制房 create 的等待上限：runtime 一直没接上/没回应时，别把调用方永远悬在
     半空——一个「稍后重试」的失败远好过一个永不 resolve 的 Promise。 */
@@ -161,6 +162,11 @@ export interface CloudSessionClientDeps {
       里这个 sessionId 的残留（复审 Medium，同本地 turn 收尾 finally 块里
       pendingApprovals.delete 的无条件清理纪律对齐） */
   onSessionInactive: (sessionId: string) => void;
+  /** 这台设备此刻能替智能体做什么（协议 29，#1656）：welcome 之后发一次 `caps`，`refreshCaps()` 再发。
+      不给 = 不发（桌面：它没有健康数据） */
+  deviceCaps?: () => { health: boolean };
+  /** runtime 要读这台手机的 Apple 健康（#1656）。不给 = 回 ok:false（没声明能力时 runtime 本不会来问） */
+  onHealthQuery?: (query: HealthQuery) => Promise<HealthResult>;
   /** 日志钩子。**禁止在这里打印 payload/jwt 原文**——只记帧类型/错误文本 */
   log?: (m: string) => void;
 }
@@ -188,6 +194,8 @@ export interface CloudSessionSummary {
 }
 
 export interface CloudSessionClient {
+  /** 开关变了（#1656）：对当前会话房重发一次 caps。还没 welcome / 没有会话 = 空操作（welcome 那一刻会发） */
+  refreshCaps(): void;
   /** 当前已 join 的云会话 id；没有 = null。handleDecideApproval 拿它判断一个
       sessionId 是不是该走云端分流，不碰本地 agents */
   currentSessionId(): string | null;
@@ -658,6 +666,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
         // 仍是 connecting，但占位的 initiatorUid/ownerUid 已经补上真值——
         // 渲染层立刻能显示"谁发起的/谁是 owner"，不用等 backlog 跑完
         pushStatus(session);
+        if (deps.deviceCaps !== undefined) sendFrame(session, { t: "caps", ...deps.deviceCaps() });
         // 聊天进房只拉末尾一屏（#1280）：一只一条永久线，全量拉迟早是十几秒。
         // 团队会话照旧 afterSeq:-1——那边的上下文环与通话折卡都靠「把整份日志
         // 读一遍」，改成分页会让它们静默算错
@@ -670,6 +679,17 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
         } catch (e) {
           deps.log?.(`云会话:backlog 请求编码失败:${e instanceof Error ? e.message : String(e)}`);
         }
+        return;
+      }
+      case "health_query": {
+        // 读手机的健康数据（#1656）：结果可能要几秒（HealthKit 查询），不阻塞这条连接的其余帧；
+        // 期间人离开了这条会话就不回——runtime 那边会按断开收场
+        const answer = deps.onHealthQuery ?? (async (): Promise<HealthResult> => ({ ok: false, error: "这台设备不读健康数据" }));
+        void answer(msg.query)
+          .catch((e: unknown): HealthResult => ({ ok: false, error: e instanceof Error ? e.message : String(e) }))
+          .then((result) => {
+            if (active === session) sendFrame(session, { t: "health_result", reqId: msg.reqId, result });
+          });
         return;
       }
       case "workspace_state":
@@ -1306,5 +1326,11 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     };
   }
 
-  return { currentSessionId, activeSummary, create, join, leave, say, approve, pickFriend, archive, remove, chatUpdate, collabDecide, humanCall, appAccept, appDelete, stop, call, backlogPage, workspaceState, workspaceGitCredential, workspaceFiles, workspaceFilesSearch, workspaceWikiWrite };
+  function refreshCaps(): void {
+    // ownerUid 由 welcome 填（之前是占位 ""）：welcome 之前发任何帧都会被当成未 hello 拒掉
+    if (active === null || active.ownerUid === "" || deps.deviceCaps === undefined) return;
+    sendFrame(active, { t: "caps", ...deps.deviceCaps() });
+  }
+
+  return { refreshCaps, currentSessionId, activeSummary, create, join, leave, say, approve, pickFriend, archive, remove, chatUpdate, collabDecide, humanCall, appAccept, appDelete, stop, call, backlogPage, workspaceState, workspaceGitCredential, workspaceFiles, workspaceFilesSearch, workspaceWikiWrite };
 }
