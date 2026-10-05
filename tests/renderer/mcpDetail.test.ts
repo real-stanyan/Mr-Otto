@@ -8,7 +8,7 @@ import {
   toolsNote,
   transportFact,
 } from "../../src/renderer/src/lib/mcpDetail.js";
-import type { CatalogEntry } from "../../src/shared/mcpCatalog.js";
+import { MCP_CATALOG, type CatalogEntry } from "../../src/shared/mcpCatalog.js";
 
 const http: CatalogEntry = {
   id: "x",
@@ -122,6 +122,11 @@ describe("connectorFacts 与 blocked", () => {
     // "配好后点一次授权"说的是要授权该干什么；横幅刚说完这台现在授权不了。
     // 两句摞在一起，用户得自己判断信哪句
     expect(connectorFacts(blocked).map((f) => f.label)).not.toContain("授权");
+  });
+
+  it("预置客户端的条目不出「授权」这一行（横幅已经说了在手机上接）", () => {
+    const gmail = MCP_CATALOG.find((e) => e.id === "gmail")!;
+    expect(connectorFacts(gmail).some((f) => f.label === "授权")).toBe(false);
   });
 
   it("没标 blocked 的照旧有那一行", () => {

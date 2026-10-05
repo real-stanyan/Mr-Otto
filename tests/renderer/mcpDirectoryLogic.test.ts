@@ -15,7 +15,7 @@ import {
   type DirectoryItem,
 } from "../../src/renderer/src/lib/mcpDirectory.js";
 import type { McpDisplayStatus } from "../../src/renderer/src/lib/mcpForm.js";
-import { MCP_CATALOG } from "../../src/shared/mcpCatalog.js";
+import { MCP_CATALOG, PRESET_ON_PHONE } from "../../src/shared/mcpCatalog.js";
 import type { CatalogCategory, CatalogEntry } from "../../src/shared/mcpCatalog.js";
 import { mapRegistryServer } from "../../src/shared/mcpRegistry.js";
 
@@ -341,6 +341,12 @@ describe("installSlot", () => {
       title: "这台的授权服务器不支持动态注册",
     });
     expect(installSlot(blocked("needs-auth"), false).kind).toBe("note");
+  });
+
+  it("预置客户端的条目（Gmail）：不发「添加」，说在手机上接（#1619）", () => {
+    const gmail = MCP_CATALOG.find((e) => e.id === "gmail")!;
+    const gmailItem: DirectoryItem = { entry: gmail, verified: true, installed: null };
+    expect(installSlot(gmailItem, false)).toEqual({ kind: "note", label: "在手机上接", title: PRESET_ON_PHONE });
   });
 
   it("真连上了以现实为准 —— blocked 是上次实测的结论，可能过期", () => {

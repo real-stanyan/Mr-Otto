@@ -4,7 +4,7 @@
 // 用户真正要知道的三件事（代码跑在谁的机器上、地址是什么、要我填什么），
 // 和装之后要知道的一件事（它到底给了哪些工具），都在这儿。
 
-import type { CatalogEntry } from "../../../shared/mcpCatalog.js";
+import { desktopBlocked, type CatalogEntry } from "../../../shared/mcpCatalog.js";
 import type { McpDisplayStatus } from "./mcpForm.js";
 
 export interface DetailFact {
@@ -44,7 +44,7 @@ export function connectorFacts(entry: CatalogEntry): DetailFact[] {
   // blocked 的那几条不出「授权」这一行。authNote 说的是"要授权的话该干什么"
   // （"配好后点一次授权"），而上面那条横幅刚说完这台现在授权不了——两句话
   // 摞在一起，用户得自己判断该信哪句。已知接不上的时候，横幅就是答案（#760）
-  if (entry.blocked === undefined && entry.authNote.trim() !== "") {
+  if (desktopBlocked(entry) === undefined && entry.authNote.trim() !== "") {
     facts.push({ label: "授权", value: entry.authNote });
   }
   return facts.filter((f) => f.value.trim() !== "");

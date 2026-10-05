@@ -47,6 +47,14 @@ export const CATALOG_CATEGORIES: readonly CatalogCategory[] = [
   "本机工具",
 ];
 
+/** edge 上预置的 OAuth 客户端名（#1619）。加一家就是这里加一个值 + edge 的 cloudDeps().presetClient 认它 */
+export type PresetClientName = "google";
+
+/** 授权 URL 上由 edge 自己定的参数，目录的 authorizeParams 不许覆盖 */
+export const AUTHORIZE_RESERVED: readonly string[] = [
+  "response_type", "client_id", "redirect_uri", "code_challenge", "code_challenge_method", "state", "resource", "scope",
+];
+
 export interface CatalogEntry {
   /** 建议的 server id（用户可改） */
   id: string;
@@ -81,6 +89,14 @@ export interface CatalogEntry {
       接不上的 server 还要用它，而"发现之后怎么说"这件事已经想清楚了（ADR-0190）。
       加一条 blocked 之前先问一句：是真的没路，还是只试了 OAuth 那一条？ */
   blocked?: string;
+  /** 可选：用我们预置的哪一套 OAuth 客户端，不走动态注册（#1619）。值是 edge 上那套凭据的**名字**，
+      凭据本身只在 edge 的 Worker secret 里。只对 http + oauth 有意义；桌面这一版接不了这类条目（desktopBlocked） */
+  presetClient?: PresetClientName;
+  /** 可选：写死要的 scope。有它就不用资源元数据的 scopes_supported——Gmail 那份含 `https://mail.google.com/` 整箱权限 */
+  scopes?: readonly string[];
+  /** 可选：授权 URL 上额外带的参数。Google 要 access_type=offline + prompt=consent 才回 refresh_token；
+      不许碰 AUTHORIZE_RESERVED 里那几个（目录测试拦着，authorizeUrl 也忽略） */
+  authorizeParams?: Readonly<Record<string, string>>;
   /** 可选：打进包的本地图标资源键（不是 URL）。渲染进程用它查
       src/renderer/src/assets/mcp/ 下的 SVG 或 PNG；缺席就画首字母色块。
       **刻意不接受远程 URL**：注册表条目的 icons 由投稿者自由填写，让渲染进程
@@ -102,6 +118,14 @@ export interface CatalogEntry {
     而不是在界面上安静地不出现在任何一段里 */
 export interface CuratedEntry extends CatalogEntry {
   category: CatalogCategory;
+}
+
+/** 桌面上这台接得了吗：预置客户端的条目只在手机上接（Web application 客户端要精确回调地址，桌面是随机回环端口，#1619） */
+export const PRESET_ON_PHONE = "这个应用在手机上接：Mr Otto 手机 App →「接入应用」";
+
+/** 桌面读「接不上的原因」一律走这里，不直接读 entry.blocked */
+export function desktopBlocked(entry: CatalogEntry): string | undefined {
+  return entry.blocked ?? (entry.presetClient !== undefined ? PRESET_ON_PHONE : undefined);
 }
 
 export const MCP_CATALOG: readonly CuratedEntry[] = [
@@ -581,6 +605,22 @@ export const MCP_CATALOG: readonly CuratedEntry[] = [
     auth: "oauth",
     authNote: "配好后点一次授权",
     icon: "dropbox",
+  },
+  {
+    id: "gmail",
+    name: "Gmail",
+    description: "搜邮件、读来往、起草回信（不直接发信）",
+    category: "协作与项目",
+    transport: "http",
+    url: "https://gmailmcp.googleapis.com/mcp/v1",
+    params: [],
+    auth: "oauth",
+    authNote: "在手机上接：登录 Google 账号并同意读邮件、管草稿",
+    // Google 的授权服务器没有动态注册：用 edge 预置的客户端（#1619，ADR-0369）
+    presetClient: "google",
+    scopes: ["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.compose"],
+    authorizeParams: { access_type: "offline", prompt: "consent" },
+    icon: "gmail",
   },
   {
     id: "fireflies",

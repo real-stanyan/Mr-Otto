@@ -128,6 +128,23 @@ describe("authorizeUrl / exchangeCode / refresh", () => {
     expect(new URL(authorizeUrl({ meta: { ...meta, scopes: [] }, clientId: "cid", redirectUri: "https://e/cb", challenge: "ch", state: "st", resource: "https://m/mcp" })).searchParams.has("scope")).toBe(false);
     expect(Object.fromEntries(u.searchParams)).toMatchObject({ response_type: "code", client_id: "cid", redirect_uri: "https://e/cb", code_challenge: "ch", code_challenge_method: "S256", state: "st", resource: "https://m/mcp", scope: "read write" });
   });
+  it("scopes 覆盖资源元数据那份；extra 逐个带上，保留键不许被覆盖（#1619）", () => {
+    const u = new URL(authorizeUrl({
+      meta, clientId: "cid", redirectUri: "https://e/cb", challenge: "ch", state: "st", resource: "https://m/mcp",
+      scopes: ["s.read", "s.compose"],
+      extra: { access_type: "offline", prompt: "consent", client_id: "evil", redirect_uri: "https://evil/cb", scope: "all" },
+    }));
+    expect(u.searchParams.get("scope")).toBe("s.read s.compose");
+    expect(u.searchParams.get("access_type")).toBe("offline");
+    expect(u.searchParams.get("prompt")).toBe("consent");
+    expect(u.searchParams.get("client_id")).toBe("cid");
+    expect(u.searchParams.get("redirect_uri")).toBe("https://e/cb");
+    expect(u.searchParams.getAll("client_id")).toHaveLength(1);
+  });
+  it("scopes 给了空数组 = 不带 scope（不退回资源元数据那份）", () => {
+    const u = new URL(authorizeUrl({ meta: { ...meta, scopes: ["x"] }, clientId: "cid", redirectUri: "https://e/cb", challenge: "ch", state: "st", resource: "https://m/mcp", scopes: [] }));
+    expect(u.searchParams.has("scope")).toBe(false);
+  });
   it("换 token：表单体；没 access_token 算失败", async () => {
     let body = "";
     const ok = await exchangeCode(async (_u, init) => { body = String(init.body); return J(200, { access_token: "AT", refresh_token: "RT" }); },
@@ -162,8 +179,15 @@ describe("authorizeUrl / exchangeCode / refresh", () => {
     expect(hit).toBe("https://a/t");
     expect(r).toEqual({ kind: "ok", oauth: { ...oauth, tokens: { access_token: "new", refresh_token: "RT" } } });
   });
+  it("dead 带上回包里的 OAuth error（尽力而为）：读不出来就不带这个键，永不抛", async () => {
+    expect(await refreshCloudOAuth(async () => J(401, { error: "invalid_client" }), oauth)).toEqual({ kind: "dead", error: "invalid_client" });
+    expect(await refreshCloudOAuth(async () => new Response("<html>nope", { status: 400 }), oauth)).toStrictEqual({ kind: "dead" });
+    expect(await refreshCloudOAuth(async () => J(403, { error: 7 }), oauth)).toStrictEqual({ kind: "dead" });
+    expect(await refreshCloudOAuth(async () => J(400, {}), oauth)).toStrictEqual({ kind: "dead" });
+    expect(await refreshCloudOAuth(async () => J(400, { error: "" }), oauth)).toStrictEqual({ kind: "dead" });
+  });
   it("三态：厂商 4xx / 缺料 / 非 https = dead；网络错 / 5xx / 2xx 读不懂 = transient", async () => {
-    expect(await refreshCloudOAuth(async () => J(400, { error: "invalid_grant" }), oauth)).toEqual({ kind: "dead" });
+    expect(await refreshCloudOAuth(async () => J(400, { error: "invalid_grant" }), oauth)).toEqual({ kind: "dead", error: "invalid_grant" });
     expect(await refreshCloudOAuth(async () => J(200, {}), { tokenEndpoint: "https://a/t" })).toEqual({ kind: "dead" });
     let called = false;
     expect(await refreshCloudOAuth(async () => { called = true; return J(200, { access_token: "x" }); }, { ...oauth, tokenEndpoint: "http://a/t" })).toEqual({ kind: "dead" });
