@@ -82,3 +82,21 @@ describe("schedule_task 的说明（#1561）", () => {
     expect(rig().schedule.def.description.startsWith("你能定时")).toBe(true);
   });
 });
+
+describe("schedule_task 容错（#1682 真模型模拟）", () => {
+  it("内容写成 content、没给标题：照样记下，标题取内容头一行", async () => {
+    const { store, schedule } = rig();
+    await schedule.run({ content: "Remind Priya to send client reports", schedule: { kind: "weekly", days: [5], time: "16:00" } }, world);
+    expect(store.rows()[0]).toMatchObject({ title: "Remind Priya to send client reports", instruction: "Remind Priya to send client reports" });
+  });
+  it("标题超长截断而不是报错", async () => {
+    const { store, schedule } = rig();
+    await schedule.run({ title: "ECON 201 midterm review ping — the nasty one at 8pm the night before", instruction: "x", schedule: { kind: "daily", time: "20:00" } }, world);
+    expect(store.rows()[0]!.title.length).toBeLessThanOrEqual(40);
+    expect(store.rows()[0]!.title.endsWith("…")).toBe(true);
+  });
+  it("真缺内容时报错带修法，说工具没坏", async () => {
+    const { schedule } = rig();
+    await expect(schedule.run({ title: "x", schedule: { kind: "daily", time: "09:00" } }, world)).rejects.toThrow(/instruction.*工具没坏/);
+  });
+});

@@ -45,6 +45,22 @@ const lineOf = (r: RoutineRow): string =>
   `- [${r.id}]「${r.title}」${scheduleText(r.schedule, r.tz)}；${r.enabled ? "启用中" : "已停用"}；${nextText(r)}` +
   (r.lastStatus !== null ? `；上次：${r.lastStatus}` : "") + `\n  任务：${r.instruction}`;
 
+/** 标题超长就截（#1682 模拟：模型起的标题动辄 50 字，报「最多 40 字」它要再来一趟，有的就此放弃不定了） */
+function fitTitle(v: string): string {
+  return v.length <= ROUTINE_TITLE_MAX ? v : `${v.slice(0, ROUTINE_TITLE_MAX - 1).trimEnd()}…`;
+}
+
+/** 任务内容的几个常见别名（#1682 模拟：参数写成 content / text / message，报「任务内容不能空」后模型以为工具坏了、
+    让主人自己去 app 里设）。认下来，不让一个字段名挡住一条提醒 */
+function instructionOf(a: Record<string, unknown>): unknown {
+  return a.instruction ?? a.content ?? a.text ?? a.message ?? a.task ?? a.reminder;
+}
+
+/** 校验的错在前面补一句「参数怎么写」：模型读到的是修法，不是「坏了」 */
+function argsHint(err: string): string {
+  return `${err}（参数：title 一句话标题、instruction 到点要做什么、schedule 形状见说明；改了再调一次就行，工具没坏）`;
+}
+
 function asRecord(args: unknown): Record<string, unknown> {
   if (typeof args !== "object" || args === null) throw new Error("参数要是一个对象");
   return args as Record<string, unknown>;
@@ -95,10 +111,11 @@ export function createRoutineTools(deps: RoutineToolDeps): Tool[] {
     async run(args: unknown, _world: ExecutionWorld) {
       const a = asRecord(args);
       const tz = await resolveTz(a.tz);
-      const title = String(a.title ?? "").trim();
-      const instruction = String(a.instruction ?? "").trim();
+      const instruction = String(instructionOf(a) ?? "").trim();
+      // 没给标题就拿任务内容的头一截当标题（标题只是列表里那一行）
+      const title = fitTitle(String(a.title ?? "").trim() || instruction.split("\n")[0]!.trim());
       const err = routineErrors({ title, instruction, schedule: a.schedule, tz });
-      if (err !== null) throw new Error(err);
+      if (err !== null) throw new Error(argsHint(err));
       const sched: RoutineSchedule = parseRoutineSchedule(a.schedule);
       const next = nextRunAt(sched, tz, deps.now());
       if (next === null) throw new Error("这个时刻已经过了，换一个将来的时间");
@@ -147,12 +164,13 @@ export function createRoutineTools(deps: RoutineToolDeps): Tool[] {
         return `已删除「${r.title}」。`;
       }
       const p = typeof a.patch === "object" && a.patch !== null ? (a.patch as Record<string, unknown>) : {};
-      const title = p.title !== undefined ? String(p.title).trim() : r.title;
-      const instruction = p.instruction !== undefined ? String(p.instruction).trim() : r.instruction;
+      const title = p.title !== undefined ? fitTitle(String(p.title).trim()) : r.title;
+      const ins = instructionOf(p);
+      const instruction = ins !== undefined ? String(ins).trim() : r.instruction;
       const tz = p.tz !== undefined ? await resolveTz(p.tz) : r.tz;
       const scheduleRaw = p.schedule !== undefined ? p.schedule : r.schedule;
       const err = routineErrors({ title, instruction, schedule: scheduleRaw, tz });
-      if (err !== null) throw new Error(err);
+      if (err !== null) throw new Error(argsHint(err));
       const sched = parseRoutineSchedule(scheduleRaw);
       const enabled = typeof a.enabled === "boolean" ? a.enabled : r.enabled;
       const next = enabled ? nextRunAt(sched, tz, deps.now()) : null;
