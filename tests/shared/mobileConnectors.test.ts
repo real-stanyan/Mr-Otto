@@ -16,8 +16,16 @@ const DAY = 86_400_000;
 
 describe("目录", () => {
   it("Gmail 在手机目录里：去浏览器登录，不置灰（预置客户端，#1619）", () => {
-    const g = connectCatalog(null, "gmail").flatMap((x) => x.items).find((i) => i.id === "gmail")!;
+    const g = connectCatalog(null, "gmail", "stanhavenoidea@gmail.com").flatMap((x) => x.items).find((i) => i.id === "gmail")!;
     expect(g).toMatchObject({ kind: "browser", blocked: null, category: "协作与项目" });
+  });
+  it("preview 条目（Gmail，#1636）：只有内测账号看得见；已接上的照常列出", () => {
+    const ids = (email: string | null, view: CloudViewItem[] | null = null) =>
+      connectCatalog(view, "gmail", email).flatMap((x) => x.items).map((i) => i.id);
+    expect(ids("stan@mrotto.agency")).toContain("gmail");
+    expect(ids("someone@example.com")).not.toContain("gmail");
+    expect(ids(null)).not.toContain("gmail");
+    expect(ids(null, [item({ serverId: "cloud-gmail", catalogId: "gmail" })])).toContain("gmail");
   });
   it("只列 http；没有「本机工具」分组；已接的标出来", () => {
     const groups = connectCatalog([item()], "");

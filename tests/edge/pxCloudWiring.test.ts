@@ -81,6 +81,10 @@ describe("Escrow DO 接线", () => {
   it("atomic 用 blockConcurrencyWhile", () => {
     expect(escrow).toMatch(/atomic:\s*\(fn\)\s*=>\s*this\.ctx\.blockConcurrencyWhile\(fn\)/);
   });
+  it("cloud_connect 把 edge 验过的 email 交给 cloudConnect（预览期内测闸，#1636）", () => {
+    const connect = escrow.slice(escrow.indexOf('op === "cloud_connect"'), escrow.indexOf('op === "cloud_callback"'));
+    expect(connect).toMatch(/cloudConnect\(d, uid, \{[\s\S]*email: b\.email[\s\S]*\}\)/);
+  });
   it("五个 cloud op 都接上了", () => {
     for (const op of ["cloud_connect", "cloud_callback", "cloud_view", "cloud_grant", "cloud_remove"]) {
       expect(escrow).toContain(`op === "${op}"`);

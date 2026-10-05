@@ -1,7 +1,7 @@
 // 手机上接应用的界面判据（#1430，spec §8）。手机端只画与接线，判断都在这儿（进 vitest）。
 // 数据两份：edge 的无凭据视图（手机上接的，GET /px/v1/cloud）与主场快照的 connectors（电脑上接的，只读，
 // 见 mobileMachine.appRows）。文案以维护者点完 demo 后的定稿为准（.demo/connectors/mobile.src.html）。
-import { CATALOG_CATEGORIES, MCP_CATALOG, type CuratedEntry } from "./mcpCatalog.js";
+import { CATALOG_CATEGORIES, MCP_CATALOG, isPreviewTester, type CuratedEntry } from "./mcpCatalog.js";
 import { missingParams } from "./mcpCatalogFill.js";
 import { catalogIcon } from "./appIcon.js";
 import type { CloudViewItem } from "./remote/pxCloud.js";
@@ -42,14 +42,19 @@ export interface CatalogItemView {
   blocked: string | null;
 }
 
-/** 手机上接得了的目录：只列 http、不列「本机工具」（要装在电脑上的那几类）；按分类分组，空组不出 */
+/** 手机上接得了的目录：只列 http、不列「本机工具」（要装在电脑上的那几类）；按分类分组，空组不出。
+    预览期条目（preview，#1636）只对内测账号列出——viewerEmail 是当前登录的邮箱，没登录给 null；已经接上的照常列 */
 export function connectCatalog(
   view: readonly CloudViewItem[] | null,
-  query: string
+  query: string,
+  viewerEmail: string | null = null
 ): { category: string; items: CatalogItemView[] }[] {
   const connected = new Set((view ?? []).map((v) => v.catalogId));
   const q = query.trim().toLowerCase();
-  const entries = MCP_CATALOG.filter((e) => e.transport === "http" && e.category !== "本机工具").filter(
+  const tester = isPreviewTester(viewerEmail);
+  const entries = MCP_CATALOG.filter((e) => e.transport === "http" && e.category !== "本机工具")
+    .filter((e) => !e.preview || tester || connected.has(e.id))
+    .filter(
     (e) => q === "" || [e.id, e.name, e.description].some((f) => f.toLowerCase().includes(q))
   );
   return CATALOG_CATEGORIES.filter((c) => c !== "本机工具")
