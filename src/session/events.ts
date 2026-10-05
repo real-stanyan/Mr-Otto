@@ -769,6 +769,32 @@ export interface TaskCollabEvent extends TaskEventBase {
   withName: string;
 }
 
+/** 协作请求（#1605，spec §3.2）：A 的管理员把一个任务交给 B 的管理员——镜像卡的事实。A 那份由 invite_collaborator 落（带 taskId），
+    B 那份由桥镜像过去（同 requestId；B 家里没有这条任务，taskId 只记不解析）。`quote` = 发起主人的那句原话 + 发起管理员的说明；
+    `result` = 到目前的结论（没有就空串）；`expiresTs` = 24 小时没回算失败。不带 agentId（同 task_*），谁发的写 byAgentId */
+export interface CollabRequestEvent extends SessionEventBase {
+  type: "collab_request";
+  requestId: string;
+  taskId: string;
+  title: string;
+  /** 发起方的主人（A）与管理员 */
+  fromUid: string;
+  fromAgentName: string;
+  quote: { ownerName: string; ownerLine: string; note: string };
+  result: string;
+  expiresTs: number;
+  byAgentId: string;
+  ignorable: true;
+}
+/** 对面主人的决定 / 超时（#1605）：B 点的由 B 那条 admins 会话落、镜像回 A；超时由 runtime 两边各落一条（byUid null） */
+export interface CollabDecisionEvent extends SessionEventBase {
+  type: "collab_decision";
+  requestId: string;
+  decision: "accepted" | "declined" | "expired";
+  byUid: string | null;
+  ignorable: true;
+}
+
 /** 应用卡（#1591，spec §3.3）：应用专员 build_app 打出一版，聊天里一张卡「打开」。不带 agentId（同 task_*），谁打的写 byAgentId；
     模型不可见（它自己的 tool_result 已经说了）；手机画卡，桌面不画 */
 export interface AppCardEvent extends SessionEventBase {
@@ -1373,6 +1399,8 @@ export type SessionEvent =
   | TaskDoneEvent
   | TaskFailedEvent
   | TaskCollabEvent
+  | CollabRequestEvent
+  | CollabDecisionEvent
   | AppCardEvent
   | OutreachEvent
   | FriendPickEvent
@@ -1450,6 +1478,8 @@ const KNOWN_EVENT_TYPES_MAP: Record<SessionEvent["type"], true> = {
   task_done: true,
   task_failed: true,
   task_collab: true,
+  collab_request: true,
+  collab_decision: true,
   app_card: true,
   outreach: true,
   friend_pick: true,

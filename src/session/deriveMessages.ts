@@ -22,6 +22,7 @@ import { ADMIN_AGENT_ID } from "../shared/workspaceAgents.js";
 import { sanitizeForPrompt } from "../shared/threatPatterns.js";
 import type { ExecutorKind } from "../shared/taskSync.js";
 import { taskEventText } from "../shared/tasks.js";
+import { collabDecisionText, collabRequestText } from "../shared/collab.js";
 
 /** 用户正文 + 文本文件全文拼成模型可见文本。日志里二者分开存
     (content 纯正文,textFiles 结构化)——UI 按结构渲染文件卡片,
@@ -1238,6 +1239,14 @@ export function deriveMessages(
       // 应用卡（#1591）：打卡的那只自己的 tool_result 已经说了，别人不用读这张卡
       case "app_card":
         break;
+      // 协作请求 / 决定（#1605）：请求那一句给对面（B）的管理员读——它要知道是谁、为什么、要它做什么；决定那一句给
+      // 发起方（A）的管理员读。同 task_*：卡在工具调用与结果之间时先攒着
+      case "collab_request":
+      case "collab_decision": {
+        const line = event.type === "collab_request" ? collabRequestText(event) : collabDecisionText(event);
+        (pendingToolIds.size > 0 ? deferredUsers : messages).push({ role: "user", content: line });
+        break;
+      }
       // 任务（#1571）：一句系统话，管理员与被派的那只都读得到任务在哪一步。同 chat_message：卡在工具调用与结果之间时先攒着
       case "task_created":
       case "task_assigned":

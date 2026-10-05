@@ -6,6 +6,8 @@
 import type { SessionEvent } from "../session/events.js";
 
 export type TaskStatus = "open" | "assigned" | "running" | "needs_owner" | "done" | "failed";
+export type CollabState = "pending" | "accepted" | "declined" | "expired";
+export const COLLAB_STATE_LABEL: Record<CollabState, string> = { pending: "等 TA 点头", accepted: "在办", declined: "不方便", expired: "对面没回" };
 
 export interface TaskRow {
   id: string;
@@ -23,8 +25,9 @@ export interface TaskRow {
   createdByAgent: string;
   createdTs: number;
   updatedTs: number;
-  /** 邀请了谁家的管理员协作（#1578）：只在日志折出来的那份里有，投影表没有这一列（状态行用不上） */
-  collaborator?: { uid: string; name: string };
+  /** 邀请了谁家的管理员协作（#1578）：只在日志折出来的那份里有，投影表没有这一列（状态行用不上）。
+      `state`（#1605）：等 TA 点头 / 在办 / 不方便 / 对面没回；`requestId` 把 collab_decision 对回这条任务 */
+  collaborator?: { uid: string; name: string; state?: CollabState; requestId?: string };
 }
 
 export const TASK_TITLE_MAX = 80;
@@ -61,6 +64,16 @@ export function isTaskEvent(e: SessionEvent): e is TaskEvent {
  * · done / failed 终态，之后的事件一律忽略（晚到的 progress 不许把完成的翻回去）。
  */
 export function foldTask(fold: Map<string, TaskRow>, e: SessionEvent, workspaceId: string): void {
+  // 协作请求 / 决定（#1605）不是 task_* 事件，但推的是任务上协作者那一格：请求记 requestId + pending；决定按 requestId 找回任务
+  if (e.type === "collab_request") {
+    const t = fold.get(e.taskId);
+    if (t?.collaborator !== undefined) t.collaborator = { ...t.collaborator, state: "pending", requestId: e.requestId };
+    return;
+  }
+  if (e.type === "collab_decision") {
+    for (const t of fold.values()) if (t.collaborator?.requestId === e.requestId) t.collaborator = { ...t.collaborator, state: e.decision };
+    return;
+  }
   if (!isTaskEvent(e)) return;
   if (e.type === "task_created") {
     if (fold.has(e.taskId)) return;
