@@ -1,4 +1,5 @@
-// 三把刀（#1283，spec §7）：只认 RoutineStore；tz 省略用主人的；回显带「下次执行」；20 条上限；不是自己的改不动。
+// 三把刀（#1283，spec §7）：只认 RoutineStore；tz 省略用主人的；回显带「下次执行」；启用中条数上限（ROUTINES_ENABLED_MAX）；不是自己的改不动。
+import { ROUTINES_ENABLED_MAX } from "../../src/shared/routines.js";
 import { describe, expect, it } from "vitest";
 import { createRoutineTools } from "../../services/runtime/src/routineTools.js";
 import { createInMemoryRoutineStore } from "../../services/runtime/src/routineStore.js";
@@ -43,11 +44,11 @@ describe("routine 三把刀", () => {
     await expect(schedule.run({ title: "x", instruction: "y", schedule: { kind: "daily", time: "09:00" } }, world)).rejects.toThrow("城市");
     await expect(schedule.run({ title: "x", instruction: "y", schedule: { kind: "daily", time: "09:00" }, tz: "Beijing" }, world)).rejects.toThrow("时区");
   });
-  it("once 已经过了的时刻拒绝；启用中满 20 条拒绝", async () => {
+  it("once 已经过了的时刻拒绝；启用中满上限拒绝", async () => {
     const { schedule } = rig();
     await expect(schedule.run({ title: "x", instruction: "y", schedule: { kind: "once", at: "2026-10-05T07:00" } }, world)).rejects.toThrow("已经过了");
-    for (let i = 0; i < 20; i++) await schedule.run({ title: `t${i}`, instruction: "y", schedule: { kind: "daily", time: "09:00" } }, world);
-    await expect(schedule.run({ title: "多了", instruction: "y", schedule: { kind: "daily", time: "09:00" } }, world)).rejects.toThrow("20");
+    for (let i = 0; i < ROUTINES_ENABLED_MAX; i++) await schedule.run({ title: `t${i}`, instruction: "y", schedule: { kind: "daily", time: "09:00" } }, world);
+    await expect(schedule.run({ title: "多了", instruction: "y", schedule: { kind: "daily", time: "09:00" } }, world)).rejects.toThrow(String(ROUTINES_ENABLED_MAX));
   });
   it("list_schedules：空与非空各一句；update_schedule：改时间重算下一跳、停用清空下一跳、删除；不是自己的报错", async () => {
     const { store, schedule, list, update } = rig();
@@ -66,13 +67,13 @@ describe("routine 三把刀", () => {
     expect(text(await update.run({ id, delete: true }, world))).toContain("已删除");
     expect(store.rows()).toEqual([]);
   });
-  it("重新启用时同样守 20 条上限", async () => {
+  it("重新启用时同样守条数上限", async () => {
     const { store, schedule, update } = rig();
-    for (let i = 0; i < 20; i++) await schedule.run({ title: `t${i}`, instruction: "y", schedule: { kind: "daily", time: "09:00" } }, world);
+    for (let i = 0; i < ROUTINES_ENABLED_MAX; i++) await schedule.run({ title: `t${i}`, instruction: "y", schedule: { kind: "daily", time: "09:00" } }, world);
     const id = store.rows()[0]!.id;
     await update.run({ id, enabled: false }, world);
     await schedule.run({ title: "顶上来", instruction: "y", schedule: { kind: "daily", time: "09:00" } }, world);
-    await expect(update.run({ id, enabled: true }, world)).rejects.toThrow("20");
+    await expect(update.run({ id, enabled: true }, world)).rejects.toThrow(String(ROUTINES_ENABLED_MAX));
   });
 });
 

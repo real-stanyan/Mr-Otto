@@ -105,7 +105,7 @@ describe("parseRoutineSchedule / routineErrors / isIanaTimeZone", () => {
     expect(routineErrors({ ...ok, title: " " })).toContain("标题");
     expect(routineErrors({ ...ok, title: "x".repeat(ROUTINE_TITLE_MAX + 1) })).toContain(`${ROUTINE_TITLE_MAX}`);
     expect(routineErrors({ ...ok, tz: "Mars/Olympus" })).toContain("时区");
-    expect(ROUTINES_ENABLED_MAX).toBe(20);
+    expect(ROUTINES_ENABLED_MAX).toBe(50); // 0066 起放宽（#1659）
   });
 });
 

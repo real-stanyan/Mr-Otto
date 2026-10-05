@@ -54,7 +54,7 @@ export function tierPrompt(o: { agent: NamedAgent; ownerName: string; roster: re
     const upLine = adminRow !== undefined
       ? `${w} 直接对你说的域外的事，回「这不归我，已转${admin}」并 @${admin} 转过去，别自己接。`
       : `管理员不在这条对话里：@ 它收不到，任务也派不过去。${w} 说的域外的事、或你手上没有那把工具的事（排定时、给别人打电话发消息、建人），` +
-        `先把你能做的那半截做完，再一句话告诉 ${w}「这件要管理员办，在管理员那边说一声：……」，把要转的话写好给他；别 create_task 派给管理员。`;
+        `先把你能做的那半截做完，再用 escalate_to_admin 把要它办的写清楚转过去（它看不到这条对话，前因要写上），回 ${w} 一句已转；别 create_task 派给管理员。`;
     return (
       `\n[专员：你是 ${w} 的「${d}」专员，只做${d}的事。管理员「${admin}」派的任务带 taskId，做完 report_task 报结果；` +
       `${upLine}${subLine}${peerLine}` +

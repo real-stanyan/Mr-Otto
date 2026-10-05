@@ -9,6 +9,7 @@ import { ACTIVITY_ORDER, ACTIVITY_TEXT, activityFace, activityFoldOf, activityOf
 import { groupRows, rosterRows } from "./agentRoster.js";
 import { callRingFoldOf, RING_STATUS_TEXT, ringCardStatus, type RingCardStatus } from "./callRing.js";
 import { splitBubbles } from "./chatBubbles.js";
+import { escalationNoteText } from "./escalation.js";
 import { chatMediaItemsOf, type ChatMediaItem } from "./chatMedia.js";
 import { friendPickFoldOf, friendPickStatus, type FriendPickStatus } from "./friendPick.js";
 import {
@@ -285,6 +286,10 @@ export function chatRows(o: {
     // 定时任务（#1283）：开场白是 greeting 一族里唯一要画的——别的 greeting 都有前一条可见事件解释「为什么它开口了」
     // （名单变了 / 新建了它 / 电话接通了），这条没有，藏了就是回话凭空冒出来。要在 rowOf 之前认出来：
     // rowOf 先问 hiddenFromCloudTimeline，而桌面把 greeting 一族整条藏了
+    if (e.type === "user_message" && e.greeting === "escalation" && e.escalation !== undefined) {
+      items.push({ kind: "note", key: `escalation-${e.seq}`, ts: e.ts, text: escalationNoteText(e.escalation), tone: "muted", detail: null });
+      continue;
+    }
     if (e.type === "user_message" && e.greeting === "routine") {
       items.push({ kind: "note", key: `routine-${e.seq}`, ts: e.ts, text: `⏰ 定时任务「${e.routine?.title ?? "定时任务"}」`, tone: "muted", detail: null });
       continue;
