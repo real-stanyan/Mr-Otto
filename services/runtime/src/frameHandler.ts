@@ -126,6 +126,8 @@ export interface FrameHandlerDeps {
   /** 人打人的电话（#1534）：核对是好友、给 toUid 推一条 VoIP 来电；ok 带打的人那一张 TURN 票与响铃到点的时刻。
       不挂在任何工作区上（在籍那道闸不适用） */
   humanCall?: (fromUid: string, toUid: string, callId: string) => Promise<{ ok: true; ice: IceServer[]; expiresTs: number } | { ok: false; message: string }>;
+  /** 把私信里分享来的应用添加到我名下（#1648）。可选：smoke / 测试假货不接 */
+  appAccept?: (byUid: string, messageId: number) => Promise<{ ok: true; appId: string; already: boolean } | { ok: false; message: string }>;
   sessions: {
     get(workspaceId: string, sessionId: string): CloudSession | null;
     /** `chat` 在场 = 建一条聊天（#1280），缺席 = 团队会话（同旧）。
@@ -454,7 +456,7 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
         msg.t !== "create" && msg.t !== "workspace" && msg.t !== "git_credential" &&
         msg.t !== "archive" && msg.t !== "delete" && msg.t !== "files" &&
         msg.t !== "files_search" && msg.t !== "wiki_write" && msg.t !== "chat_update" && msg.t !== "human_call" &&
-        msg.t !== "collab_decide"
+        msg.t !== "collab_decide" && msg.t !== "app_accept"
       ) {
         deny(cid, "not_authorized");
         return;
@@ -469,6 +471,17 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
         // 可选的装配：smoke / 测试假货不接它；真 daemon 总会给
         const r = deps.humanCall === undefined ? { ok: false as const, message: "这台服务器还不支持人与人打电话。" } : await deps.humanCall(entry.uid, msg.toUid, msg.callId);
         deps.send(cid, { t: "human_call_result", callId: msg.callId, ok: r.ok, ...(r.ok ? { ice: r.ice, expiresTs: r.expiresTs } : { message: r.message }) });
+        return;
+      }
+
+      // 添加分享来的应用（#1648）：不关于任何团队，不过在籍那道闸（核对在 daemon：这条私信是不是发给你的、你们还是不是好友）
+      if (msg.t === "app_accept") {
+        if (!deps.rateLimit.allow("create", entry.uid)) {
+          deps.send(cid, { t: "app_accept_result", messageId: msg.messageId, ok: false, message: throttleMessage("create") });
+          return;
+        }
+        const r = deps.appAccept === undefined ? { ok: false as const, message: "这台服务器还不支持添加应用。" } : await deps.appAccept(entry.uid, msg.messageId).catch((err: unknown) => ({ ok: false as const, message: err instanceof Error ? err.message : String(err) }));
+        deps.send(cid, { t: "app_accept_result", messageId: msg.messageId, ok: r.ok, ...(r.ok ? { appId: r.appId, already: r.already } : { message: r.message }) });
         return;
       }
 

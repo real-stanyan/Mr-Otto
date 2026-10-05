@@ -385,6 +385,8 @@ export type CsUp =
   /** 人打人的电话（控制房帖，协议 27，#1534）：给 toUid 推一条来电。不带 workspaceId——这不是关于某个团队的动作，
       在籍那道闸不适用；是不是好友由 runtime 判 */
   | { t: "human_call"; callId: string; toUid: string }
+  /** 把好友私信里分享来的应用添加到我名下（**控制房帧**，协议 29，#1648）：messageId = 那条私信的 id；runtime 现读那条私信核对 */
+  | { t: "app_accept"; messageId: number }
   /** 存 / 删一台主机的 Git 凭据（控制房帧，协议 15，#1103）。**owner 才受理**，
       服务端判。`token` 两态：非空 = 存这一把（同一台主机再存就是换新），
       `""` = **删掉这台主机**。
@@ -466,6 +468,8 @@ export type CsDown =
   /** `human_call` 的回执（协议 27，#1534）：ok = 来电已推到对方至少一台手机；`ice` 是打的人要用的 ICE 服务器
       （STUN + 一张时限 TURN 票），`expiresTs` = 响铃到点的时刻 */
   | { t: "human_call_result"; callId: string; ok: boolean; message?: string; ice?: IceServer[]; expiresTs?: number }
+  /** app_accept 的回执（#1648）：appId = 复制到我名下的那一个；already = 之前添加过 */
+  | { t: "app_accept_result"; messageId: number; ok: boolean; appId?: string; already?: boolean; message?: string }
   /** `v`（add-only，协议号不变）= **服务端**此刻的协议号（复审 C2-I6）。
       `version_mismatch` 是严格相等判出来的，而只有码没有版本号的话，桌面
       分不清"我旧了"还是"云端旧了"——这两件事该做的动作相反（更新 app vs
@@ -862,6 +866,11 @@ export function decodeCsUp(b64: string): CsUp | null {
       return null;
     }
 
+    if (t === "app_accept") {
+      if (typeof obj.messageId !== "number" || !Number.isSafeInteger(obj.messageId) || obj.messageId < 1) return null;
+      return { t: "app_accept", messageId: obj.messageId };
+    }
+
     if (t === "human_call") {
       // callId 是打的人铸的随机串（进中继房名）；toUid 要像一个 uid（拿去查好友、查推送令牌）
       if (typeof obj.callId !== "string" || !/^[0-9A-Za-z_-]{8,64}$/.test(obj.callId)) return null;
@@ -1223,6 +1232,16 @@ export function decodeCsDown(b64: string): CsDown | null {
       return typeof obj.workspaceId === "string" && typeof obj.message === "string"
         ? { t: "create_failed", workspaceId: obj.workspaceId, message: obj.message }
         : null;
+    }
+
+    if (t === "app_accept_result") {
+      if (typeof obj.messageId !== "number" || typeof obj.ok !== "boolean") return null;
+      return {
+        t: "app_accept_result", messageId: obj.messageId, ok: obj.ok,
+        ...(typeof obj.appId === "string" ? { appId: obj.appId } : {}),
+        ...(typeof obj.already === "boolean" ? { already: obj.already } : {}),
+        ...(typeof obj.message === "string" ? { message: obj.message } : {}),
+      };
     }
 
     if (t === "human_call_result") {

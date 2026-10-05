@@ -22,6 +22,7 @@ import { SessionShareCard } from "./SessionShareCard.js";
 import { decodeEnvelope } from "../../../shared/sessionPackageCodec.js";
 import { voiceNoteText } from "../../../shared/chatMedia.js";
 import { contactCardPreview, decodeContactCard } from "../../../shared/contactCard.js";
+import { appCardPreview, decodeAppCard } from "../../../shared/appCard.js";
 
 // 好友未选中/dmByFriend 里没这个人时的兜底——模块级常量而非每次渲染 `?? []`,
 // 保证 selector 每次返回同一引用,不触发 zustand 无谓重渲(仓库 selector 约定)
@@ -30,7 +31,9 @@ const EMPTY: ChatMessage[] = [];
 /** 名片那条 body 是一段 JSON：桌面不画卡，只写一行；不是名片回 null 走原文 */
 function cardText(body: string): string | null {
   const card = decodeContactCard(body);
-  return card === null ? null : `${contactCardPreview(card)} · 在手机上查看`;
+  if (card !== null) return `${contactCardPreview(card)} · 在手机上查看`;
+  const app = decodeAppCard(body);
+  return app === null ? null : `${appCardPreview(app)} · 在手机上查看`;
 }
 
 export function FriendChatView() {

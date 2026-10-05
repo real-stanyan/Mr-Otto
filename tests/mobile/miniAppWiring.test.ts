@@ -37,6 +37,17 @@ describe("应用页与聊天里的卡", () => {
   });
 });
 
+describe("分享应用给好友（#1648）", () => {
+  it("应用页顶上「分享」→ 挑好友 → 私信里一张应用卡；私信里认出应用卡画 AppShareBubble，添加走 app_accept", () => {
+    const mini = read("mobile/src/apps/MiniAppScreen.tsx");
+    expect(mini).toMatch(/<HeaderTextButton label="分享"/);
+    expect(mini).toMatch(/for \(const p of people\) await sendToFriend\(p, body\);/);
+    const chat = read("mobile/src/friends/FriendChatScreen.tsx");
+    expect(chat).toMatch(/<AppShareBubble card=\{appCard\} mine=\{mine\} messageId=\{m\.id\} \/>/);
+    expect(read("mobile/src/apps/AppShareBubble.tsx")).toMatch(/cloudClient\.appAccept\(messageId\)/);
+  });
+});
+
 describe("主页下拉出应用抽屉（#1648）", () => {
   it("列表顶到头往下拽过线松手就开；点一个进 MiniApp；打开应用记一次最近使用", () => {
     const chats = read("mobile/src/tabs/ChatsScreen.tsx");
