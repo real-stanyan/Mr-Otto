@@ -728,3 +728,26 @@ describe("任务卡（#1571 第 4 步）", () => {
     expect(rows[1]).toMatchObject({ kind: "task", taskId: "t_2", parentTitle: "明天出游", status: "needs_owner", assigneeName: "开发", question: "8 点还是 10 点？", brief: "早上 8 点" });
   });
 });
+
+describe("read_health 的那一行（#1656）", () => {
+  it("调用 + 成功结果 → 一行灰字 note；其他工具不画", () => {
+    const events: SessionEvent[] = [
+      e({ type: "assistant_message", seq: 1, ts: 10, agentId: "a_000000000001", content: "", model: "m", toolCalls: [
+        { id: "h1", name: "read_health", args: { metrics: ["sleep"], from: "2026-10-04", to: "2026-10-04" } },
+        { id: "b1", name: "bash", args: { cmd: "ls" } },
+      ] }),
+      e({ type: "tool_result", seq: 2, ts: 11, toolCallId: "h1", status: "ok", output: "…" }),
+      e({ type: "tool_result", seq: 3, ts: 12, toolCallId: "b1", status: "ok", output: "…" }),
+    ];
+    const rows = chatRows({ events, ws: WS, selfUid: "me", now: 20 }).filter((r) => r.kind !== "time");
+    expect(rows).toEqual([{ kind: "note", key: "health-2", ts: 11, text: "读取了健康数据：睡眠 · 10月4日", tone: "muted", detail: null }]);
+  });
+  it("失败 → 「没读到健康数据」", () => {
+    const events: SessionEvent[] = [
+      e({ type: "assistant_message", seq: 1, ts: 10, agentId: "a_000000000001", content: "", model: "m", toolCalls: [{ id: "h1", name: "read_health", args: {} }] }),
+      e({ type: "tool_result", seq: 2, ts: 11, toolCallId: "h1", status: "error", output: "他的手机现在没连着" }),
+    ];
+    const rows = chatRows({ events, ws: WS, selfUid: "me", now: 20 }).filter((r) => r.kind !== "time");
+    expect(rows).toEqual([{ kind: "note", key: "health-2", ts: 11, text: "没读到健康数据", tone: "muted", detail: null }]);
+  });
+});

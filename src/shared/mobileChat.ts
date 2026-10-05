@@ -11,6 +11,7 @@ import { callRingFoldOf, RING_STATUS_TEXT, ringCardStatus, type RingCardStatus }
 import { splitBubbles } from "./chatBubbles.js";
 import { chatMediaItemsOf, type ChatMediaItem } from "./chatMedia.js";
 import { friendPickFoldOf, friendPickStatus, type FriendPickStatus } from "./friendPick.js";
+import { healthReadLineText, READ_HEALTH_TOOL } from "./health.js";
 import {
   approvalCardTitle, assistantLabel, callOffsetText, chatRosterLineParts, cloudEmptyState, decisionLineText, hiddenFromCloudTimeline,
   relayLineText, stopButtonRows, systemNoteText, turnEndedLineText, userRowIdentity, voiceCallCards, type RosterLinePart, type VoiceCallCard,
@@ -218,6 +219,11 @@ export function chatRows(o: {
   const picks = friendPickFoldOf(o.events);
   // 任务卡（#1571）：整条日志折一次，每张卡读折好的那一行
   const tasks: ReadonlyMap<string, TaskRow> = taskFoldOf(o.events, o.ws.id);
+  // 读健康数据那一行（#1656）：结果要对回调用时的参数（哪几类、哪几天），先把 read_health 的调用收一遍
+  const healthCalls = new Map<string, unknown>();
+  for (const e of o.events) {
+    if (e.type === "assistant_message") for (const c of e.toolCalls ?? []) if (c.name === READ_HEALTH_TOOL) healthCalls.set(c.id, c.args);
+  }
   const requests = new Map<string, ApprovalRequestEvent>();
   const decided = new Set<string>();
   for (const e of o.events) {
@@ -234,6 +240,13 @@ export function chatRows(o: {
     if (calls.folded.has(e.seq)) continue;
     // 外联同样要在 rowOf 之前认出来（桌面把它整条藏了）。只在 `started` 的位置画一行；`ended` 不单独成行，
     // 而只有 `ended` 落在窗内（尾巴模式裁掉了开头）时 fold 里没有这一通，那就一行都不画——说不清是谁打给谁
+    // 工具调用手机端一律不画，只有这一把例外（#1656）：读了人的健康数据要让他看得见，在结果那一条的位置画一行灰字
+    if (e.type === "tool_result") {
+      if (healthCalls.has(e.toolCallId)) {
+        items.push({ kind: "note", key: `health-${e.seq}`, ts: e.ts, text: healthReadLineText(healthCalls.get(e.toolCallId), e.status), tone: "muted", detail: null });
+      }
+      continue;
+    }
     if (e.type === "outreach") {
       // 带 originSessionId 的是外联会话那份（指回原聊天；原聊天那份由 outreachHub 落、从不带它）。好友在这条线上
       // 看到的是铃声记录与通话卡，再画一行「打给 小红 · …」就是把主人那一侧的记录摆到被打的人面前（终审 M3）
