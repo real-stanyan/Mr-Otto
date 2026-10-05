@@ -47,7 +47,7 @@ describe("muteKeyFor：与手机列表的键逐字相同", () => {
     expect(muteKeyFor("group", "s1", "x")).toBe("g:s1");
     expect(muteKeyFor("team", "s1", "x")).toBe("t:s1");
     expect(muteKeyFor("guest", "s1", "x")).toBe("j:s1");
-    expect(muteKeyFor("outreach", "s1", "x")).toBeNull();
+    expect(muteKeyFor("outreach", "s1", "x")).toBe("o:s1");
   });
   it("与 wechatInbox 的键前缀对得上（源码里那几行就是这样拼的）", () => {
     const src = readFileSync(new URL("../../src/shared/wechatInbox.ts", import.meta.url), "utf8");
@@ -79,7 +79,8 @@ describe("推送载荷", () => {
   });
   it("读回：形状不对一律 null", () => {
     expect(alertTargetFromPayload(null)).toBeNull();
-    expect(alertTargetFromPayload({ otto: { kind: "cloud", chat: "outreach", workspaceId: "w", sessionId: "s" } })).toBeNull();
+    // 外联（#1655）：推给那位朋友，点开要认得
+    expect(alertTargetFromPayload({ otto: { kind: "cloud", chat: "outreach", workspaceId: "w", sessionId: "s" } })).toEqual({ kind: "cloud", chat: "outreach", workspaceId: "w", sessionId: "s", agentId: "" });
     expect(alertTargetFromPayload({ otto: { kind: "cloud", chat: "dm", workspaceId: "w", sessionId: "s" } })).toBeNull();
     expect(alertTargetFromPayload({ otto: { kind: "friend", uid: "" } })).toBeNull();
     expect(alertTargetFromPayload({ otto: { kind: "cloud", chat: "team", workspaceId: "w" } })).toBeNull();
