@@ -76,7 +76,7 @@ interface Probe {
   wikiEnsureCalls: number;
 }
 
-function open(store: EventStore, o: { team?: (typeof OPS)[] } = {}): Probe {
+function open(store: EventStore, o: { team?: (typeof OPS)[]; peerTier?: CloudSessionOpts["peerTier"]; now?: () => number } = {}): Probe {
   const probe = { dispatchCalls: 0, hostUidsCalls: 0, wikiEnsureCalls: 0 } as Probe;
   const wiki = testWiki();
   const realEnsure = wiki.ensure.bind(wiki);
@@ -89,6 +89,8 @@ function open(store: EventStore, o: { team?: (typeof OPS)[] } = {}): Probe {
     sessionMeta: createInMemoryCloudSessionMeta(),
     workspaceId: "w1", sessionId: SID, ownerUid: OWNER, createdByUid: OWNER, store, world: fakeWorld,
     agents: async () => o.team ?? [OPS], adapterFor: () => adapter, px,
+    ...(o.peerTier !== undefined ? { peerTier: o.peerTier } : {}),
+    ...(o.now !== undefined ? { now: o.now } : {}),
     // 真实装配里群主在 hostUids 里：这正是 peopleAround 会把他数成「别人」的那一格
     hostUids: async () => { probe.hostUidsCalls++; return [OWNER]; },
     onEvent: () => {}, onUsage: () => {}, wiki, mentionInbox: createInMemoryMentionInbox(),
@@ -136,33 +138,41 @@ describe("外联会话（#1441）", () => {
     store.close();
   });
 
-  it("不注入团队 wiki：不落 workspace_wiki_loaded，wiki 服务一次都没碰", async () => {
+  it("注入团队 wiki（#1655 起：外联存在 = 主人对这位朋友全部开放），nudge 不给", async () => {
     const store = newStore();
     outreachSeed(store, { started: true });
     const probe = open(store);
     await probe.session.say(PEER, "小红", "喂", false, [], undefined, []);
     await probe.session.settled();
-    expect(store.ofType(SID, "workspace_wiki_loaded")).toEqual([]);
-    expect(probe.wikiEnsureCalls).toBe(0);
+    expect(probe.wikiEnsureCalls).toBe(1);
+    const loaded = store.ofType(SID, "workspace_wiki_loaded") as { nudge: string | null }[];
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0]!.nudge).toBeNull();
     store.close();
   });
 
-  it("没有外联在进行时，好友说话被拒、主人说话也被拒，且一个字节都不落盘", async () => {
+  it("没在通话：好友能打字（由那一只接）；主人和路人被拒，且一个字节都不落", async () => {
     const store = newStore();
     outreachSeed(store); // 一通都没开过
     const { session } = open(store);
     const before = store.load(SID).length;
-    await expect(session.say(PEER, "小红", "在吗", false, [], undefined, [])).rejects.toThrow("这通电话已经结束了");
-    await expect(session.say(OWNER, "Stan", "喂", false, [], undefined, [])).rejects.toBeInstanceOf(SayRejectedError);
+    await expect(session.say(OWNER, "Stan", "喂", false, [], undefined, [])).rejects.toThrow("这条线只有对方能说话，你只能看。");
+    await expect(session.say("stranger", "路人", "喂", false, [], undefined, [])).rejects.toBeInstanceOf(SayRejectedError);
     expect(store.load(SID).length).toBe(before);
+    await session.say(PEER, "小红", "在吗", false, [], undefined, []);
+    await session.settled();
+    expect((store.ofType(SID, "user_message") as UserMessageEvent[]).map((u) => u.mentions)).toEqual([["ops"]]);
+    expect(store.ofType(SID, "assistant_message")).toHaveLength(1);
     store.close();
   });
 
-  it("通话已经收尾（started 之后有 ended）：好友再说话也被拒", async () => {
+  it("通话已经收尾：好友再说话照样收（打字聊）", async () => {
     const store = newStore();
     outreachSeed(store, { ended: true });
     const { session } = open(store);
-    await expect(session.say(PEER, "小红", "还在吗", false, [], undefined, [])).rejects.toThrow("这通电话已经结束了");
+    await session.say(PEER, "小红", "还在吗", false, [], undefined, []);
+    await session.settled();
+    expect(store.ofType(SID, "user_message")).toHaveLength(1);
     store.close();
   });
 
@@ -170,8 +180,8 @@ describe("外联会话（#1441）", () => {
     const store = newStore();
     outreachSeed(store, { started: true });
     const { session } = open(store);
-    await expect(session.say(OWNER, "Stan", "我插一句", false, [], undefined, [])).rejects.toThrow("这通电话已经结束了");
-    await expect(session.say("stranger", "路人", "喂", false, [], undefined, [])).rejects.toThrow("这通电话已经结束了");
+    await expect(session.say(OWNER, "Stan", "我插一句", false, [], undefined, [])).rejects.toThrow("这条线只有对方能说话，你只能看。");
+    await expect(session.say("stranger", "路人", "喂", false, [], undefined, [])).rejects.toThrow("这条线只有对方能说话，你只能看。");
     await session.say(PEER, "小红", "你好", false, [], undefined, []);
     await session.settled();
     expect(store.ofType(SID, "user_message").length).toBe(1);
@@ -281,7 +291,7 @@ function fakeTimers() {
   };
 }
 
-function openLive(store: EventStore, o: { endedTo?: OutreachEnded[] | null; watching?: () => boolean; devices?: number; team?: (typeof OPS)[]; reply?: (agentId: string) => string; sign?: NonNullable<CloudSessionOpts["signSpeechTicket"]> } = {}) {
+function openLive(store: EventStore, o: { endedTo?: OutreachEnded[] | null; watching?: () => boolean; devices?: number; team?: (typeof OPS)[]; reply?: (agentId: string) => string; sign?: NonNullable<CloudSessionOpts["signSpeechTicket"]>; peerTier?: CloudSessionOpts["peerTier"] } = {}) {
   const timers = fakeTimers();
   const ended = o.endedTo === undefined ? [] : o.endedTo;
   const pushes: string[] = [];
@@ -296,6 +306,7 @@ function openLive(store: EventStore, o: { endedTo?: OutreachEnded[] | null; watc
     agentWriter: createInMemoryAgentWriter(), isMember: async () => true, contextWindowOf: () => undefined,
     sandboxApproval: async () => "ask", workspaceLock: createWorkspaceLock(), relayRemainingMicro: async () => null,
     diskUsage: () => null, routines: null, approveAll: true,
+    ...(o.peerTier !== undefined ? { peerTier: o.peerTier } : {}),
     callback: {
       isWatching: o.watching ?? (() => true),
       deviceCount: async () => o.devices ?? 1,
@@ -322,11 +333,11 @@ const kinds = (store: EventStore): string[] =>
 const ofKind = <T extends SessionEvent>(store: EventStore, type: T["type"]): T[] => store.ofType(SID, type) as T[];
 
 describe("外联的生命周期（#1441 Task 9）", () => {
-  it("装配之后才 startOutreach：说话从被拒变成放行，chat().outreach.active 变 true；收尾后又被拒", async () => {
+  it("装配之后才 startOutreach：说话从被拒（档位不够）变成放行，chat().outreach.active 变 true；收尾后又被拒（#1655 起拒的是档位）", async () => {
     const store = newStore();
     outreachSeed(store); // 一通都没开过
-    const { session } = openLive(store);
-    await expect(session.say(PEER, "小红", "喂", false, [], undefined, [])).rejects.toThrow("这通电话已经结束了");
+    const { session } = openLive(store, { peerTier: async () => "agents" });
+    await expect(session.say(PEER, "小红", "喂", false, [], undefined, [])).rejects.toThrow("对方没再对你开「全部开放」，这里只能看。");
     expect(session.chat()).toMatchObject({ outreach: { active: false } });
 
     expect(await session.startOutreach(START)).toEqual({ kind: "ringing" });
@@ -341,7 +352,7 @@ describe("外联的生命周期（#1441 Task 9）", () => {
     await session.setVoiceCall(PEER, "小红", []); // 好友挂断
     expect(session.chat()).toMatchObject({ outreach: { active: false } });
     const before = store.load(SID).length;
-    await expect(session.say(PEER, "小红", "还在吗", false, [], undefined, [])).rejects.toThrow("这通电话已经结束了");
+    await expect(session.say(PEER, "小红", "还在吗", false, [], undefined, [])).rejects.toThrow("对方没再对你开「全部开放」，这里只能看。");
     expect(store.load(SID).length).toBe(before);
     store.close();
   });
@@ -1523,6 +1534,53 @@ describe("选人卡（#1520）", () => {
     await session.say(OWNER, "Stan", "@运维 给她打个电话", true, ["ops"]);
     await session.settled();
     expect(calls).toEqual([{ originSessionId: SID, agentId: "ops", agentName: "运维", ...CALL_ARGS, candidates: ["小红", "小明"], recentUids: ["u-baba"] }]);
+    store.close();
+  });
+});
+
+describe("外联里打字聊（#1655）", () => {
+  it("档位不是全部开放 / 查不出来：好友被拒、不落盘；通话进行中不查档位", async () => {
+    for (const tier of ["agents", null] as const) {
+      const store = newStore();
+      outreachSeed(store);
+      let asked = 0;
+      const { session } = open(store, { peerTier: async () => (asked++, tier) });
+      const before = store.load(SID).length;
+      await expect(session.say(PEER, "小红", "在吗", false, [], undefined, [])).rejects.toThrow("对方没再对你开「全部开放」，这里只能看。");
+      expect(store.load(SID).length).toBe(before);
+      expect(asked).toBe(1);
+      store.close();
+    }
+    const store = newStore();
+    outreachSeed(store, { started: true });
+    let asked = 0;
+    const { session } = open(store, { peerTier: async () => (asked++, "chat") });
+    await session.say(PEER, "小红", "喂", false, [], undefined, []);
+    await session.settled();
+    expect(asked).toBe(0);
+    store.close();
+  });
+
+  it("全部开放：放行；每小时第 31 句被拒", async () => {
+    const store = newStore();
+    outreachSeed(store);
+    const { session } = open(store, { peerTier: async () => "full", now: () => 1_000_000 });
+    for (let i = 0; i < 30; i++) await session.say(PEER, "小红", `第${i}句`, false, [], undefined, []);
+    await expect(session.say(PEER, "小红", "第31句", false, [], undefined, [])).rejects.toThrow("这一小时说得太多了，过一会儿再来。");
+    await session.settled();
+    store.close();
+  });
+
+  it("重启补跑：不在通话里打的那句照常补跑（M1 那条只管通话里的）", async () => {
+    const store = newStore();
+    outreachSeed(store, { ended: true });
+    store.append({ sessionId: SID, ts: 9, type: "user_message", content: "[小红]: 周五借车行吗", fromUid: PEER, mentions: ["ops"] });
+    const { session } = open(store);
+    // 补跑在装配时异步起：轮询日志直到那一轮收口（同 sessionService.test.ts「重启补跑」的等法）
+    for (let i = 0; i < 50 && store.ofType(SID, "assistant_message").length === 0; i++) await new Promise((r) => setTimeout(r, 20));
+    await session.settled();
+    expect(store.ofType(SID, "assistant_message")).toHaveLength(1);
+    expect((store.ofType(SID, "turn_ended") as { outcome: string }[]).map((t) => t.outcome)).not.toContain("error");
     store.close();
   });
 });

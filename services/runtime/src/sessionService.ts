@@ -180,6 +180,7 @@ import { pendingImageDescriptions } from "../../../src/shared/visionPending.js";
 import { findModel } from "../../../src/shared/modelCatalog.js";
 import {
   activeOutreach, applyOutreach, capTranscript, outreachAnsweredText, outreachCallerName, outreachFoldOf, outreachGreetingText, outreachRingReason, outreachTranscript, openingTraits,
+  OUTREACH_CHAT_PER_HOUR_MAX, outreachLiveAt,
   type OutreachFold,
 } from "../../../src/shared/outreach.js";
 import { applyFriendPick, friendPickFailureText, friendPickFoldOf, friendPickStatus, recentPeerUids, type FriendPickFold } from "../../../src/shared/friendPick.js";
@@ -198,8 +199,8 @@ import { createCollabTool } from "./collabTool.js";
 import { COLLAB_EXPIRE_MS, COLLAB_REMIND_MS, collabAcceptText, collabAuthPrompt, collabAutoAcceptText } from "../../../src/shared/collab.js";
 import { splitSpeakerPrefix } from "../../../src/shared/speakerPrefix.js";
 import { randomUUID } from "node:crypto";
-import type { FriendTier } from "../../../src/shared/friendTier.js";
-import { MESSAGE_FRIEND_AGENT_TOOL_NAME } from "../../../src/shared/laneBridge.js";
+import { allowsOutreach, type FriendTier } from "../../../src/shared/friendTier.js";
+import { MESSAGE_FRIEND_AGENT_TOOL_NAME, bridgeWindowAllows, pruneBridgeWindow } from "../../../src/shared/laneBridge.js";
 import type { DeltaKind, ModelAdapter } from "../../../src/model/adapter.js";
 import { createDeltaStream } from "./deltaStream.js";
 import type { ExecutionWorld } from "../../../src/world/executionWorld.js";
@@ -877,6 +878,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   // 这条线上的外联折叠（#1441）：从 seed 播种、notify 里逐条推进（同 voiceCall）。「通话此刻进行中吗、
   // 打给的是谁」只从这一份读——say 的闸、chat() 的 active 共用，两处各折一遍迟早分家
   const outreachFold: OutreachFold = outreachFoldOf(seed);
+  /** 外联这条线的那位朋友（#1655）：不在通话里也认得出——种子里 session_created.cloud.outreach 就写着 */
+  const outreachPeerUid: string | null = isOutreach ? (createdCloud?.outreach?.peerUid ?? null) : null;
+  /** 朋友在外联里打字的滑动窗（#1655）：进程内，重启清零（同 laneBridge） */
+  let outreachChatSent: number[] = [];
   // 选人卡（#1520）：同 outreachFold，从 seed 播种、notify 里推进；「这张卡还能不能点」只从这一份读
   const friendPickFold: FriendPickFold = friendPickFoldOf(seed);
   /** 这条会话此刻的名单 = 团队名单 ∩ 聊天名单。**全文件读名单只走这一个口**：@ 解析、派活、
@@ -2047,12 +2052,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   /** 起 turn 前落这只 agent 的 wiki 快照（#1140）。判据逐字沿用 ADR-0222 决策 2：**缺席或内容变了才落**。
       ensure/snapshot 失败 warn 跳过、不阻塞 turn（记忆副作用永不阻塞回复）。nudge 只给管理员（spec §7.2） */
   async function loadWikiIfChanged(spec: AgentSpec): Promise<void> {
-    // 外联会话不注入团队记忆（#1441）：对面是群主的朋友，群主的 wiki 一个字都不该进这条线的上下文
-    if (isOutreach) return;
+    // 外联（#1441 不注入 → #1655 注入）：外联存在 = 主人对这位朋友全部开放；那条线没有 wiki 刀，nudge 不给
+    // （它催的是用 wiki 记），引言由 deriveMessages 换只读版
     let snap: WikiSnapshotForAgent;
     try {
       await opts.wiki.ensure();
-      snap = await opts.wiki.snapshot(spec.agentId, { nudge: spec.agentId === ADMIN_AGENT_ID });
+      snap = await opts.wiki.snapshot(spec.agentId, { nudge: spec.agentId === ADMIN_AGENT_ID && !isOutreach });
     } catch (err) {
       console.warn(`[otto-runtime] 团队 wiki 读取失败，本 turn 不落快照（workspaceId=${opts.workspaceId} agent=${spec.agentId}）`, err);
       return;
@@ -3216,12 +3221,23 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
 
   const session: CloudSession = {
     async say(fromUid, label, text, mention, mentions, budget, memberMentions, voice, media, relay, tz) {
-      // 外联会话只在通话进行中收话，且只收**打给的那个朋友**（#1441）：没有进行中的外联 = 电话已经
-      // 挂了；主人也不例外（他在这条线上只读）。放在最前面——任何名单查询、落盘之前拒绝，
-      // 挂断之后的一句话一个字节都不落
+      // 外联会话（#1441 → #1655）：只有那位朋友能说话，主人在这条线上只读。通话进行中（语音转写走这里）不查档位、
+      // 不计数——拨号那一刻已验过档位。不在通话里 = 朋友在打字：档位此刻仍得是「全部开放」（查不出来按不放行），
+      // 每小时封顶（花的是主人的额度）。放在最前面：任何名单查询、落盘之前拒绝
       if (isOutreach) {
         const live = activeOutreach(outreachFold);
-        if (live === null || fromUid !== live.peerUid) throw new SayRejectedError("这通电话已经结束了。");
+        const peer = live?.peerUid ?? outreachPeerUid;
+        if (peer === null || fromUid !== peer) throw new SayRejectedError("这条线只有对方能说话，你只能看。");
+        if (live === null) {
+          if (opts.peerTier !== undefined) {
+            const tier = await opts.peerTier(peer).catch(() => null);
+            if (tier === null || !allowsOutreach(tier)) throw new SayRejectedError("对方没再对你开「全部开放」，这里只能看。");
+          }
+          const now = opts.now?.() ?? Date.now();
+          const sent = pruneBridgeWindow(outreachChatSent, now);
+          if (!bridgeWindowAllows(sent, now, OUTREACH_CHAT_PER_HOUR_MAX)) throw new SayRejectedError("这一小时说得太多了，过一会儿再来。");
+          outreachChatSent = [...sent, now];
+        }
       }
       // 私密车道（#1461）：只听主人的。进房的闸（工作区成员 ∪ 客人）在主场里本来就只放主人进来、车道也不收客人，
       // 这一道是第二道：判据挂在「这条车道是谁的」这个事实上，不挂在「此刻谁进得了房」的巧合上
@@ -4069,7 +4085,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // stale 已经按 seq 升序（openTurns 顺着日志一路 push）：同一只 agent 的
       // 多条开场白在这里天然也按 seq 升序出现，下面的队列直接借了这个顺序
       for (const t of stale) {
-        if (outreachOver) {
+        // 只丢落在一通电话之内的（#1655）：打字聊的那句照常补跑
+        if (outreachOver && outreachLiveAt(seed, t.seq)) {
           overSeqs.push(t.seq);
           enqueueItem(t.agentId, { seq: t.seq, kind: "outreach_over", fromUid: t.fromUid });
           continue;
