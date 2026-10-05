@@ -12,9 +12,10 @@ describe("sessionService：message_friend", () => {
     expect(ss).toMatch(/friendMessage\?: \{\s*send\(o: \{ agentId: string; agentName: string; friend: string; text: string \}\): Promise<string>;\s*\} \| null;/);
     expect(ss).toMatch(/const friendMessage = opts\.friendMessage \?\? null;/);
   });
-  it("亮刀条件与 call_friend 相同：主场（approveAll）、不在外联会话、不在车道；maySend 的两句与 mayCall 同构", () => {
+  // #1682：message_friend 进了车道（主人在朋友私聊旁说「发吧」就替他发进去）；call_friend 照旧不进车道
+  it("亮刀条件：主场（approveAll）、不在外联会话；call_friend 另外不在车道；maySend 的两句与 mayCall 同构", () => {
     expect(ss).toMatch(/const callFriendTool =\s*opts\.outreach === null \|\| !opts\.approveAll \|\| isOutreach \|\| isPair/);
-    expect(ss).toMatch(/const messageFriendTool =\s*friendMessage === null \|\| !opts\.approveAll \|\| isOutreach \|\| isPair/);
+    expect(ss).toMatch(/const messageFriendTool =\s*friendMessage === null \|\| !opts\.approveAll \|\| isOutreach\s*\?/);
     expect(ss).toMatch(/maySend: \(\) =>\s*ownerSpoke\s*\? null\s*: rerunTurn\s*\? "这一轮是服务重启后的补跑：这条消息上一次可能已经发出去了/);
     expect(ss).toMatch(/"只有他本人亲口让你发，才能给他的好友发消息。这一轮不是。"/);
   });

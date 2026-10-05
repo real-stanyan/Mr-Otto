@@ -233,6 +233,18 @@ describe("群座位制：别人使唤你的管理员", () => {
     expect(w.groupLog().some((e) => e.type === "seat_request")).toBe(false);
   });
 
+  it("客人轮看不到主人的记忆：座位里落的 wiki 快照是空的那份（#1682：惊喜派对被一句「那天最好空着」暗示出去）", async () => {
+    const w = setup({ script: () => ({ content: "得问她本人。" }) });
+    await w.group.say(C, "Edison Guo", "@雨姐 她最近在忙啥", true, [seatAgentId(A)]);
+    await w.settleAll();
+    const snap = w.seatLog(A).filter((e) => e.type === "workspace_wiki_loaded").at(-1) as { index: string; pinned: unknown[]; own: string | null } | undefined;
+    expect(snap).toBeDefined();
+    expect(snap!.index).toContain("主人的记忆这一轮不给你看");
+    expect(snap!.pinned).toEqual([]);
+    expect(snap!.own).toBeNull();
+    expect(w.calls[0]!.transcript).toContain("主人的记忆这一轮不给你看");
+  });
+
   it("要动手 → ask_owner 落卡（座位与群各一份）、推给主人；主人接 → 主人的规矩起一轮、带着原话；回话回群", async () => {
     let n = 0;
     const w = setup({

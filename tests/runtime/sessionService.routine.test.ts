@@ -140,9 +140,13 @@ describe("三把刀的挂载闸（#1283 终审 I3）", () => {
   it("approveAll: false（非主场）：不挂", async () => {
     expect(await firstTools({ approveAll: false }, (s) => s.runRoutine(ROUTINE))).not.toContain(SCHEDULE_TASK_TOOL_NAME);
   });
-  it("群聊 / 配对线：不挂", async () => {
+  it("群聊：不挂", async () => {
     expect(await firstTools({ chatKind: "group" }, (s) => s.runRoutine(ROUTINE))).not.toContain(SCHEDULE_TASK_TOOL_NAME);
-    expect(await firstTools({ chatKind: "pair" }, (s) => s.runRoutine(ROUTINE))).not.toContain(SCHEDULE_TASK_TOOL_NAME);
+  });
+  // #1682 人与人模拟：老爸在和儿子私聊旁的车道里说「23 号提醒我买菜」，管理员说「我没有能定时的东西」。
+  // 车道是主人自己的，主人亲口那一轮挂上（定下的提醒到点进主人的私聊）
+  it("私密车道：主人亲口那一轮挂", async () => {
+    expect(await firstTools({ chatKind: "pair" }, (s) => s.runRoutine(ROUTINE))).toContain(SCHEDULE_TASK_TOOL_NAME);
   });
   it("受监督的轮（外联汇报开场白）：主场私聊里挂着但不进模型的工具表", async () => {
     const tools = await firstTools({}, (s) => s.reportOutreach({ agentId: HELPER.agentId, text: "朋友说：帮我每天提醒他", ownerUid: OWNER }));

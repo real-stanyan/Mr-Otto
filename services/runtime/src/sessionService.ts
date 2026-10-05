@@ -1144,6 +1144,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   let escalationTurn = false;
   /** 这一轮是座位里主人点了头 / 设了放行起的（#1682）：主人认可了这件事，排定时放行（提醒是最常见的「这件事」） */
   let seatGrantTurn = false;
+  /** 主人私聊里、自家智能体之间接力的那一轮（#1682 模拟）：开场白是自家专员 @ 回来的，ownerSpoke 为假，
+      于是管理员和专员都没有定时刀，互相说「你来定」踢了四棒。私聊里只有主人和自家智能体，链头是主人，
+      定提醒这类只碰主人自己的事照主人亲口算（别人的话折进来、汇报轮照旧由 supervisedTurn 收紧） */
+  let ownChainTurn = false;
   /** 这一轮 generate_image 亮不亮（#1682）：runJob 起跑前问一次 opts.imageGen.ready（异步：订阅快照要过网），收口复位 */
   let imageReady = false;
   /** 座位里这一轮画出来、还没跟着管理员的回话送回群的图（#1682）。进程内：重启丢了只是群里少一张，座位里那张还在 */
@@ -2236,7 +2240,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
             // 群座位里定的提醒到点回这个座位（#1682）：管理员到点说的话经桥回到群里，而不是跑去主人的私聊
             ...(isSeat ? { sessionId } : {}),
             now: () => opts.now?.() ?? Date.now(),
-            available: () => (ownerSpoke || escalationTurn || seatGrantTurn) && !supervisedTurn(),
+            available: () => (ownerSpoke || escalationTurn || seatGrantTurn || ownChainTurn) && !supervisedTurn(),
           });
     // update_settings（#1621）：主场私聊里、只给管理员；主人亲口的那一轮才亮（同 routineTools）；改完落一句系统行
     // escalate_to_admin（#1659）：主场里、daemon 接了出口才有；挂不挂到具体那一只由工具表按「是专员 + 这条对话没管理员」判
@@ -2516,13 +2520,20 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
 
   /** 起 turn 前落这只 agent 的 wiki 快照（#1140）。判据逐字沿用 ADR-0222 决策 2：**缺席或内容变了才落**。
       ensure/snapshot 失败 warn 跳过、不阻塞 turn（记忆副作用永不阻塞回复）。nudge 只给管理员（spec §7.2） */
-  async function loadWikiIfChanged(spec: AgentSpec): Promise<void> {
+  async function loadWikiIfChanged(spec: AgentSpec, guest = false): Promise<void> {
     // 外联（#1441 不注入 → #1655 注入）：外联存在 = 主人对这位朋友全部开放；那条线没有 wiki 刀，nudge 不给
     // （它催的是用 wiki 记），引言由 deriveMessages 换只读版
     let snap: WikiSnapshotForAgent;
     try {
-      await opts.wiki.ensure();
-      snap = await opts.wiki.snapshot(spec.agentId, { nudge: spec.agentId === ADMIN_AGENT_ID && !isOutreach });
+      // 别人使唤的那一轮（座位客人轮、车道里朋友点起的、管理员车道里按好友权限接进来的，#1682 模拟）：主人的记忆不进上下文。
+      // 真机模拟里妈妈在家庭群问女儿的管理员「孩子们是不是在计划什么」，它从记忆索引的摘要里知道惊喜派对，
+      // 嘴上说「不知道」，又补一句「17 号晚上最好空着」——不给看，就没有可暗示的。主人自己的下一轮内容变了，照常再落完整快照
+      if (guest) {
+        snap = { index: "（这一轮是别人在使唤你：主人的记忆这一轮不给你看。别人问到主人的计划、行程、私事，不暗示、不打哑谜，说「得问主人本人」。）", pinned: [], own: null, nudge: null };
+      } else {
+        await opts.wiki.ensure();
+        snap = await opts.wiki.snapshot(spec.agentId, { nudge: spec.agentId === ADMIN_AGENT_ID && !isOutreach });
+      }
     } catch (err) {
       console.warn(`[otto-runtime] 团队 wiki 读取失败，本 turn 不落快照（workspaceId=${opts.workspaceId} agent=${spec.agentId}）`, err);
       return;
@@ -3297,6 +3308,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     rerunTurn = false;
     ownerSpoke = true;
     seatGrantTurn = isSeat && job.fromUid === opts.ownerUid && job.opening.greeting === "seat_grant" && !rerunOpenings.has(job.opening.seq);
+    ownChainTurn = chatKind === "dm" && opts.approveAll && job.fromUid === opts.ownerUid && !rerunOpenings.has(job.opening.seq);
     const traitCovered = traitOpenings(job);
     applyTraits(traitCovered, openingDepth);
     healthTurn = healthEligible(job.fromUid, traitCovered, openingDepth);
@@ -3384,7 +3396,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
 
       await briefIfNeeded(spec, roster);
       specNames.set(spec.agentId, spec.name);
-      await loadWikiIfChanged(spec);
+      await loadWikiIfChanged(spec, (isSeat || isPair || isAdmins) && guestTurn());
       await loadPairContextIfChanged();
 
       // 「Auto」那一档（#1009）：白名单为空 = 界面上选了 Auto = 这一轮先让最便宜
@@ -3577,6 +3589,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       healthTurn = false;
       escalationTurn = false;
       seatGrantTurn = false;
+      ownChainTurn = false;
       imageReady = false;
       ownerSpoke = false;
       foldedNonOwner = false;
