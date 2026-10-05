@@ -129,6 +129,9 @@ describe("预置 OAuth 客户端（#1619）", () => {
       authorizeParams: { access_type: "offline", prompt: "consent" },
     });
   });
+  it("Gmail 的 authNote 与 spec §3.1 逐字一致", () => {
+    expect(gmail.authNote).toBe("在手机上接：登录 Google 账号并同意读邮件、管草稿");
+  });
   it("presetClient / scopes / authorizeParams 只出现在 http + oauth 条目上；scopes 非空；authorizeParams 不碰保留键", () => {
     for (const e of MCP_CATALOG) {
       if (e.presetClient === undefined && e.scopes === undefined && e.authorizeParams === undefined) continue;

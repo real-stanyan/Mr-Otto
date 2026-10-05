@@ -615,7 +615,7 @@ export const MCP_CATALOG: readonly CuratedEntry[] = [
     url: "https://gmailmcp.googleapis.com/mcp/v1",
     params: [],
     auth: "oauth",
-    authNote: "在手机上接：登录 Google 账号，同意读邮件、管草稿",
+    authNote: "在手机上接：登录 Google 账号并同意读邮件、管草稿",
     // Google 的授权服务器没有动态注册：用 edge 预置的客户端（#1619，ADR-0369）
     presetClient: "google",
     scopes: ["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.compose"],
