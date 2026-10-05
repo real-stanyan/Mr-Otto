@@ -2,7 +2,7 @@
 // 这里读源码钉住接线：
 // ① 朋友那条车道走**第二个** cloudSessionClient 实例（peerLane.ts 自己建传输、自己的 sinks），不碰 chatStore / cloudClient 的单连接；
 // ② 私聊页进来 / 回来时找朋友公开给我的那条、离开时断掉；@ 了朋友的智能体走 sayToPeerLane，@ 了自己的仍走 sendText；
-// ③ 第一次带上先挑智能体、再选给谁看（bringAgents 带 facing）；横幅上那颗标签与聊天信息页都能切（setLaneFacing）；
+// ③ 第一次带上先挑智能体、再选给谁看（bringAgents 带 facing）；点我自己的头像进编辑页（#1642，原来是横幅上那颗标签）与聊天信息页都能切（setLaneFacing）；
 // ④ 车道气泡认 who = "friend"；朝向从日志里的客人名单推（pairFacingOf + chatHumansNow）；
 // ⑤ listGuestChats 把 chat_kind = 'pair' 摘掉——公开给我的车道不当群画。
 import { readFileSync } from "node:fs";
@@ -42,17 +42,19 @@ describe("FriendChatScreen：两条车道合在一条时间线上", () => {
     expect(src).toMatch(/const r = await sendText\(text, targets\.ids\);/);
     expect(src).toMatch(/await sendToFriend\(uid, text\);/);
   });
-  it("第一次带上先挑再选朝向（bringAgents 带 facing）；之后横幅标签 / setLaneFacing 能切", () => {
-    expect(src).toMatch(/setFacingPick\(\{ key: Date\.now\(\), visible: true, mode: "create", picked \}\)/);
+  it("第一次带上先挑再选朝向（bringAgents 带 facing）；之后点我自己的头像进编辑页切（#1642）", () => {
+    expect(src).toMatch(/setFacingPick\(\{ key: Date\.now\(\), visible: true, picked \}\)/);
     expect(src).toMatch(/await bringAgents\(homeWs\.id, uid, facingPick\.picked, facing\)/);
-    expect(src).toMatch(/await setLaneFacing\(homeWs\.id, uid, facing\)/);
-    expect(src).toMatch(/LANE_FACING_LABEL\[laneFacing\]/);
+    expect(src).toMatch(/navigation\.navigate\("LaneAgents", \{ uid \}\)/);
+    expect(read("mobile/src/friends/LaneAgentsScreen.tsx")).toMatch(/setLaneFacing\(homeWs\.id, uid, v \? "both" : "self"\)/);
   });
   it("朝向从日志里的客人名单推；朋友说的话标 friend（laneItemsOf 带 selfUid）", () => {
-    expect(src).toMatch(/pairFacingOf\(chatHumansNow\(/);
+    // #1642 起名单与朝向收进 useLaneRoster（私聊页与编辑页读同一份）
+    expect(src).toMatch(/useLaneRoster\(uid\)/);
+    expect(read("mobile/src/friends/laneRoster.ts")).toMatch(/pairFacingOf\(chatHumansNow\(/);
     // #1565 起车道不再逐条铺在主页上：两条车道各折成任务（laneTasksOf 带 selfUid 判「我 / 朋友」），见 taskDrawerWiring.test
     expect(src).toMatch(/const tasks = laneTasksOf\(events, selfUid, peerLane \? nameOfPeerAgent : nameOfAgent\);/);
-    expect(read("mobile/src/friends/LaneBubble.tsx")).toMatch(/item\.who === "friend" \? <PersonTile/); // 气泡随 #1565 搬成独立文件
+    expect(read("mobile/src/friends/LaneBubble.tsx")).toMatch(/item\.who === "friend" \? \(friendTile \?\? <PersonTile/); // 气泡随 #1565 搬成独立文件；#1642 起私聊页给带小圆脸的那一格
   });
   it("@ 名单合并两边的智能体（#1544 起还列我主场里没带进来的那几只，@ 了先带进来）；语音松手那一刀也按两条车道判", () => {
     // #1571 第二轮：没带进来的专员不再能 @，#1544 的「@ 了先带进来」撤掉；名单按 entries 画（两边的管理员分开标）

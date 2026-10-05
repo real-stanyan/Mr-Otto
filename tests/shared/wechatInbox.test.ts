@@ -210,7 +210,7 @@ describe("inboxRows", () => {
   });
   it("splitInbox（#1566）：主页只留人↔人与群；我的智能体一份、别人的智能体（外联）一份；各自保持顺序", () => {
     const rows = inboxRows(base);
-    const outreach: InboxRow = { ...rows[0]!, key: "o:x", target: { kind: "outreach", workspaceId: "w", sessionId: "x" }, title: "小红 的 运维", ts: NOW - MIN, preview: "周五来吗" };
+    const outreach: InboxRow = { ...rows[0]!, key: "o:x", target: { kind: "outreach", workspaceId: "w", sessionId: "x" }, title: "运维", owner: { kind: "person", name: "小红", url: "" }, ts: NOW - MIN, preview: "周五来吗" };
     const s = splitInbox([outreach, ...rows]);
     expect(s.main.map((r) => r.key)).toEqual(["f:u_aj", "t:ts1", "g:grp1"]);
     expect(s.agents.map((r) => r.key)).toEqual(["a:a_000000000001"]);
@@ -397,14 +397,16 @@ describe("外联会话（#1441）", () => {
   };
   const base = { selfUid: "me", home: null, teams: [], guests: [outreachGuest], friends: [], mentions: [] as WorkspaceMentionRow[], seen: SEEN, openKey: null };
 
-  it("好友那一侧：一行，名字「小红 的 运维」，头像是那只的脸，第二行照旧是最后一句", () => {
+  it("好友那一侧：一行，名字是智能体自己的「运维」、主人另给一枚药丸（#1641），头像是那只的脸，第二行照旧是最后一句", () => {
     const r = inboxRows(base).find((x) => x.key === "o:os1")!;
-    expect(r.title).toBe("小红 的 运维");
+    expect(r.title).toBe("运维");
+    expect(r.owner).toEqual({ kind: "person", name: "小红", url: "data:xh" });
     expect(r.target).toEqual({ kind: "outreach", workspaceId: "home-of-xh", sessionId: "os1" });
     expect(r.avatar).toEqual({ kind: "face", id: "a_x1", slot: expect.any(Number) });
     expect(r.preview).toBe("周五来吗");
     expect(r.unread).toEqual({ kind: "dot" });
     expect(filterInbox([r], "运维")).toHaveLength(1);
+    expect(filterInbox([r], "小红")).toHaveLength(1);
   });
   it("不进「群聊」那一页，也不占 j: 的键", () => {
     expect(groupList({ selfUid: "me", home: null, teams: [], guests: [outreachGuest] })).toEqual([]);

@@ -10,6 +10,7 @@ import { SpecAvatar } from "../wx/Avatar.js";
 import { CountBadge, DotBadge, PresenceDot, StatusBadge } from "../wx/Badge.js";
 import { usePresence } from "../friends/presenceStore.js";
 import { Icon } from "../wx/Icon.js";
+import { OwnerPill } from "../wx/OwnerPill.js";
 
 export const CHAT_ROW_AVATAR = 48;
 /** 分隔线从哪儿开始：左边距 16 + 头像 48 + 间距 12 */
@@ -31,7 +32,7 @@ export const ChatListRow = memo(function ChatListRow({ row, draft, now, onPress,
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`${row.title}${activityText}${unreadText}${row.mention ? "，有人@我" : ""}${row.muted === true ? "，消息免打扰" : ""}，${draft !== "" ? `草稿：${draft}` : row.preview}${time !== "" ? `，${time}` : ""}`}
+      accessibilityLabel={`${row.title}${row.owner !== undefined ? `，${row.owner.name} 的智能体` : ""}${activityText}${unreadText}${row.mention ? "，有人@我" : ""}${row.muted === true ? "，消息免打扰" : ""}，${draft !== "" ? `草稿：${draft}` : row.preview}${time !== "" ? `，${time}` : ""}`}
       onPress={onPress}
       style={({ pressed }) => [
         { flexDirection: "row", alignItems: "center", gap: 12, minHeight: 72, paddingHorizontal: 16, backgroundColor: c.card },
@@ -59,7 +60,11 @@ export const ChatListRow = memo(function ChatListRow({ row, draft, now, onPress,
       </View>
       <View style={{ flex: 1, minWidth: 0, paddingVertical: 12, gap: 4 }}>
         <View style={{ flexDirection: "row", alignItems: "baseline", gap: 8 }}>
-          <Text numberOfLines={1} style={{ flex: 1, minWidth: 0, fontSize: 17, color: c.foreground }}>{row.title}</Text>
+          {/* 朋友的智能体（#1641）：名字在前，主人是右边那枚药丸；名字长了先截名字 */}
+          <View style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: 6 }}>
+            <Text numberOfLines={1} style={{ flexShrink: 1, fontSize: 17, color: c.foreground }}>{row.title}</Text>
+            {row.owner !== undefined ? <OwnerPill owner={row.owner} /> : null}
+          </View>
           {time !== "" ? <Text style={{ fontSize: 12, color: c.faint, fontVariant: ["tabular-nums"] }}>{time}</Text> : null}
         </View>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>

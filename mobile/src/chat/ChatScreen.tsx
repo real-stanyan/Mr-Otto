@@ -35,10 +35,9 @@ import { chatCentre, chatRows, liveRows, nowRowOf, outreachComposer, resolveChat
 import { facePhase } from "../../../src/shared/ottoFace/art.js";
 import type { CsChatInfo } from "../../../src/shared/remote/cloudSession.js";
 import { parseMemberMentions, parseMentions } from "../../../src/shared/remote/agentMention.js";
-import { outreachCallerName } from "../../../src/shared/outreach.js";
 import { openTurns } from "../../../src/shared/turnLedger.js";
 import { voiceCallOf } from "../../../src/shared/voiceCall.js";
-import { teamChatTitle } from "../../../src/shared/wechatInbox.js";
+import { ownerOf, teamChatTitle, type PersonAvatar } from "../../../src/shared/wechatInbox.js";
 import { agentNameOf } from "../../../src/shared/workspaceView.js";
 import { isHomeWorkspace, type WorkspaceSnapshot } from "../../../src/shared/workspaces.js";
 import type { SessionEvent } from "../../../src/session/events.js";
@@ -68,6 +67,7 @@ import {
 } from "../voice/voiceStore.js";
 import { FaceTile, GridTile, PersonTile } from "../wx/Avatar.js";
 import { Icon } from "../wx/Icon.js";
+import { OwnerPill } from "../wx/OwnerPill.js";
 import { HeaderIconButton } from "../wx/TabHeader.js";
 import { toast } from "../wx/toast.js";
 import { ChatRowView, PendingMineRow, TypingRow } from "./Bubbles.js";
@@ -103,6 +103,8 @@ interface Resolved {
   sessionId: string | null;
   agentIds: string[];
   title: string;
+  /** 朋友的智能体打给我的那条（外联）：标题只写智能体的名字，主人画成右边那枚药丸（#1641） */
+  owner?: PersonAvatar;
   /** 打开这条线时给 `chat` 种的那一格；团队会话是 null（ADR-0302：null = 不是聊天） */
   seed: CsChatInfo | null;
 }
@@ -120,15 +122,18 @@ function Line({ tone, children }: { tone: "muted" | "warn" | "error"; children: 
   return <Text style={{ fontSize: 13, lineHeight: 18, color, flexShrink: 1 }}>{children}</Text>;
 }
 
-/** 导航条正中那两行：名字（群带人数）+ 此刻在干什么 */
-function ChatTitle({ title, count, status }: { title: string; count: number; status: string }) {
+/** 导航条正中那两行：名字（群带人数；朋友的智能体右边一枚主人药丸，#1641）+ 此刻在干什么 */
+function ChatTitle({ title, count, status, owner }: { title: string; count: number; status: string; owner?: PersonAvatar | undefined }) {
   const { c } = usePalette();
   return (
-    <View accessible accessibilityRole="header" accessibilityLabel={`${title}${count > 0 ? `，${count} 人` : ""}${status !== "" ? `，${status}` : ""}`} style={{ alignItems: "center", maxWidth: 220 }}>
-      <Text numberOfLines={1} style={{ fontSize: 17, fontWeight: "600", letterSpacing: -0.2, color: c.foreground }}>
-        {title}
-        {count > 0 ? `(${count})` : ""}
-      </Text>
+    <View accessible accessibilityRole="header" accessibilityLabel={`${title}${owner !== undefined ? `，${owner.name} 的智能体` : ""}${count > 0 ? `，${count} 人` : ""}${status !== "" ? `，${status}` : ""}`} style={{ alignItems: "center", maxWidth: 240 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 6, maxWidth: "100%" }}>
+        <Text numberOfLines={1} style={{ flexShrink: 1, fontSize: 17, fontWeight: "600", letterSpacing: -0.2, color: c.foreground }}>
+          {title}
+          {count > 0 ? `(${count})` : ""}
+        </Text>
+        {owner !== undefined ? <OwnerPill owner={owner} maxWidth={96} /> : null}
+      </View>
       {status !== "" ? <Text numberOfLines={1} style={{ fontSize: 11.5, color: c.mutedForeground, marginTop: -1 }}>{status}</Text> : null}
     </View>
   );
@@ -236,11 +241,12 @@ export function ChatScreen({ route, navigation }: Props) {
     if (target.kind === "outreach") {
       if (guest === null) return null;
       const agentId = guest.session.agentIds[0];
-      const ownerName = guest.ws.members.find((m) => m.uid === guest.ws.ownerUid)?.label ?? "";
+      const owner = ownerOf(guest.ws);
       return {
         kind: "dm", sessionId: guest.session.id, agentIds: guest.session.agentIds,
-        title: outreachCallerName(ownerName, agentId === undefined ? "" : agentNameOf(guest.ws, agentId)),
-        seed: { kind: "outreach", agentIds: [...guest.session.agentIds], humans: [], outreach: { ownerName, active: false } },
+        title: agentId === undefined ? "" : agentNameOf(guest.ws, agentId),
+        owner,
+        seed: { kind: "outreach", agentIds: [...guest.session.agentIds], humans: [], outreach: { ownerName: owner.name, active: false } },
       };
     }
     if (target.kind === "guest") {
@@ -357,6 +363,8 @@ export function ChatScreen({ route, navigation }: Props) {
   // 标题是那只的名字，时间线 / 输入框 / 群聊信息都不画；挂断回私聊页（下面那条 goBack）
   const callOnly = route.params.callOnly === true && route.params.callAgentId !== undefined;
   const callOnlyTitle = callOnly && ws !== null ? agentNameOf(ws, route.params.callAgentId!) : "通话";
+  // 打给的是朋友的智能体：这份快照是朋友的车道，主人就是那位朋友（#1641 药丸）
+  const titleOwner = useMemo(() => (callOnly ? (ws !== null ? ownerOf(ws) : undefined) : resolved?.owner), [callOnly, ws, resolved]);
   const group = kind === "group";
   const title = (view?.title ?? resolved?.title ?? "") || (group ? people.map((p) => p.name).join("、") : "");
   /** 群里除了我之外的人：团队群 = 别的成员；有朋友的群 = 群主那一侧的客人，或客人那一侧的群主 + 别的客人 */
@@ -735,7 +743,7 @@ export function ChatScreen({ route, navigation }: Props) {
   const infoOk = !isOutreach && resolved !== null && (sessionId !== null || dmAgent !== null);
   useLayoutEffect(() => {
     navigation.setOptions({
-      headerTitle: () => <ChatTitle title={callOnly ? callOnlyTitle : title} count={callOnly ? 0 : count} status={status} />,
+      headerTitle: () => <ChatTitle title={callOnly ? callOnlyTitle : title} count={callOnly ? 0 : count} status={status} owner={titleOwner} />,
       headerRight: () =>
         infoOk && !callOnly ? (
           <HeaderIconButton label="聊天信息" onPress={() => navigation.navigate("ChatInfo", target)}>
@@ -744,7 +752,7 @@ export function ChatScreen({ route, navigation }: Props) {
         ) : null,
       ...(others > 0 ? { headerBackTitle: String(others), headerBackButtonDisplayMode: "default" as const } : { headerBackButtonDisplayMode: "minimal" as const }),
     });
-  }, [navigation, title, count, status, others, infoOk, target, c.foreground, callOnly, callOnlyTitle]);
+  }, [navigation, title, count, status, others, infoOk, target, c.foreground, callOnly, callOnlyTitle, titleOwner]);
 
   const centre = chatCentre({
     session: session === null ? null : { state: session.state, eventCount: events.length },
