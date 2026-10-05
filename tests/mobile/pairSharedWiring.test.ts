@@ -76,3 +76,22 @@ describe("聊天信息页 / 清单", () => {
     expect(read("src/shared/supabaseWorkspacesApi.ts")).toMatch(/const chats = rows\.filter\(\(r\) => r\.chat_kind !== "pair"\);/);
   });
 });
+
+describe("镜像卡与管理员之间（#1605 第 1 期 c）", () => {
+  const src = readFileSync(new URL("../../mobile/src/friends/FriendChatScreen.tsx", import.meta.url), "utf8");
+  const lane = readFileSync(new URL("../../mobile/src/friends/adminsLane.ts", import.meta.url), "utf8");
+  it("第三条连接：进页找我家对这位朋友的 admins 车道、离开断掉；卡从日志折（collabCardsOf）按时间混进主页；接 / 不接走 collab_decide", () => {
+    expect(src).toMatch(/if \(homeId !== null && friend\) void openAdminsLane\(homeId, uid\);/);
+    expect(src).toMatch(/useEffect\(\(\) => \(\) => closeAdminsLane\(\), \[\]\);/);
+    expect(src).toMatch(/const collabCards = useMemo\(\(\) => collabCardsOf\(adminsEvents, Date\.now\(\)\), \[adminsEvents\]\);/);
+    expect(src).toMatch(/\.\.\.collabCards\.map\(\(card\) => \(\{ kind: "collab" as const, ts: card\.ts, card \}\)\),/);
+    expect(src).toMatch(/item\.kind === "collab" \? \(\s*<CollabMirrorCard/);
+    expect(src).toMatch(/onDecide\(\{\s*"accepted"\s*\)|onDecide\("accepted"\)/);
+    expect(lane).toMatch(/client\.collabDecide\(lane\.session\.workspaceId, lane\.session\.sessionId, requestId, decision\)/);
+    expect(lane).toMatch(/findAdminsLane\(supabase, homeId, friendUid\)/);
+  });
+  it("「管理员之间 · N 条」折在输入框上方，点开是只读的 BottomSheet", () => {
+    expect(src).toMatch(/\{`管理员之间 · \$\{adminsRows\.length\} 条`\}/);
+    expect(src).toMatch(/<BottomSheet visible=\{adminsOpen\} title=\{`管理员之间 · \$\{name\}`\}/);
+  });
+});

@@ -147,6 +147,7 @@ async function scenarioMainFlow(): Promise<void> {
       searchWork: async () => [],
       writeWiki: async () => {},
       sessions: {
+        async decideCollab() { return { ok: false as const, message: "smoke" }; },
         get(ws, sessionId) {
           const active = activeSessions.get(sessionId);
           return active && active.workspaceId === ws ? active.session : null;
@@ -351,6 +352,10 @@ async function scenarioAssemblyResilience(): Promise<void> {
   // sessions.get() 只需要在类型上满足 CloudSession——ownerOf 会先炸，
   // 这几个方法在两次调用里都不会真的被摸到
   const stubSession: CloudSession = {
+    receiveCollabRequest() {},
+    receiveCollabDecision() {},
+    receiveCollabReply() {},
+    async decideCollab() { return { ok: false as const, message: "smoke" }; },
     async say() {
       /* 不会被调用 */
     },
@@ -442,6 +447,7 @@ async function scenarioAssemblyResilience(): Promise<void> {
     searchWork: async () => [],
     writeWiki: async () => {},
     sessions: {
+      async decideCollab() { return { ok: false as const, message: "smoke" }; },
       get: () => stubSession,
       async create() {
         throw new Error("smoke：韧性场景不使用 create");

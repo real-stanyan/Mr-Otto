@@ -78,6 +78,15 @@ export function laneTasksOf(events: readonly SessionEvent[], selfUid: string | u
       }
       const task = start({ key: `u${e.seq}`, ts: e.ts, startedBy: by, kind: "message", title: titleOf(e.content) });
       task.items.push({ key: `u${e.seq}`, ts: e.ts, who: by, text: e.content });
+    } else if (e.type === "task_collab" || e.type === "collab_decision") {
+      // 协作（#1605）：交给了谁家的管理员、对面主人接没接——归当前任务，当智能体那一侧的一行
+      const text = e.type === "task_collab"
+        ? `已交给 ${e.withName} 的管理员，等 TA 点头`
+        : e.decision === "accepted" ? "对面主人接了，它的管理员在办" : e.decision === "declined" ? "对面主人不方便，按没有继续" : "对面 24 小时没回，按没有继续";
+      attach(
+        { key: `k${e.seq}`, ts: e.ts, who: "agent", text, ...(e.type === "task_collab" ? { agentId: e.byAgentId } : {}) },
+        () => start({ key: `k${e.seq}`, ts: e.ts, startedBy: "agent", kind: "message", title: text }),
+      );
     } else if (e.type === "voice_call_changed") {
       const on = e.participants.length > 0;
       if (on && !inCall) {

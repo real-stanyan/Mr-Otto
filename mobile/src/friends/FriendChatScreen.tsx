@@ -16,7 +16,7 @@ import { allowsPair } from "../../../src/shared/friendTier.js";
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { AppState, FlatList, Pressable, Text, View } from "react-native";
+import { AppState, FlatList, Pressable, Text, View, ScrollView } from "react-native";
 import { agentFaceSlot } from "../../../src/shared/agentAvatar.js";
 import { chatHumansNow, chatRosterNow } from "../../../src/shared/chatRoster.js";
 import type { SessionEvent } from "../../../src/session/events.js";
@@ -25,6 +25,9 @@ import type { DirectMessage } from "../../../src/shared/friends.js";
 import { LANE_FACING_LABEL, lanePending, laneTargets, pairFacingOf, pairPresenceText, type PairFacing } from "../../../src/shared/pairChat.js";
 import { laneBusy, laneTaskShape, laneTaskStatus, laneTaskSubtitle, laneTasksOf, type LaneTask, type LaneTaskItem, type LaneTaskStatus } from "../../../src/shared/laneTasks.js";
 import { LaneBubble } from "./LaneBubble.js";
+import { closeAdminsLane, decideCollab, openAdminsLane, useAdminsLane } from "./adminsLane.js";
+import { COLLAB_CARD_STATE_LABEL, adminsLaneRows, collabCardsOf, type CollabCard } from "../../../src/shared/collabCards.js";
+import { BottomSheet } from "../sheet/BottomSheet.js";
 import { TaskDrawer } from "./TaskDrawer.js";
 import { PRESENCE_TEXT } from "../../../src/shared/presence.js";
 import { agentNameOf } from "../../../src/shared/workspaceView.js";
@@ -56,7 +59,7 @@ import { MediaBubble, PendingMediaBubble } from "../media/MediaBubble.js";
 import { pickFromCamera, pickFromLibrary, pickedKind, prepareAsset, type PickedAsset } from "../media/prepareMedia.js";
 import type { RootStackParams } from "../nav/types.js";
 import { useMyName } from "../tabs/MeScreen.js";
-import { usePalette, withAlpha } from "../theme.js";
+import { usePalette, withAlpha, space } from "../theme.js";
 import { Spinner, useKeyboardInset } from "../ui.js";
 import { dictationUsable, startDictation, startVoiceRecording, stopDictation, stopVoiceRecording, useVoice } from "../voice/voiceStore.js";
 import { FaceTile, PersonTile } from "../wx/Avatar.js";
@@ -77,7 +80,9 @@ type Item =
   /** 一条代办任务（#1565）：车道里一次请求折成的一张卡——我的车道里的，或朋友公开给我的那条（`peer`） */
   | { kind: "task"; key: string; t: TaskRow }
   /** 聊天形状的任务（#1620，laneTaskShape = chat）：不出卡，按气泡铺在主页上——一只答、没派活，就像群里的一个人插话 */
-  | { kind: "lane"; key: string; t: TaskRow; item: LaneTaskItem; thinking: boolean };
+  | { kind: "lane"; key: string; t: TaskRow; item: LaneTaskItem; thinking: boolean }
+  /** 镜像卡（#1605）：朋友家的管理员找我家管理员配合——原话 / 说明 / 结果 + 接 / 不接 */
+  | { kind: "collab"; key: string; card: CollabCard };
 
 /** 一条任务 + 它在哪条车道、这条车道此刻还有没有人在答 */
 type TaskRow = { task: LaneTask; peer: boolean; busy: boolean };
@@ -105,6 +110,38 @@ function TaskCard({ t, status, subtitle, footer, onPress }: { t: TaskRow; status
         </View>
       </View>
     </Pressable>
+  );
+}
+
+/** 镜像卡（#1605）：对面主人的原话 + 对面管理员的说明 + 到目前的结果 + 接 / 不接。只有主人看得到按钮（这是自己家的车道） */
+function CollabMirrorCard({ card, friendName, busy, error, onDecide }: { card: CollabCard; friendName: string; busy: boolean; error: string | null; onDecide: (d: "accepted" | "declined") => void }) {
+  const { c } = usePalette();
+  const pending = card.state === "pending";
+  return (
+    <View style={{ paddingHorizontal: 12 }}>
+      <View style={{ padding: 12, borderRadius: 12, backgroundColor: withAlpha(c.brand, 0.06), borderWidth: 1, borderStyle: "dashed", borderColor: withAlpha(c.brand, 0.35), gap: 8 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <Icon name="users-round" size={16} stroke={2} color={c.mutedForeground} />
+          <Text numberOfLines={2} style={{ flex: 1, fontSize: 15, lineHeight: 20, color: c.foreground }}>{`${friendName}的管理员「${card.fromAgentName}」找你的管理员：${card.title}`}</Text>
+        </View>
+        {card.ownerLine !== "" ? <Text style={{ fontSize: 13, lineHeight: 18, color: c.mutedForeground }}>{`${card.fromOwnerName}：「${card.ownerLine}」`}</Text> : null}
+        {card.note !== "" ? <Text style={{ fontSize: 13, lineHeight: 18, color: c.mutedForeground }}>{`要你这边：${card.note}`}</Text> : null}
+        {card.result !== "" ? <Text style={{ fontSize: 13, lineHeight: 18, color: c.foreground }}>{`到目前：${card.result}`}</Text> : null}
+        {pending ? (
+          <View style={{ flexDirection: "row", gap: 10 }}>
+            <Pressable accessibilityRole="button" disabled={busy} onPress={() => onDecide("accepted")} style={({ pressed }) => [{ flex: 1, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center", backgroundColor: c.brand }, (pressed || busy) && { opacity: 0.7 }]}>
+              <Text style={{ fontSize: 14, fontWeight: "600", color: "#fff" }}>{busy ? "…" : "接"}</Text>
+            </Pressable>
+            <Pressable accessibilityRole="button" disabled={busy} onPress={() => onDecide("declined")} style={({ pressed }) => [{ flex: 1, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center", backgroundColor: withAlpha(c.foreground, 0.08) }, (pressed || busy) && { opacity: 0.7 }]}>
+              <Text style={{ fontSize: 14, fontWeight: "600", color: c.foreground }}>不接</Text>
+            </Pressable>
+          </View>
+        ) : (
+          <Text style={{ fontSize: 12, color: c.mutedForeground }}>{`${COLLAB_CARD_STATE_LABEL[card.state]}${card.state === "accepted" && card.replies > 0 ? ` · 你的管理员回了 ${card.replies} 句` : ""}`}</Text>
+        )}
+        {error !== null ? <Text style={{ fontSize: 12, color: c.destructive }}>{error}</Text> : null}
+      </View>
+    </View>
   );
 }
 
@@ -226,6 +263,27 @@ export function FriendChatScreen({ route, navigation }: Props) {
   const [callError, setCallError] = useState<string | null>(null);
   const publicAgent = peer?.publicAgent ?? null;
   useEffect(() => () => closePeerLane(), []);
+  // 我家对这位朋友的管理员车道（#1605）：第三条连接，进这一页 / 回到这一页时找一次，离开时断掉
+  const admins = useAdminsLane(uid);
+  useFocusEffect(
+    useCallback(() => {
+      if (homeId !== null && friend) void openAdminsLane(homeId, uid);
+    }, [homeId, uid, friend]),
+  );
+  useEffect(() => () => closeAdminsLane(), []);
+  const adminsEvents = admins?.session?.events ?? EMPTY_LANE;
+  const collabCards = useMemo(() => collabCardsOf(adminsEvents, Date.now()), [adminsEvents]);
+  const adminsRows = useMemo(() => adminsLaneRows(adminsEvents), [adminsEvents]);
+  const [adminsOpen, setAdminsOpen] = useState(false);
+  const [deciding, setDeciding] = useState<string | null>(null);
+  const [decideError, setDecideError] = useState<string | null>(null);
+  const decide = async (requestId: string, decision: "accepted" | "declined"): Promise<void> => {
+    setDeciding(requestId);
+    setDecideError(null);
+    const r = await decideCollab(requestId, decision);
+    setDeciding(null);
+    if (!r.ok) setDecideError(r.message);
+  };
   useEffect(() => {
     if (homeId !== null && friend) void loadPairLane(homeId, uid);
   }, [homeId, uid, friend]);
@@ -411,14 +469,17 @@ export function FriendChatScreen({ route, navigation }: Props) {
     const rows = [
       ...(thread?.messages ?? []).map((m) => ({ kind: "dm" as const, ts: Date.parse(m.createdAt) || 0, m })),
       ...taskRows.map((t) => ({ kind: "task" as const, ts: t.task.ts, t })),
+      ...collabCards.map((card) => ({ kind: "collab" as const, ts: card.ts, card })),
     ].sort((a, b) => a.ts - b.ts || (a.kind === b.kind ? 0 : a.kind === "dm" ? -1 : 1));
     for (const r of rows) {
       const ts = r.ts;
-      const tkey = r.kind === "dm" ? `t${r.m.id}` : `t${r.t.peer ? "p" : ""}${r.t.task.key}`;
+      const tkey = r.kind === "dm" ? `t${r.m.id}` : r.kind === "collab" ? `tc${r.card.requestId}` : `t${r.t.peer ? "p" : ""}${r.t.task.key}`;
       if (needsTimeRow(prev, ts)) out.push({ kind: "time", key: tkey, label: timelineTimeLabel(ts, now) });
       prev = ts;
       if (r.kind === "dm") {
         out.push({ kind: "msg", key: `m${r.m.id}`, m: r.m });
+      } else if (r.kind === "collab") {
+        out.push({ kind: "collab", key: `c${r.card.requestId}`, card: r.card });
       } else if (laneTaskShape(r.t.task) === "chat") {
         // 聊天形状（#1620）：一行一个气泡；还在答的最后补一行「在想」
         const pk = r.t.peer ? "p" : "";
@@ -435,7 +496,7 @@ export function FriendChatScreen({ route, navigation }: Props) {
     // 还没发出去的排在最底下（最新），按排队先后
     for (const p of thread?.pending ?? []) out.push({ kind: "pending", key: p.localId, p });
     return out.reverse();
-  }, [thread?.messages, thread?.pending, taskRows]);
+  }, [thread?.messages, thread?.pending, taskRows, collabCards]);
 
   /** 这句话 @ 了哪条车道里的谁（#1523）：先看我带进来的，再看朋友公开给我的；都没有 = 发给朋友 */
   const laneTargetsOf = (text: string): { lane: "mine" | "peer"; ids: string[] } | null => {
@@ -587,6 +648,14 @@ export function FriendChatScreen({ route, navigation }: Props) {
               renderItem={({ item }) =>
                 item.kind === "time" ? (
                   <Text style={{ alignSelf: "center", fontSize: 11.5, color: c.faint, fontVariant: ["tabular-nums"] }}>{item.label}</Text>
+                ) : item.kind === "collab" ? (
+                  <CollabMirrorCard
+                    card={item.card}
+                    friendName={name}
+                    busy={deciding === item.card.requestId}
+                    error={deciding === null && decideError !== null ? decideError : null}
+                    onDecide={(d) => void decide(item.card.requestId, d)}
+                  />
                 ) : item.kind === "lane" ? (
                   <LaneBubble
                     item={item.item}
@@ -679,6 +748,18 @@ export function FriendChatScreen({ route, navigation }: Props) {
             </View>
           ) : null}
         </View>
+        {adminsRows.length > 0 ? (
+          // 管理员之间（#1605）：两家管理员的往来折在这一行里，点开看全文（只读——要说话对自己的管理员说）
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => setAdminsOpen(true)}
+            style={({ pressed }) => [{ flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 6, paddingHorizontal: 16, backgroundColor: withAlpha(c.foreground, 0.04) }, pressed && { opacity: 0.7 }]}
+          >
+            <Icon name="users-round" size={12} stroke={2} color={c.mutedForeground} />
+            <Text numberOfLines={1} style={{ flex: 1, fontSize: 12, color: c.mutedForeground }}>{`管理员之间 · ${adminsRows.length} 条`}</Text>
+            <Icon name="chevron-right" size={14} stroke={2} color={c.faint} />
+          </Pressable>
+        ) : null}
         {preparing ? (
           <Text style={{ fontSize: 13, color: c.mutedForeground, paddingHorizontal: 16, paddingBottom: 6 }}>正在准备图片和视频…</Text>
         ) : null}
@@ -840,6 +921,27 @@ export function FriendChatScreen({ route, navigation }: Props) {
           }}
         />
       ) : null}
+      <BottomSheet visible={adminsOpen} title={`管理员之间 · ${name}`} onClose={() => setAdminsOpen(false)}>
+        <ScrollView contentContainerStyle={{ paddingVertical: space.md, gap: 12 }}>
+          {adminsRows.map((r) =>
+            r.kind === "system" ? (
+              <Text key={r.key} style={{ fontSize: 12, color: c.faint, textAlign: "center", paddingHorizontal: 16 }}>{r.text}</Text>
+            ) : (
+              <LaneBubble
+                key={r.key}
+                item={{ key: r.key, ts: r.ts, who: "agent", text: r.text, agentId: ADMIN_AGENT_ID }}
+                name={r.kind === "peer" ? r.name : nameOfAgent(ADMIN_AGENT_ID)}
+                slot={r.kind === "peer" ? slotOfPeerAgent(ADMIN_AGENT_ID) : slotOfAgent(ADMIN_AGENT_ID)}
+                meName={me.name}
+                meAvatar={me.avatar}
+                friendName={name}
+                friendAvatar={row?.profile.avatarUrl ?? ""}
+                footer="两位主人都看得到"
+                peer={r.kind === "peer"}
+              />
+            ))}
+        </ScrollView>
+      </BottomSheet>
       <TaskDrawer
         visible={taskDrawerOpen}
         task={openTask?.task ?? null}

@@ -22,6 +22,7 @@ import { ADMIN_AGENT_ID } from "../shared/workspaceAgents.js";
 import { sanitizeForPrompt } from "../shared/threatPatterns.js";
 import type { ExecutorKind } from "../shared/taskSync.js";
 import { taskEventText } from "../shared/tasks.js";
+import { adminsLaneText, collabDecisionText, collabRequestText } from "../shared/collab.js";
 
 /** 用户正文 + 文本文件全文拼成模型可见文本。日志里二者分开存
     (content 纯正文,textFiles 结构化)——UI 按结构渲染文件卡片,
@@ -251,6 +252,12 @@ function cloudSessionText(cloud: CloudSessionFacts): string {
   // 名字是别人写的字，拼进结构前过 promptSafe（#957 B-C1）。判据只看 `chat.kind`，与 sessionService 的
   // `isOutreach`（也只看 kind，它决定「没有工具」）同一把：两处不一致 = 工具表是空的而提示词却在讲
   // 一个有 bash 的桌面 agent（#1206）。缺了 `cloud.outreach`（形状不全）时名字退回中性称呼
+  // 管理员车道（#1605）：对面是哪家、怎么回；审批那句同主场
+  if (cloud.chat?.kind === "admins") {
+    const w = cloud.admins?.ownerName ?? "主人";
+    const p = cloud.admins?.peerName ?? "朋友";
+    return adminsLaneText(w, p) + (cloud.home === true ? CLOUD_APPROVAL_HOME : CLOUD_APPROVAL_TEAM);
+  }
   if (cloud.chat?.kind === "outreach") {
     const w = cloud.outreach ? promptSafe(cloud.outreach.ownerName) : "主人";
     const p = cloud.outreach ? promptSafe(cloud.outreach.peerName) : "对方";
@@ -1238,6 +1245,14 @@ export function deriveMessages(
       // 应用卡（#1591）：打卡的那只自己的 tool_result 已经说了，别人不用读这张卡
       case "app_card":
         break;
+      // 协作请求 / 决定（#1605）：请求那一句给对面（B）的管理员读——它要知道是谁、为什么、要它做什么；决定那一句给
+      // 发起方（A）的管理员读。同 task_*：卡在工具调用与结果之间时先攒着
+      case "collab_request":
+      case "collab_decision": {
+        const line = event.type === "collab_request" ? collabRequestText(event) : collabDecisionText(event);
+        (pendingToolIds.size > 0 ? deferredUsers : messages).push({ role: "user", content: line });
+        break;
+      }
       // 任务（#1571）：一句系统话，管理员与被派的那只都读得到任务在哪一步。同 chat_message：卡在工具调用与结果之间时先攒着
       case "task_created":
       case "task_assigned":

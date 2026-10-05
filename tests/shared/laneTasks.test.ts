@@ -188,3 +188,17 @@ describe("隔了几分钟再 @ = 新的一条（#1626）", () => {
     expect(tasks[1]!.items.map((i) => i.text)).toEqual(["@雨姐", "在。说吧。"]);
   });
 });
+
+describe("协作在哪一步（#1605）", () => {
+  it("task_collab / collab_decision 归当前任务，当智能体那一侧的一行", () => {
+    reset();
+    const tasks = laneTasksOf([
+      ev({ type: "user_message", content: "带上 Stan 的管理员看营业额", fromUid: ME }),
+      ev({ type: "task_created", taskId: "t_1", byAgentId: "admin", title: "看营业额", ignorable: true }),
+      ev({ type: "task_collab", taskId: "t_1", byAgentId: "admin", withUid: "u_b", withName: "Stan", ignorable: true }),
+      ev({ type: "collab_decision", requestId: "r_1", decision: "accepted", byUid: "u_b", ignorable: true }),
+    ], ME, nameOf);
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]!.items.map((i) => i.text)).toEqual(["带上 Stan 的管理员看营业额", "已交给 Stan 的管理员，等 TA 点头", "对面主人接了，它的管理员在办"]);
+  });
+});
