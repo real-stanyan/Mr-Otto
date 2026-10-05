@@ -40,6 +40,24 @@ describe("chatRows", () => {
     expect(rows[1]).toMatchObject({ kind: "mine", text: "帮我看下排班", ts: DAY });
     expect(rows[2]).toMatchObject({ kind: "agent", agentId: "a_000000000001", name: "开发", paragraphs: ["国庆三个人两班倒。", "草表在 文件/排班.md"] });
   });
+  it("派活开场白（#1665）：我的那行带上拆好的 dispatch，正文照旧；普通话不带；别人发的不拆", () => {
+    seq = 0;
+    const opening = "[派活] 办一下\n\n（引用自「和继爸的私聊」的对话，最后一条是要办的那条）\n> Stan：是划算的\n> 继爸：跑下 0066。";
+    const rows = chatRows({
+      events: [
+        e({ type: "user_message", content: `[Stan]: ${opening}`, fromUid: "me", mentions: [] }),
+        e({ type: "user_message", content: "[Stan]: 随便说一句", fromUid: "me", mentions: [] }),
+        e({ type: "chat_message", content: opening, fromUid: "u2", label: "阿峰" }),
+      ],
+      ws: WS, selfUid: "me", now: DAY,
+    }).filter((r) => r.kind !== "time");
+    expect(rows[0]).toMatchObject({
+      kind: "mine", text: opening,
+      dispatch: { prompt: "办一下", source: "和继爸的私聊", before: [{ who: "Stan", text: "是划算的" }], target: { who: "继爸", text: "跑下 0066。" } },
+    });
+    expect(rows[1]).toEqual({ kind: "mine", key: "e1", ts: DAY, text: "随便说一句" });
+    expect(rows[2]).not.toHaveProperty("dispatch");
+  });
   it("藏起来的一律不画：中间步骤、接力 / 招呼开场白、内务事件、压缩", () => {
     seq = 0;
     const rows = chatRows({

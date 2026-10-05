@@ -62,3 +62,40 @@ export function dispatchOpening(o: { prompt: string; source: string; lines: read
   const where = o.source.trim() === "" ? "" : `「${o.source.trim()}」`;
   return `[派活] ${prompt}\n\n（引用自${where}的对话，最后一条是要办的那条）\n${quoted}`;
 }
+
+export interface DispatchCardView {
+  prompt: string;
+  /** 引用自哪段对话；开场白里没写出处时 null */
+  source: string | null;
+  /** 要办的那条前面那几句（旧在前） */
+  before: { who: string; text: string }[];
+  /** 要办的那条 */
+  target: { who: string; text: string };
+}
+
+const OPENING_HEAD = "[派活] ";
+const QUOTE_HEAD = /^（引用自(?:「(.*)」)?的对话，最后一条是要办的那条）$/;
+
+/**
+ * dispatchOpening 的反函数（#1665）：手机端把派活那条画成任务卡，靠的就是把正文拆回来——事件形状不改
+ * （ADR-0352 §3），历史里早发出去的派活也一样画成卡。形状有一处对不上就回 null，调用方照旧画普通气泡：
+ * 主人手打一句「[派活] …」不该被误画成卡。
+ */
+export function parseDispatchOpening(text: string): DispatchCardView | null {
+  if (!text.startsWith(OPENING_HEAD)) return null;
+  const gap = text.indexOf("\n\n");
+  if (gap < 0) return null;
+  const prompt = text.slice(OPENING_HEAD.length, gap).trim();
+  const [head, ...quoted] = text.slice(gap + 2).split("\n");
+  const m = QUOTE_HEAD.exec(head ?? "");
+  if (prompt === "" || m === null || quoted.length === 0) return null;
+  const lines: { who: string; text: string }[] = [];
+  for (const raw of quoted) {
+    if (!raw.startsWith("> ")) return null;
+    const cut = raw.indexOf("：");
+    if (cut < 0) return null;
+    lines.push({ who: raw.slice(2, cut), text: raw.slice(cut + 1) });
+  }
+  const target = lines.pop()!;
+  return { prompt, source: m[1] ?? null, before: lines, target };
+}
