@@ -14,7 +14,7 @@ function harness(tasks: TaskRow[], refuse: string | null = null) {
   const requests: Parameters<CollabToolDeps["request"]>[0][] = [];
   const redelivered: string[] = [];
   const tool = createCollabTool({
-    peer: () => ({ uid: "u_xh", name: "小红" }),
+    peer: async () => ({ uid: "u_xh", name: "小红" }),
     ownerName: () => "Stan",
     tasks: () => new Map(tasks.map((t) => [t.id, t])),
     ownerLineBefore: (taskId) => (taskId === "t1" ? "@我的管理员 问问小红周六来不来" : ""),
@@ -28,7 +28,7 @@ describe("invite_collaborator", () => {
   it("落 request（带主人原话、说明、到目前的结果）；回执说清要对面点头、别说成在办", async () => {
     const h = harness([row("t1", "open", { summary: null })]);
     const out = await h.tool.run({ taskId: "t1", note: "问问周六有没有空" }, world);
-    expect(h.requests).toEqual([{ task: expect.objectContaining({ id: "t1" }), note: "问问周六有没有空", ownerLine: "@我的管理员 问问小红周六来不来", result: "" }]);
+    expect(h.requests).toEqual([{ task: expect.objectContaining({ id: "t1" }), note: "问问周六有没有空", ownerLine: "@我的管理员 问问小红周六来不来", result: "", peer: { uid: "u_xh", name: "小红" } }]);
     expect(out).toContain("交给小红的管理员");
     expect(out).toContain("等 小红 点头");
     expect(out).toContain("别说成已经在办");

@@ -399,6 +399,8 @@ export async function createCity(o: { edgeBase: string; runtimeSecret: string; p
       // 文件（#1683）：同 daemon——做文件 / 读文件 / 发文件三把刀，人发来的文件收下转字
       documents: { fonts, toText },
       media: (refs) => intake.intake(h.ws, sessionId, refs),
+      // 好友名单（#1683：私聊里按名字找朋友的管理员）：模拟里人人互为好友
+      friendsOf: async (uid) => [...homes.values()].filter((x) => x.p.uid !== uid).map((x) => ({ uid: x.p.uid, name: x.p.name })),
       peerTier: async (peerUid) => h.p.tiers?.[byUid.get(peerUid)?.p.id ?? ""] ?? "agents",
       // 朋友私聊的信封（ADR-0346）：同 daemon，最新的在前
       pairMessages: async ({ ownerUid, peerUid }) =>

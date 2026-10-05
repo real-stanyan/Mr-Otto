@@ -32,6 +32,13 @@ describe("好友名字解析", () => {
   it("唯一命中", () => expect(o.resolveFriend(friends, " 小红 ")).toEqual({ kind: "one", uid: "1", name: "小红" }));
   it("没有：回名单（去重）", () => expect(o.resolveFriend(friends, "老王")).toEqual({ kind: "none", names: ["小红", "小明"] }));
   it("重名：只回个数", () => expect(o.resolveFriend(friends, "小明")).toEqual({ kind: "many", count: 2 }));
+  it("全名对不上：不分大小写、或名字里连着的几个词（#1683：「Mei Ling」→「Tan Mei Ling」）；两位都对得上算重名", () => {
+    const fs = [{ uid: "a", name: "Tan Mei Ling" }, { uid: "b", name: "Mei Chen" }, { uid: "c", name: "Arjun Mehta" }];
+    expect(o.resolveFriend(fs, "mei ling")).toEqual({ kind: "one", uid: "a", name: "Tan Mei Ling" });
+    expect(o.resolveFriend(fs, "ARJUN")).toEqual({ kind: "one", uid: "c", name: "Arjun Mehta" });
+    expect(o.resolveFriend(fs, "Mei")).toEqual({ kind: "many", count: 2 });
+    expect(o.resolveFriend(fs, "Ling Tan").kind).toBe("none");
+  });
 });
 
 describe("转写", () => {

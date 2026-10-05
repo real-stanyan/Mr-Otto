@@ -183,6 +183,7 @@ import {
   activeOutreach, applyOutreach, capTranscript, outreachAnsweredText, outreachCallerName, outreachFoldOf, outreachGreetingText, outreachRingReason, outreachTranscript, openingTraits,
   OUTREACH_CHAT_PER_HOUR_MAX, outreachLiveAt,
   type OutreachFold,
+  resolveFriend,
 } from "../../../src/shared/outreach.js";
 import { applyFriendPick, friendPickFailureText, friendPickFoldOf, friendPickStatus, recentPeerUids, type FriendPickFold } from "../../../src/shared/friendPick.js";
 import { CALL_USER_TOOL_NAME, callbackAnsweredText, callbackGreetingText, callerModelOf, ringChatKind, type RingPush, type RingState } from "../../../src/shared/callRing.js";
@@ -594,6 +595,8 @@ export interface CloudSessionOpts {
   friendMessage?: {
     send(o: { agentId: string; agentName: string; friend: string; text: string }): Promise<string>;
   } | null;
+  /** 主人的好友名单（只认 accepted）。私聊里 invite_collaborator 按名字找朋友的管理员用（#1683）。缺席 = 私聊里不挂那把刀 */
+  friendsOf?: ((ownerUid: string) => Promise<{ uid: string; name: string }[]>) | null;
   /** relay_to_owner（#1655）：外联里管理员替朋友带话给主人——找主人的管理员私聊、封顶都在 daemon 的 outreachHub.relayToOwner。
       可选（同 friendMessage 的理由）：缺席 / null = 刀不挂。只在外联会话里读 */
   outreachRelay?: {
@@ -2345,12 +2348,42 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 跨主场协作（#1578）：管理员把任务交给对方的管理员——落 task_collab + 走同一条桥
     // 第 1 期 b（#1605）：落点从对面的公开车道换成 collab_request——本地一份（任务的协作者状态从它折）+ 送到对面家的管理员车道
     const adminsBridge = opts.adminsBridge ?? null;
+    // 主人和自己管理员的私聊里（#1683 模拟：「去问问 Mei Ling 的助手团建晚餐超不超标」，管理员只能答「我不知道她的助手是谁」）：
+    // 同一把刀，多一格 friend，按好友名单现查（只认 accepted）；主人名字取他最近一句话的说话人前缀
+    const friendsOf = opts.friendsOf ?? null;
+    const dmCollab = chatKind === "dm" && opts.approveAll && spec.agentId === ADMIN_AGENT_ID && friendsOf !== null;
+    const ownerNameNow = (): string => {
+      if (pairFacts !== undefined) return pairFacts.ownerName;
+      const log = store.load(sessionId);
+      for (let i = log.length - 1; i >= 0; i--) {
+        const e = log[i]!;
+        if (e.type === "user_message" && e.fromUid === opts.ownerUid && e.relay === undefined && e.greeting === undefined) {
+          const who = splitSpeakerPrefix(e.content)?.label;
+          if (who !== undefined && who.trim() !== "") return who.trim();
+        }
+      }
+      return "主人";
+    };
     const collabTool =
-      adminsBridge === null || !isPair || pairFacts === undefined
+      adminsBridge === null || !((isPair && pairFacts !== undefined) || dmCollab)
         ? null
         : createCollabTool({
-            peer: () => ({ uid: pairFacts.peerUid, name: pairFacts.peerName }),
-            ownerName: () => pairFacts.ownerName,
+            needsFriend: !isPair,
+            peer: async (friend) => {
+              if (pairFacts !== undefined) return { uid: pairFacts.peerUid, name: pairFacts.peerName };
+              if (friend === undefined) return "friend 必填：要找哪位朋友的管理员";
+              let friends: { uid: string; name: string }[];
+              try {
+                friends = await friendsOf!(opts.ownerUid);
+              } catch {
+                return "这会儿查不到好友名单，稍后再试";
+              }
+              const m = resolveFriend(friends, friend);
+              if (m.kind === "many") return `好友里有 ${m.count} 位叫「${friend}」，问问主人是哪一位`;
+              if (m.kind === "none") return m.names.length === 0 ? "主人还没有好友，找不了别人的管理员" : `好友里没有叫「${friend}」的。好友有：${m.names.join("、")}——问问主人指的是哪一位`;
+              return { uid: m.uid, name: m.name };
+            },
+            ownerName: ownerNameNow,
             tasks: () => taskFold,
             ownerLineBefore: (taskId) => {
               const log = store.load(sessionId);
@@ -2364,26 +2397,26 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
               }
               return "";
             },
-            request: async ({ task, note, ownerLine, result }) => {
+            request: async ({ task, note, ownerLine, result, peer }) => {
               if (archived) return "这条会话已经收尾了";
               const requestId = `r_${randomUUID().slice(0, 8)}`;
               const draft: CollabRequestEvent = {
                 sessionId, seq: 0, ts: Date.now(), type: "collab_request", requestId, taskId: task.id, title: task.title,
                 fromUid: opts.ownerUid, fromAgentName: specNames.get(spec.agentId) ?? spec.name,
-                quote: { ownerName: pairFacts.ownerName, ownerLine, note }, result: result.slice(0, 500), expiresTs: Date.now() + COLLAB_EXPIRE_MS,
+                quote: { ownerName: ownerNameNow(), ownerLine, note }, result: result.slice(0, 500), expiresTs: Date.now() + COLLAB_EXPIRE_MS,
                 byAgentId: spec.agentId, ignorable: true,
               };
               // **先送达、再落本地**（真机 2026-10-05：对面建车道撞了约束，这边却已经落了请求，任务卡写着「等 TA 点头」）。
               // 送不到 = 这边一个字不落，回那句话
               const refused = await adminsBridge
-                .deliverRequest({ ownerUid: opts.ownerUid, peerUid: pairFacts.peerUid, event: draft, origin: { workspaceId: opts.workspaceId, sessionId } })
+                .deliverRequest({ ownerUid: opts.ownerUid, peerUid: peer.uid, event: draft, origin: { workspaceId: opts.workspaceId, sessionId } })
                 .catch((err: unknown) => {
                   console.warn(`[otto-runtime] 协作请求送不过去（session=${sessionId}）：${err instanceof Error ? err.message : String(err)}`);
                   return "对面那边这会儿接不住，稍后再试";
                 });
               if (refused !== null) return refused;
               // 先 task_collab 再 collab_request：重放时 foldTask 要先见到协作者那一格，请求才记得上 pending
-              notify(store.append({ sessionId, ts: Date.now(), type: "task_collab", taskId: task.id, withUid: pairFacts.peerUid, withName: pairFacts.peerName, byAgentId: spec.agentId, ignorable: true }));
+              notify(store.append({ sessionId, ts: Date.now(), type: "task_collab", taskId: task.id, withUid: peer.uid, withName: peer.name, byAgentId: spec.agentId, ignorable: true }));
               const { seq: _seq, ...rest } = draft;
               notify(store.append({ ...rest, ts: Date.now() }));
               const early = earlyCollabDecisions.get(requestId);
@@ -2397,8 +2430,11 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
             redeliver: async (requestId) => {
               const e = store.load(sessionId).find((x): x is CollabRequestEvent => x.type === "collab_request" && x.requestId === requestId);
               if (e === undefined) return "找不到那条请求";
+              // 私聊里（#1683）对面是谁记在任务的协作者那一格（task_collab 落的）
+              const peerUid = pairFacts?.peerUid ?? taskFold.get(e.taskId)?.collaborator?.uid;
+              if (peerUid === undefined) return "找不到这条请求是发给谁的";
               return adminsBridge
-                .deliverRequest({ ownerUid: opts.ownerUid, peerUid: pairFacts.peerUid, event: e, origin: { workspaceId: opts.workspaceId, sessionId } })
+                .deliverRequest({ ownerUid: opts.ownerUid, peerUid, event: e, origin: { workspaceId: opts.workspaceId, sessionId } })
                 .catch(() => "对面那边这会儿接不住，稍后再试");
             },
           });

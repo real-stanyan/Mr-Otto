@@ -967,14 +967,16 @@ async function main(): Promise<void> {
 
   // 管理员改 Otto 设置（#1621）：落库的那一半。好友名单同外联那条路（只认 accepted，名字现取）；名册走 agentsCache；
   // 车道朝向走 updateChat（查友谊、公开时补管理员、落 chat_roster_changed）——房没开就按原聊天那条路现开
+  /** 好友名单（只认 accepted，名字现取）：改设置那一半、私聊里 invite_collaborator 按名字找朋友（#1683）共用 */
+  const friendListOf = async (uid: string): Promise<{ uid: string; name: string }[]> => {
+    const res = await supabase.from("friendships").select("requester,addressee").eq("status", "accepted").or(`requester.eq.${uid},addressee.eq.${uid}`);
+    if (res.error) throw new Error(res.error.message);
+    const uids = [...friendSetOf(uid, (res.data ?? []) as unknown as FriendTierRow[])];
+    return Promise.all(uids.map(async (u) => ({ uid: u, name: await labelOf(u) })));
+  };
   const ownerSettings = createSupabaseOwnerSettings({
     client: supabase,
-    friendsOf: async (uid) => {
-      const res = await supabase.from("friendships").select("requester,addressee").eq("status", "accepted").or(`requester.eq.${uid},addressee.eq.${uid}`);
-      if (res.error) throw new Error(res.error.message);
-      const uids = [...friendSetOf(uid, (res.data ?? []) as unknown as FriendTierRow[])];
-      return Promise.all(uids.map(async (u) => ({ uid: u, name: await labelOf(u) })));
-    },
+    friendsOf: friendListOf,
     agentsOf: async (ws) => (await agentsCache.get(ws)).map((a) => ({ agentId: a.agentId, name: a.name })),
     invalidateAgents: (ws) => agentsCache.invalidate(ws),
     setLaneFacing: async (home, uid, friendUid, facing) => {
@@ -1455,6 +1457,8 @@ async function main(): Promise<void> {
       },
       // message_friend（#1549）：与 outreach 那把刀同一个开关（有 hub 且主场），出口是同一个 hub
       friendMessage: outreachHub === null || !approveAll ? null : { send: (o) => outreachHub.message({ ...o, workspaceId, ownerUid }) },
+      // 私聊里按名字找朋友的管理员协作（#1683）
+      friendsOf: approveAll ? friendListOf : null,
       // 带话（#1655）：与 friendMessage 同一个开关、同一个 hub；outreachRelay 只在外联会话里被读，friendReply 只在主场非外联里挂
       outreachRelay: outreachHub === null || !approveAll ? null : { toOwner: (o) => outreachHub.relayToOwner({ ...o, workspaceId, ownerUid }) },
       friendReply: outreachHub === null || !approveAll ? null : { send: (o) => outreachHub.replyToFriend({ ...o, workspaceId, ownerUid }) },

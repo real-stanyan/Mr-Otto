@@ -148,7 +148,9 @@ export function checkScenario(r: ScenarioResult, city: City, opts: { chineseOk?:
   for (const [where, lines] of byWhere) {
     const humans = lines.filter((l) => l.kind === "human");
     if (humans.length > 0 && humans.filter((l) => CJK.test(l.text)).length * 2 < humans.length) englishWhere.add(where);
-    for (const s of SCRIPTS) if (humans.length > 0 && humans.filter((l) => s.re.test(l.text)).length * 2 > humans.length) scriptOfWhere.set(where, s);
+    // 认人说哪种字时去掉 @ 名字：「@น้องฟ้า could you…」是英文，不是泰文（管理员叫泰文名字）
+    const bare = (t: string): string => t.replace(/@\S+/g, "");
+    for (const s of SCRIPTS) if (humans.length > 0 && humans.filter((l) => s.re.test(bare(l.text))).length * 2 > humans.length) scriptOfWhere.set(where, s);
   }
   for (const l of r.everywhere) {
     if (l.kind !== "agent") continue;
