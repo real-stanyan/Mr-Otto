@@ -1,6 +1,6 @@
 # Otto 应用的「房间」Implementation Plan
 
-> 实现中设计有变（触发器 + 私有 broadcast 的 room-sys / room 两个频道、单参数的 is_room_member / room_topic_readable / room_topic_writable），以 ADR-0374 与 spec 为准；本计划保留原样作历史记录。
+> 实现中设计有变（触发器 + 私有 broadcast 的 room-sys / room 两个频道、单参数的 is_room_member / room_topic_readable / room_topic_writable），以 ADR-0375 与 spec 为准；本计划保留原样作历史记录。
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -20,7 +20,7 @@
 - 写只走 RPC；表对 authenticated 只开 select（`app_room_pings` 连 select 都不开）。
 - 个人 `app_data` 不动；`room` 是新能力，清单不声明就拒（`bridgeDenied`）。
 - 智能体不进房间（第一版只人和人）。
-- migration 号 0067、ADR 号 0374 都是**合并时认领**：合并前 re-fetch，撞号改 max+1 并改全部引用（AGENTS.md / ADR-0074）。
+- migration 号 0067、ADR 号 0375 都是**合并时认领**：合并前 re-fetch，撞号改 max+1 并改全部引用（AGENTS.md / ADR-0074）。
 - 跑生产 migration 要维护者在会话里点头。
 - 门禁：`npm test`（tsc + mobile tsc + vitest）。测试放 `tests/` 镜像 `src/`。
 - 子 agent 派发词固定两句禁令（本仓记忆）：不许 `git stash`、不许改本任务 Files 以外的文件；全角 / 易混字符在派发词里用文字描述，不抄码点。
@@ -49,7 +49,7 @@
 | `services/runtime/src/roomPush.ts` | 新建 | 订 `app_room_pings` INSERT → 推其他成员 |
 | `services/runtime/src/daemon.ts` | 改 | 装配 roomPush |
 | `mobile/src/push/messagePush.ts` | 改 | 点开 room 推送进房间模式 |
-| `docs/adr/0374-…md`、`CONTEXT.md`、`docs/where-to-find-things.md` | 新建/改 | 决策、术语、代码地图 |
+| `docs/adr/0375-…md`、`CONTEXT.md`、`docs/where-to-find-things.md` | 新建/改 | 决策、术语、代码地图 |
 
 ---
 
@@ -1913,7 +1913,7 @@ git commit -m "feat(mobile): 点开房间叫人推送进那一局（#1675）"
 ### Task 10: ADR + 术语 + 代码地图
 
 **Files:**
-- Create: `docs/adr/0374-应用的房间建在Supabase上-写只走RPC-进局跑房主那一版-邀请卡复用应用卡信封不进位协议.md`
+- Create: `docs/adr/0375-应用的房间建在Supabase上-写只走RPC-进局跑房主那一版-邀请卡复用应用卡信封不进位协议.md`
 - Modify: `CONTEXT.md`（产品 / 技术术语段加「房间（应用）」）
 - Modify: `docs/where-to-find-things.md`（加一条）
 - Test: `tests/docs/adrNumbers.test.ts`（既有）
@@ -1921,7 +1921,7 @@ git commit -m "feat(mobile): 点开房间叫人推送进那一局（#1675）"
 - [ ] **Step 1: 写 ADR**
 
 ```markdown
-# ADR-0374 应用的房间建在 Supabase 上：写只走 RPC、进局跑房主那一版、邀请卡复用应用卡信封不进位协议
+# ADR-0375 应用的房间建在 Supabase 上：写只走 RPC、进局跑房主那一版、邀请卡复用应用卡信封不进位协议
 
 - 日期：2026-10-05 · Issue：#1675 · Spec：docs/superpowers/specs/2026-10-05-otto-app-rooms-design.md · Plan：docs/superpowers/plans/2026-10-05-otto-app-rooms.md
 
@@ -1943,25 +1943,25 @@ git commit -m "feat(mobile): 点开房间叫人推送进那一局（#1675）"
 - [ ] **Step 2: CONTEXT.md**（产品 / 技术段，按既有顺序插入一行；表格列数照该段表头）
 
 ```markdown
-| 房间（应用） | Otto 应用的一局 / 一本共享的账：房主开、邀好友进来；成员共读写的键值（app_room_data，写走 RPC、带 if_rev）+ 即时消息（私有 broadcast `room:<id>`）；一局钉住房主那一版 | ADR-0374 |
+| 房间（应用） | Otto 应用的一局 / 一本共享的账：房主开、邀好友进来；成员共读写的键值（app_room_data，写走 RPC、带 if_rev）+ 即时消息（私有 broadcast `room:<id>`）；一局钉住房主那一版 | ADR-0375 |
 ```
 
 - [ ] **Step 3: where-to-find-things.md**（Otto 应用那几条之后加一条）
 
 ```markdown
-- `supabase/migrations/0067_app_rooms.sql`（+ `supabase/checks/0067_app_rooms.{check,behavior}.sql`）/ `src/shared/appRoom.ts` / `appRoomApi.ts` / `appBridge.ts` 的 `otto.room` 与 `otto.on` / `mobile/src/apps/MiniAppScreen.tsx` 房间模式 / `AppShareBubble.tsx` 邀请卡 / `services/runtime/src/roomPush.ts` — **应用的房间**（ADR-0374，#1675）：好友一起玩 / 一起记。写只走七个 RPC；成员只读得到房主钉住的那一版；邀请卡是应用卡信封多一格 room（老手机当普通应用卡）；叫人推送订 app_room_pings。behavior.sql 是扮人跑一遍、结尾 raise 整笔回滚。
+- `supabase/migrations/0067_app_rooms.sql`（+ `supabase/checks/0067_app_rooms.{check,behavior}.sql`）/ `src/shared/appRoom.ts` / `appRoomApi.ts` / `appBridge.ts` 的 `otto.room` 与 `otto.on` / `mobile/src/apps/MiniAppScreen.tsx` 房间模式 / `AppShareBubble.tsx` 邀请卡 / `services/runtime/src/roomPush.ts` — **应用的房间**（ADR-0375，#1675）：好友一起玩 / 一起记。写只走七个 RPC；成员只读得到房主钉住的那一版；邀请卡是应用卡信封多一格 room（老手机当普通应用卡）；叫人推送订 app_room_pings。behavior.sql 是扮人跑一遍、结尾 raise 整笔回滚。
 ```
 
 - [ ] **Step 4: 跑 ADR 编号测试**
 
 Run: `npx vitest run tests/docs/adrNumbers.test.ts`
-Expected: PASS（撞号：re-fetch，改 max+1，文件头加「原为 ADR-0374」，全仓改引用——逐向核，别全局替换）
+Expected: PASS（撞号：re-fetch，改 max+1，文件头加「原为 ADR-0375」，全仓改引用——逐向核，别全局替换）
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add docs/adr/0374-*.md CONTEXT.md docs/where-to-find-things.md
-git commit -m "docs: ADR-0374 应用的房间 + 术语 + 代码地图（#1675）"
+git add docs/adr/0375-*.md CONTEXT.md docs/where-to-find-things.md
+git commit -m "docs: ADR-0375 应用的房间 + 术语 + 代码地图（#1675）"
 ```
 
 ---

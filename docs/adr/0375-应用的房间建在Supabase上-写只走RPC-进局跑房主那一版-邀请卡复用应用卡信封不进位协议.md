@@ -1,4 +1,6 @@
-# ADR-0374 应用的房间建在 Supabase 上：写只走 RPC、进局跑房主那一版、邀请卡复用应用卡信封不进位协议
+# ADR-0375 应用的房间建在 Supabase 上：写只走 RPC、进局跑房主那一版、邀请卡复用应用卡信封不进位协议
+
+原为 ADR-0374（合并前 #1676 先占了 0374，按 ADR-0074 改号；提交说明里写的 ADR-0374 指的就是这一条）。
 
 - 日期：2026-10-05 · Issue：#1675 · Spec：docs/superpowers/specs/2026-10-05-otto-app-rooms-design.md · Plan：docs/superpowers/plans/2026-10-05-otto-app-rooms.md
 

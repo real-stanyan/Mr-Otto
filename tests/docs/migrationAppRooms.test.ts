@@ -74,7 +74,7 @@ describe("0067 app rooms", () => {
     expect(remove.indexOf("for update")).toBeLessThan(remove.indexOf("closed"));
     expect(remove).toContain("update public.app_rooms set updated_at = now() where id = p_room;");
   });
-  it("注释不把 room: 的写说成逐条判关房：授权在加入频道时判一次（ADR-0374 §8）", () => {
+  it("注释不把 room: 的写说成逐条判关房：授权在加入频道时判一次（ADR-0375 §8）", () => {
     expect(sql).not.toContain("（没关房才能写）");
     expect(sql).not.toContain("（关房后不能再发）");
     expect((sql.match(/加入频道时判/g) ?? []).length).toBeGreaterThanOrEqual(2);

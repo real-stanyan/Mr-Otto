@@ -62,7 +62,7 @@ grant execute on function public.is_room_member(uuid) to authenticated;
 
 -- broadcast 两种频道：
 --   room:<uuid>      成员互发的即时消息（应用自己的 msg）——joined 成员读、写（「成员 + 没关房」在加入频道时判一次，不逐条判：
---                    已经 join 的人在关房 / 退房后仍能发，直到重新 join，见 ADR-0374 §8）；
+--                    已经 join 的人在关房 / 退房后仍能发，直到重新 join，见 ADR-0375 §8）；
 --   room-sys:<uuid>  触发器发的系统事件（change / members / closed）——成员只能读，客户端写不了，所以伪造不了。
 -- 名字不合形状回 false（不让 ::uuid 的转换报错把策略炸掉）。只问当前登录的人，不带 uid 参数。
 create or replace function public.room_topic_readable(p_topic text) returns boolean
@@ -284,7 +284,7 @@ create policy "otto_apps_select_room" on storage.objects for select to authentic
   )
 );
 
--- 即时消息：私有 broadcast——room:<id> joined 成员收发（「没关房」在加入频道时判一次，不逐条判，见 ADR-0374 §8）；room-sys:<id> 成员只收（系统事件只有触发器能发）
+-- 即时消息：私有 broadcast——room:<id> joined 成员收发（「没关房」在加入频道时判一次，不逐条判，见 ADR-0375 §8）；room-sys:<id> 成员只收（系统事件只有触发器能发）
 drop policy if exists "app_room_broadcast_select" on realtime.messages;
 create policy "app_room_broadcast_select" on realtime.messages for select to authenticated using (
   realtime.messages.extension = 'broadcast' and public.room_topic_readable(realtime.topic())
