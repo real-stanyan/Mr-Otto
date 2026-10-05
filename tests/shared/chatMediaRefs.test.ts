@@ -70,8 +70,8 @@ describe("videoNoteForModel", () => {
 });
 
 describe("say 帧的 media 一格（协议 24）", () => {
-  it("协议号 30（#1666 连接卡帧之后）", () => {
-    expect(CS_PROTOCOL_VERSION).toBe(30);
+  it("协议号 31（#1682 群座位帧之后）", () => {
+    expect(CS_PROTOCOL_VERSION).toBe(31);
   });
   it("带着往返；缺席不进帧", () => {
     const frame = encodeCs({ t: "say", text: "看这张", mention: false, media: [img()] });

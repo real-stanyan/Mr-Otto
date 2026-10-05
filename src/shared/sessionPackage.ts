@@ -170,6 +170,8 @@ export const PRIVACY_VERDICTS: Record<SessionEvent["type"], PrivacyVerdict> = {
   task_collab: "strip",
   collab_request: "strip", // 协作请求里有主人的原话（#1605）
   collab_decision: "strip",
+  seat_request: "strip", // 点头卡里有别人的原话（#1682）
+  seat_decision: "strip",
   app_card: "strip", // 应用是主人家里的东西（#1591） // 定时任务的标题是主人私事，不是这段对话（#1283）
   // 残留审计三兄弟（#780 M3）：说的全是发送方那台机器此刻在跑什么，见上面那段注释
   residue_baseline: "strip",

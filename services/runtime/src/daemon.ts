@@ -45,7 +45,9 @@ import { dmPreview } from "../../../src/shared/wechatInbox.js";
 import { DEFAULT_STUN, HUMAN_CALL_RING_MS, humanRingPush } from "../../../src/shared/humanCall.js";
 import { iceServersFor } from "./turnCredentials.js";
 import { createLaneBridge } from "./laneBridge.js";
+import { createSeatHub, type GroupRef } from "./seatHub.js";
 import { createHumansProblem, friendSetOf, friendshipFilter, planHumansChange } from "./chatHumans.js";
+import { CHAT_HUMANS_MAX, humanRosterChangeProblem } from "../../../src/shared/chatRoster.js";
 import { greetOnCreate } from "./newAgentGreeting.js";
 import { createSupabaseLegacyMemoryReader } from "./workspaceMemory.js";
 import { createSupabaseWikiJournal } from "./wikiJournal.js";
@@ -472,6 +474,66 @@ async function main(): Promise<void> {
     return sessionId;
   }
 
+  /** 这个人主场里管理员叫什么（#1682 群座位：座位名单里那一格）。查不到退回「管理员」 */
+  async function adminNameOf(uid: string): Promise<string> {
+    try {
+      const home = await homeWorkspaceOf(uid);
+      if (home === null) return "管理员";
+      return (await agentsCache.get(home)).find((a) => a.agentId === ADMIN_AGENT_ID)?.name ?? "管理员";
+    } catch {
+      return "管理员";
+    }
+  }
+  /** 座位名单里的一个人：名字 + 他管理员的名字（现取） */
+  async function seatPersonOf(uid: string): Promise<{ uid: string; name: string; agentName: string }> {
+    const [name, agentName] = await Promise.all([labelOf(uid), adminNameOf(uid)]);
+    return { uid, name, agentName };
+  }
+  /** 这个人在这个群里的座位（#1682），没有回 null。0068 的唯一索引是权威 */
+  async function findSeatSession(home: string, groupSessionId: string): Promise<string | null> {
+    const { data, error } = await supabase.from("workspace_sessions").select("id").eq("workspace_id", home).eq("chat_kind", "seat").eq("group_session_id", groupSessionId).maybeSingle();
+    if (error) throw new Error(`座位查询失败（${home}）：${error.message}`);
+    return data ? (data as { id: string }).id : null;
+  }
+  /** 开（或拿到）这个人在这个群里的座位（#1682，ADR-0376）：一行 + session_created（chat.kind seat）+ 名单（只有管理员），再开房 */
+  async function ensureSeatRoom(uid: string, group: GroupRef): Promise<CloudSession | string> {
+    const home = await homeWorkspaceOf(uid);
+    if (home === null) return "TA 还没有主场";
+    let sid = await findSeatSession(home, group.sessionId);
+    if (sid === null) {
+      const newId = randomUUID();
+      const [ownerName, groupRow] = await Promise.all([
+        labelOf(uid),
+        supabase.from("workspace_sessions").select("title").eq("id", group.sessionId).maybeSingle(),
+      ]);
+      const groupTitle = typeof (groupRow.data as { title?: unknown } | null)?.title === "string" ? (groupRow.data as { title: string }).title : "";
+      const { error } = await supabase.from("workspace_sessions").insert({
+        id: newId, workspace_id: home, publisher_uid: uid, kind: "cloud", title: `群座位 · ${groupTitle || "群聊"}`, pkg_id: null,
+        chat_kind: "seat", agent_ids: [ADMIN_AGENT_ID], group_session_id: group.sessionId,
+      });
+      if (error) {
+        if (error.code === "23505") sid = await findSeatSession(home, group.sessionId);
+        if (sid === null) {
+          console.warn(`[otto-runtime] 座位 insert 失败（home=${home} group=${group.sessionId}）：${error.message}（0068 跑了没有？）`);
+          return "TA 的管理员这会儿进不了群（服务这边还没升级好）";
+        }
+      } else {
+        sid = newId;
+        const store = storeFor(home);
+        store.append({
+          sessionId: sid, ts: Date.now(), type: "session_created", workspace: WORKDIR,
+          cloud: { workspaceId: home, chat: { kind: "seat" }, seat: { groupWorkspaceId: group.workspaceId, groupSessionId: group.sessionId, ownerName, groupTitle }, home: true },
+        });
+        const team = await agentsCache.get(home);
+        store.append({
+          sessionId: sid, ts: Date.now(), type: "chat_roster_changed", ignorable: true,
+          agents: [{ agentId: ADMIN_AGENT_ID, name: team.find((a) => a.agentId === ADMIN_AGENT_ID)?.name ?? "管理员" }],
+        });
+      }
+    }
+    return openSessionRoom(home, sid, uid, uid, true);
+  }
+
   /** 这只与那位朋友的外联会话（#1441 / #1655）：按 (主场, 那只, 朋友) 找；没有 null，查询失败抛 */
   async function findOutreachSession(w: string, a: string, peerUid: string): Promise<string | null> {
     const { data, error } = await supabase
@@ -710,6 +772,12 @@ async function main(): Promise<void> {
     return svc;
   }
 
+  /** 这间房所在主场的所有者（座位制的群里 = 存放日志的那位，不一定是群主）。装配时记下 */
+  const roomOwners = new WeakMap<CloudSession, string>();
+  function ownerOfRoom(session: CloudSession): string {
+    return roomOwners.get(session) ?? "";
+  }
+
   /** 把一条已经存在的会话房接上（外联的原会话 / 外联会话本身关着时用）：与启动补开同两步——
       问 workspaceFacts 拿所有者与 kind，再 openSessionRoom。归档的判断留给调用方 */
   async function openExistingRoom(workspaceId: string, sessionId: string, createdByUid: string): Promise<CloudSession> {
@@ -865,6 +933,17 @@ async function main(): Promise<void> {
       if (reply !== undefined) room.receiveCollabReply({ fromUid, ...reply });
     },
   };
+
+  // 群座位的桥（#1682，ADR-0376）：群 ↔ 各成员主场里的座位。群那间房关着就按原聊天那条路现开
+  const seatHub = createSeatHub({
+    group: (ref) =>
+      openOriginRoom<CloudSession>(
+        { active: (id) => activeSessions.get(id)?.session ?? null, row: sessionRowOf, open: (w, id, publisherUid) => openExistingRoom(w, id, publisherUid), discard: discardRoom },
+        ref.workspaceId, ref.sessionId,
+      ),
+    seat: (uid, ref) => ensureSeatRoom(uid, ref),
+    log: (m) => console.warn(`[otto-runtime] ${m}`),
+  });
 
   // 管理员改 Otto 设置（#1621）：落库的那一半。好友名单同外联那条路（只认 accepted，名字现取）；名册走 agentsCache；
   // 车道朝向走 updateChat（查友谊、公开时补管理员、落 chat_roster_changed）——房没开就按原聊天那条路现开
@@ -1277,6 +1356,8 @@ async function main(): Promise<void> {
       settings: ownerSettings,
       // 管理员车道的桥（#1605）
       adminsBridge,
+      // 群座位的桥（#1682）
+      seatHub,
       // 专员上报（#1659）：送进主人和管理员的私聊。routineRooms 在下面才建——这里只在专员调刀时才读，那时早建好了
       escalateToAdmin: async (e) => {
         const f = await workspaceFacts(e.workspaceId);
@@ -1372,7 +1453,24 @@ async function main(): Promise<void> {
     });
 
     activeSessions.set(sessionId, { session, workspaceId });
+    roomOwners.set(session, ownerUid);
     sessionBroadcast.set(sessionId, broadcast);
+    // 旧群迁移（#1682 拍板 H）：主场里有客人、还不是座位制的群 → 转成座位制（群主 + 客人各带自己的管理员）。
+    // 没有客人的「我和我的智能体」群不动。名字与管理员名字现取；失败只记一笔，下次开房再试
+    const chatNow = session.chat();
+    if (approveAll && chatNow !== null && chatNow.kind === "group" && chatNow.seats === undefined && chatNow.humans.length > 0 && !session.isArchived()) {
+      const people = [ownerUid, ...chatNow.humans.map((h) => h.uid)];
+      void Promise.all(people.map(seatPersonOf))
+        .then((rows) => {
+          if (session.upgradeToSeats?.(rows) === true) {
+            console.log(`[otto-runtime] 旧群升级成座位制（session=${sessionId}）：${rows.map((r) => r.name).join("、")}`);
+            void Promise.resolve(supabase.from("workspace_sessions").update({ agent_ids: [] }).eq("id", sessionId)).then(({ error }) => {
+              if (error) console.warn(`[otto-runtime] 旧群升级后写 agent_ids 失败（session=${sessionId}），等下次对账：${error.message}`);
+            });
+          }
+        })
+        .catch((err: unknown) => console.warn(`[otto-runtime] 旧群升级失败（session=${sessionId}），下次开房再试：${err instanceof Error ? err.message : String(err)}`));
+    }
     // 归档时要能把这个房间收掉（issue #822）——闭包里才拿得到 transport
     closeRoom.set(sessionId, () => {
       roomRosters.delete(transport);
@@ -1612,7 +1710,13 @@ async function main(): Promise<void> {
         // 代办入口（#1564，ADR-0363）：一开始就公开的车道里管理员必须在——朋友的请求先到它
         if (chat?.kind === "pair" && chat.facing === "both") chat = { ...chat, agentIds: delegationRoster(chat.agentIds) };
         // 建一条聊天（#1280）。`chat` 缺席 = 团队会话，下面一个字都不变
-        const plan = chat ? planChatCreate(chat, await agentsCache.refresh(workspaceId)) : null;
+        // 座位制（#1682，ADR-0376）：主场里拉了朋友的群——每个人带着自己的管理员，不拉智能体（帧里的 agentIds 不看）
+        const seated = chat?.kind === "group" && home && (chat.humans?.length ?? 0) > 0;
+        const plan = !chat
+          ? null
+          : seated && chat.kind === "group"
+            ? { ok: true as const, chatKind: "group" as const, title: chat.name, agentIds: [] as string[], entries: [] as { agentId: string; name: string }[] }
+            : planChatCreate(chat, await agentsCache.refresh(workspaceId));
         if (plan && !plan.ok) throw new ChatCreateError(plan.message);
         // 群里的客人（#1393）：只在主场的群聊里收，必须都是建群人的朋友。名字现取一份快照进日志
         const humanUids = chat?.kind === "group" ? chat.humans ?? [] : [];
@@ -1731,11 +1835,14 @@ async function main(): Promise<void> {
         });
         // 名单那一条紧跟着落，**都在 openSessionRoom 之前**（#1280）：chatKind 与名单
         // 都是装配时从 seed 折叠出来的，晚一步就是一条永远不收窄的聊天
+        // 座位：建群的人排第一（入群顺序 = 群主退群转给谁），名字与各自管理员的名字现取
+        const seatRows = seated ? await Promise.all([byUid, ...humans.map((h) => h.uid)].map(seatPersonOf)) : null;
         if (plan?.ok) {
           storeFor(workspaceId).append({
             sessionId,
             ts: Date.now(),
             type: "chat_roster_changed",
+            ...(seatRows !== null ? { seats: seatRows, groupOwnerUid: byUid } : {}),
             agents: plan.entries,
             // 主场的群聊总带这一格（#1393）：之后每一条名单事件都带齐两份，「缺席」只剩「没有别人」一个意思。
             // 车道（#1523）同理：朝向从这一格推导（有朋友 = 公开）
@@ -1781,12 +1888,64 @@ async function main(): Promise<void> {
         if (room === null) return { ok: false, message: "这条聊天不存在" };
         return room.decideCollab(requestId, byUid, decision);
       },
+      // 座位制的群（#1682，ADR-0376）：点头卡 / 我的座位策略 / 退群。判据在 CloudSession，这里只找房、写投影
+      async decideSeat(workspaceId, sessionId, byUid, requestId, decision) {
+        const active = activeSessions.get(sessionId);
+        if (!active || active.workspaceId !== workspaceId || active.session.decideSeat === undefined) return { ok: false, message: "这个群不存在" };
+        return active.session.decideSeat(requestId, byUid, decision);
+      },
+      async seatPolicy(workspaceId, sessionId, byUid, policy) {
+        const active = activeSessions.get(sessionId);
+        if (!active || active.workspaceId !== workspaceId || active.session.setSeatPolicy === undefined) return { ok: false, message: "这个群不存在" };
+        const r = active.session.setSeatPolicy(byUid, await labelOf(byUid), policy);
+        return r.ok ? { ok: true } : r;
+      },
+      async leaveGroup(workspaceId, sessionId, byUid) {
+        const active = activeSessions.get(sessionId);
+        if (!active || active.workspaceId !== workspaceId || active.session.leaveGroup === undefined) return { ok: false, message: "这个群不存在" };
+        const r = active.session.leaveGroup(byUid, await labelOf(byUid));
+        if (!r.ok) return r;
+        // 客人投影（RLS 靠它找得到这个群）：座位里除了工作区所有者之外的人。所有者退了群也不在里面——他靠 is_ws_member 读得到那一行，手机按座位名单不画
+        await syncGuestRows(sessionId, r.seats.filter((x) => x.uid !== ownerOfRoom(active.session)), byUid);
+        return { ok: true };
+      },
       /** 改一条聊天的名字 / 名单（#1280）。名单那一半的事实归日志（CloudSession 落事件），
           这里只写两列投影——写库失败不回滚也不报失败，启动对账时日志赢 */
       async updateChat(workspaceId, sessionId, byUid, patch) {
         const active = activeSessions.get(sessionId);
         if (!active || active.workspaceId !== workspaceId) return { ok: false, message: "这条聊天不存在" };
         const row: { agent_ids?: string[]; title?: string; facing?: "self" | "both" } = {};
+        // 座位制的群（#1682）：拉人 / 移人。`humans` = 除群主之外的完整名单（同 #1393 的口径，群主按日志里的那位算）。
+        // 群里的人都能拉自己的朋友；只有群主能移别人；自己走走 group_leave
+        const seatsNow = active.session.seats?.() ?? null;
+        if (seatsNow !== null && patch.humans !== undefined) {
+          if (patch.agentIds !== undefined && patch.agentIds.length > 0) return { ok: false, message: "这个群里每个人都带着自己的管理员，不用拉智能体" };
+          const gOwner = active.session.groupOwner?.() ?? (await workspaceFacts(workspaceId)).ownerUid;
+          const before = seatsNow.filter((x) => x.uid !== gOwner).map((x) => x.uid);
+          const added = patch.humans.filter((u) => !before.includes(u));
+          let friends: Set<string>;
+          try {
+            friends = await acceptedFriendsOf(byUid, added);
+          } catch (err) {
+            console.warn(`[otto-runtime] 改群名单时查好友失败（session=${sessionId}）：${String(err)}`);
+            return { ok: false, message: "这会儿查不到朋友名单，稍后再试" };
+          }
+          const problem = humanRosterChangeProblem({ actorUid: byUid, actorIsOwner: byUid === gOwner, before, after: patch.humans, ownerUid: gOwner, friendsOfActor: friends });
+          if (problem !== null) return { ok: false, message: problem };
+          if (patch.humans.length > CHAT_HUMANS_MAX) return { ok: false, message: `一个群最多 ${CHAT_HUMANS_MAX + 1} 个人` };
+          const known = new Map(seatsNow.map((x) => [x.uid, x] as const));
+          const people = await Promise.all([gOwner, ...patch.humans].map(async (uid) => known.get(uid) ?? (await seatPersonOf(uid))));
+          const out = await active.session.updateChatRoster(byUid, { seatPeople: people.map((x) => ({ uid: x.uid, name: x.name, agentName: x.agentName })) }, await labelOf(byUid));
+          if (out.kind !== "ok") return { ok: false, message: out.message };
+          if (out.changed) {
+            const host = ownerOfRoom(active.session);
+            await syncGuestRows(sessionId, (active.session.seats?.() ?? []).filter((x) => x.uid !== host), byUid);
+          }
+          // 人那一半办完了；同一帧里带的群名照下面那条路写
+          const { humans: _done, ...rest } = patch;
+          patch = rest;
+          if (patch.name === undefined) return { ok: true };
+        }
         // 客人那一半（#1393）：谁能改、拉进来的是不是朋友，在这里判（chatHumans.planHumansChange）
         let humansNext: { uid: string; name: string }[] | undefined;
         if (patch.humans !== undefined) {
@@ -2317,7 +2476,10 @@ async function main(): Promise<void> {
           }
         }
         // 客人名单对账（#1393）：同上，日志赢。只有主场的群会有客人；写失败只记一笔（syncGuestRows 自己兜）
-        if ((want?.kind === "group" || want?.kind === "pair") && facts.kind === "home") await syncGuestRows(row.id, want.humans, facts.ownerUid);
+        // 座位制的群（#1682）：客人 = 座位里除了存放日志的那位之外的所有人（群主转给了别人时，新群主也得读得到这一行）
+        if ((want?.kind === "group" || want?.kind === "pair") && facts.kind === "home") {
+          await syncGuestRows(row.id, want.seats !== undefined ? want.seats.filter((x) => x.uid !== facts.ownerUid) : want.humans, facts.ownerUid);
+        }
       } catch (err) {
         console.warn(
           `[otto-runtime] 恢复会话房失败（workspaceId=${row.workspace_id}, sessionId=${row.id}）：${err instanceof Error ? err.message : String(err)}`

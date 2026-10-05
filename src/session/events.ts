@@ -5,6 +5,7 @@ import type { ModelLane } from "../shared/modelLane.js";
 import type { MemoryTarget } from "../shared/memoryStore.js";
 import type { ResidueSnapshot, ResidueItem, CleanupResult } from "../shared/residue.js";
 import type { ModelErrorClass } from "../model/errorClass.js";
+import type { GroupSeat } from "../shared/groupSeats.js";
 
 /** 所有事件共享的信封 */
 export interface SessionEventBase {
@@ -68,6 +69,9 @@ export interface UserMessageEvent extends SessionEventBase {
       读它时用 `"agentId" in e` 这个 union 判据侧路，这里补上声明让它成为
       一等字段，不用再侧路） */
   agentId?: string;
+  /** 群座位（#1682，ADR-0376）：这句开场白对应群日志里的哪一句（座位据它知道镜像到哪儿了，那一句不再重复镜像）。
+      缺席 = 不是群里送来的（旧日志照常重放） */
+  mirror?: { seq: number };
   /** 云会话群聊（#928 / #932）：这句话是哪个成员说的。**只在 runtime 落的
       user_message 上出现**——本机会话没有"别人"，缺席 = 本机操作者/旧日志。
       有了它，渲染层判"这句是不是我说的"不用再拿 `[label]: ` 前缀跟自己的
@@ -114,7 +118,7 @@ export interface UserMessageEvent extends SessionEventBase {
       这条没有。桌面照旧藏。同样不进协议位
       friend_relay（#1655）：朋友在外联里让管理员带话，落在主人的管理员私聊里，受监督；owner_reply（#1655）：主人的回话落回外联，起一轮让管理员转告朋友。
       app_connected / app_declined（#1666）：连接卡的结局，算主人亲口（只有主人点得出来）。*/
-  greeting?: "voice_call" | "new_agent" | "callback" | "outreach" | "outreach_report" | "admin_intro" | "pair_call_summary" | "routine" | "dnd_report" | "collab_accept" | "escalation" | "friend_relay" | "owner_reply" | "app_connected" | "app_declined";
+  greeting?: "voice_call" | "new_agent" | "callback" | "outreach" | "outreach_report" | "admin_intro" | "pair_call_summary" | "routine" | "dnd_report" | "collab_accept" | "escalation" | "friend_relay" | "owner_reply" | "app_connected" | "app_declined" | "seat_grant";
   /** 这句话是**在语音通话里说出来的**（#1233）。缺席 = 打字打的 / 旧日志。
       **只是记号**：起 turn、排队、护栏、接力链首、派活全都不看它，模型投影
       （deriveMessages）读都不读——对模型来说这就是一条普通的用户消息，和从前
@@ -367,7 +371,10 @@ export interface RouteChangedEvent extends SessionEventBase {
 export interface CloudSessionFacts {
   workspaceId: string;
   /** 这是一条聊天（#1280）：私聊或群聊。缺席 = 团队会话（旧日志照常重放） */
-  chat?: { kind: "dm" | "group" | "outreach" | "pair" | "admins" };
+  chat?: { kind: "dm" | "group" | "outreach" | "pair" | "admins" | "seat" };
+  /** 这是一条群座位（#1682，ADR-0376）：成员 `ownerName` 在群 `groupSessionId`（建在 `groupWorkspaceId` 那个主场）里的座位，
+      他的管理员在这里干活。缺席 = 不是座位（旧日志照常重放）。群名是建座位那一刻的快照 */
+  seat?: { groupWorkspaceId: string; groupSessionId: string; ownerName: string; groupTitle: string };
   /** 这是一条私密车道（#1461 P1，ADR-0346）：主人带进与朋友私聊的智能体住的那条会话。提示词里「你在帮谁、
       旁边在和谁聊、对方看不看得到你」从它投影；缺席 = 不是私密车道（旧日志照常重放）。名字是建会话那一刻的快照 */
   pair?: { ownerName: string; peerUid: string; peerName: string; facing: "self" | "both" };
@@ -809,6 +816,35 @@ export interface CollabDecisionEvent extends SessionEventBase {
   ignorable: true;
 }
 
+/** 群座位的点头卡（#1682，ADR-0376）：别人在群里使唤某人的管理员、要动手时，它调 ask_owner 落这一条。座位那份是正本，
+    群里那份是镜像（同 requestId，界面画卡、群主点）。模型不可见（它自己的 tool_result 已经说了） */
+export interface SeatRequestEvent extends SessionEventBase {
+  type: "seat_request";
+  requestId: string;
+  /** 被使唤的那个座位（管理员的主人） */
+  seatUid: string;
+  ownerName: string;
+  agentName: string;
+  /** 使唤它的人（别家管理员来协作时 = 那家的主人） */
+  fromUid: string;
+  fromName: string;
+  /** 那人的原话 */
+  ask: string;
+  /** 管理员写的：要做什么、会动到什么 */
+  summary: string;
+  expiresTs: number;
+  ignorable: true;
+}
+/** 点头卡的结局（#1682）：主人接 / 不接、10 分钟没人点、或座位设了全部放行。座位落、镜像回群 */
+export interface SeatDecisionEvent extends SessionEventBase {
+  type: "seat_decision";
+  requestId: string;
+  seatUid: string;
+  decision: "accepted" | "declined" | "expired";
+  byUid: string | null;
+  ignorable: true;
+}
+
 /** 应用卡（#1591，spec §3.3）：应用专员 build_app 打出一版，聊天里一张卡「打开」。不带 agentId（同 task_*），谁打的写 byAgentId；
     模型不可见（它自己的 tool_result 已经说了）；手机画卡，桌面不画 */
 export interface AppCardEvent extends SessionEventBase {
@@ -908,6 +944,11 @@ export interface ChatRosterChangedEvent extends SessionEventBase {
   type: "chat_roster_changed";
   agents: { agentId: string; name: string }[];
   humans?: { uid: string; name: string }[];
+  /** 座位制的群（#1682，ADR-0376）：群里每个人（含群主）一个座位，带着他的管理员与「别人使唤我」的策略。
+      **在场 = 座位制**；缺席 = 旧群 / 私聊 / 团队会话（旧日志照常重放）。顺序 = 入群顺序 */
+  seats?: GroupSeat[];
+  /** 座位制的群主（#1682）：缺席 = 工作区所有者（建群的人）。群主退群转给最早入群的人时写这一格 */
+  groupOwnerUid?: string;
   byUid?: string;
   byName?: string;
   ignorable: true;
@@ -1339,6 +1380,11 @@ export interface ChatMessageEvent extends SessionEventBase {
       逐字相同；可选 = 旧日志照常重放 */
   attachments?: UserAttachmentRef[];
   videos?: ChatVideoRef[];
+  /** 座位里镜像进来的群聊行（#1682，ADR-0376）：群日志里的 seq。座位据它知道镜像到哪儿了；在场的这一句不收紧监督
+      （它是群里的背景，不是对这一轮的指令）。缺席 = 不是镜像（旧日志照常重放） */
+  mirror?: { seq: number };
+  /** 座位制的群里这句话 @ 了哪几个座位（#1682，`seat:<uid>`）：群里不起 turn，这一格只给界面高亮与送达记账。缺席 = 没 @ */
+  seatMentions?: string[];
   /** 这句话是在语音通话里说出来的（#1233）。语义与落点逐字同
       `UserMessageEvent.voice`，两个事件都要有是因为**一条语音发言落成哪一个
       取决于有没有人接**：`say()` 解出 targets 非空走 user_message，空则只落
@@ -1433,6 +1479,8 @@ export type SessionEvent =
   | TaskCollabEvent
   | CollabRequestEvent
   | CollabDecisionEvent
+  | SeatRequestEvent
+  | SeatDecisionEvent
   | AppCardEvent
   | OutreachEvent
   | FriendPickEvent
@@ -1513,6 +1561,8 @@ const KNOWN_EVENT_TYPES_MAP: Record<SessionEvent["type"], true> = {
   task_collab: true,
   collab_request: true,
   collab_decision: true,
+  seat_request: true,
+  seat_decision: true,
   app_card: true,
   outreach: true,
   friend_pick: true,

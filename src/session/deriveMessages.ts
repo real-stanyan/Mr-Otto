@@ -23,6 +23,7 @@ import { sanitizeForPrompt } from "../shared/threatPatterns.js";
 import type { ExecutorKind } from "../shared/taskSync.js";
 import { taskEventText } from "../shared/tasks.js";
 import { adminsLaneText, collabDecisionText, collabRequestText } from "../shared/collab.js";
+import { seatAudienceText } from "../shared/groupSeats.js";
 
 /** 用户正文 + 文本文件全文拼成模型可见文本。日志里二者分开存
     (content 纯正文,textFiles 结构化)——UI 按结构渲染文件卡片,
@@ -270,6 +271,11 @@ function cloudSessionText(cloud: CloudSessionFacts): string {
       `${w} 回的话会以系统消息回到这里，照意思转告 ${p}。\n` +
       `通话中你说的每句话会被读出来：口语、短句，别用列表和记号。打字时也一样说口语。\n`
     );
+  }
+  // 群座位（#1682，ADR-0376）：成员自己主场里、他的管理员在某个群里的座位。审批那句由座位那一段自己说（主人 @ 没有审批、
+  // 别人 @ 只能聊天要点头），不再拼主场那一版「这里没有审批」——那句话对客人轮是假话（#1206）
+  if (cloud.chat?.kind === "seat") {
+    return CLOUD_CONTAINER + seatAudienceText({ ownerName: cloud.seat?.ownerName ?? "主人", groupTitle: cloud.seat?.groupTitle ?? "" }) + CLOUD_GIT_HOME;
   }
   const home = cloud.home === true;
   // 私密车道（#1461 P1，ADR-0346）：只换「对面是谁」那一段——容器、审批（车道只住在主场里、只有主人说得上话，
@@ -1258,6 +1264,10 @@ export function deriveMessages(
         (pendingToolIds.size > 0 ? deferredUsers : messages).push({ role: "user", content: line });
         break;
       }
+      // 群座位的点头卡（#1682）：模型不读——ask_owner 的回执已经说了；主人点了头由 seat_grant 开场白叫醒它
+      case "seat_request":
+      case "seat_decision":
+        break;
       // 任务（#1571）：一句系统话，管理员与被派的那只都读得到任务在哪一步。同 chat_message：卡在工具调用与结果之间时先攒着
       case "task_created":
       case "task_assigned":

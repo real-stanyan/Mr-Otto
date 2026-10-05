@@ -11,6 +11,7 @@ import { parseIceServers, type IceServer } from "../humanCall.js";
 import { parseHealthQuery, parseHealthResult, type HealthQuery, type HealthResult } from "../health.js";
 import { b64decode, b64encode } from "./b64.js";
 import { MAX_FRAME_BYTES } from "./wire.js";
+import type { GroupSeat } from "../groupSeats.js";
 
 /** 30（#1666）：连接卡。CsUp 加 app_connect（主人在卡上点了「连上了 / 不用了」），CsDown 加 app_connect_result（带 connectId）。
     加帧照样进位（握手精确相等）：老 runtime 会把 app_connect 当未知帧丢掉，卡一直转圈。
@@ -153,8 +154,10 @@ import { MAX_FRAME_BYTES } from "./wire.js";
     hello 那一步就被明确拒绝，而不是收到一条它读不懂的 welcome 之后静默
     少一格状态。**加一个枚举值同理**：老客户端的 isValidCsDeniedCode 认不出
     `rate_limited`，decodeCsDown 回 null，那一帧被静默忽略，于是 create()
-    要白等满超时才回一句"云端无响应"——把"你被限速了"说成"对面没回话"。 */
-export const CS_PROTOCOL_VERSION = 30;
+    要白等满超时才回一句"云端无响应"——把"你被限速了"说成"对面没回话"。
+    31（#1682，ADR-0376）：群聊座位制——welcome 的 `chat` 多 `seats` / `groupOwnerUid`；上行多 `seat_decide`（主人点头卡）
+    、`seat_policy`（这个群里别人使唤我的管理员：每次问我 / 全部放行）与 `group_leave`（退群），共用一条 `seat_result` 回执。 */
+export const CS_PROTOCOL_VERSION = 31;
 export const CS_MAX_TEXT_BYTES = 64 * 1024;
 
 /** 一次回多少字节的文件内容（#1056）。中继单帧上限是 256 KiB（wire.ts 的
@@ -339,9 +342,13 @@ export type CsChatSpec =
     `humans`（协议 21）：群主之外的真人，名字是日志里的快照；私聊恒为空 */
 export interface CsChatInfo {
   /** `outreach`（#1441）：智能体替主人给朋友打电话开出来的外联会话；`pair`（#1461）：好友私聊旁的私密车道 */
-  kind: "dm" | "group" | "outreach" | "pair" | "admins";
+  kind: "dm" | "group" | "outreach" | "pair" | "admins" | "seat";
   agentIds: string[];
   humans: ChatHuman[];
+  /** 座位制的群才有（协议 31，#1682）：每个人一个座位（含群主），带他的管理员名字与「别人使唤我」的策略。缺席 = 不是座位制 */
+  seats?: GroupSeat[];
+  /** 座位制的群主（协议 31）：缺席 = 工作区所有者 */
+  groupOwnerUid?: string;
   /** 管理员车道才有（协议 29，#1605）：对面是哪位朋友 */
   admins?: { peerUid: string; peerName: string };
   /** 外联会话才有（协议 22，#1441）：主人叫什么、这通电话此刻还开着没有。形状不对当缺席 */
@@ -420,6 +427,12 @@ export type CsUp =
   | { t: "archive"; workspaceId: string; sessionId: string }
   /** 对面管理员的协作请求，主人接 / 不接（**控制房帧**，协议 29，#1605）：只有主人能点；sessionId 是自己家那条管理员车道 */
   | { t: "collab_decide"; workspaceId: string; sessionId: string; requestId: string; decision: "accepted" | "declined" }
+  /** 群里别人使唤我的管理员，我接 / 不接（**控制房帧**，协议 31，#1682）：sessionId 是那个群；只有那个座位的主人能点 */
+  | { t: "seat_decide"; workspaceId: string; sessionId: string; requestId: string; decision: "accepted" | "declined" }
+  /** 这个群里别人使唤我的管理员：每次问我 / 全部放行（**控制房帧**，协议 31）。只改发帧的人自己那个座位 */
+  | { t: "seat_policy"; workspaceId: string; sessionId: string; policy: "ask" | "open" }
+  /** 退出这个座位制的群（**控制房帧**，协议 31）：只退发帧的人自己；群主退群转给最早入群的人 */
+  | { t: "group_leave"; workspaceId: string; sessionId: string }
   /** 彻底删除一条云会话——**控制房帧**（协议 10，#1044）：形状与 `archive` 相同，
       判据也相同（owner 或建这条会话的人，服务端自己判一次）。归档的会话同样能删，
       而且那才是最常删的一批——所以这条帧不要求会话此刻还开着房间。
@@ -513,6 +526,8 @@ export type CsDown =
   | { t: "chat_update_result"; workspaceId: string; sessionId: string; ok: boolean; message?: string }
   /** collab_decide 的回执（协议 29，#1605） */
   | { t: "collab_decide_result"; workspaceId: string; sessionId: string; requestId: string; ok: boolean; message?: string }
+  /** seat_decide / seat_policy 的回执（协议 31，#1682）。点头卡与名单的变化另以事件广播，这条只答「收没收下」 */
+  | { t: "seat_result"; workspaceId: string; sessionId: string; op: "decide" | "policy" | "leave"; requestId?: string; ok: boolean; message?: string }
   /** delete 的回执（协议 10，#1044）。删除没有任何广播可当回执——房间收掉了，
       日志也没了，房里的人拿到的是 `session_archived`（删除先走一遍归档那条路，
       让还在看的人知道发生了什么）。`ok=false` 的 message 分得清三种：这条会话
@@ -642,7 +657,7 @@ function normalizeChatInfo(v: unknown): CsChatInfo | null | undefined {
   if (v === null || typeof v !== "object") return null;
   const o = v as Record<string, unknown>;
   // admins（协议 29，#1605）：类型里加了、这里漏了——welcome 整帧被丢，「管理员之间」一直转圈（#1680）
-  if (o.kind !== "dm" && o.kind !== "group" && o.kind !== "outreach" && o.kind !== "pair" && o.kind !== "admins") return null;
+  if (o.kind !== "dm" && o.kind !== "group" && o.kind !== "outreach" && o.kind !== "pair" && o.kind !== "admins" && o.kind !== "seat") return null;
   // 这里不用 normalizeChatAgentIds：下行名单可以是空的（群里的智能体全被删了）
   if (!Array.isArray(o.agentIds) || !o.agentIds.every((x) => typeof x === "string")) return null;
   // humans 缺席按空（下行容错：协议号相等时它总在，缺了只可能是一个不该发生的实现漏写——
@@ -678,10 +693,25 @@ function normalizeChatInfo(v: unknown): CsChatInfo | null | undefined {
     ab !== null && typeof ab === "object" && typeof ab.peerUid === "string" && USER_UID_RE.test(ab.peerUid) && typeof ab.peerName === "string"
       ? { peerUid: ab.peerUid, peerName: ab.peerName }
       : undefined;
+  // seats（协议 31）：座位制的关键字段——在场而形状不对就拒（少了它群里的智能体名单整个画不出来，比读不出来更糟）
+  let seats: GroupSeat[] | undefined;
+  if (o.seats !== undefined) {
+    if (!Array.isArray(o.seats)) return null;
+    seats = [];
+    for (const x of o.seats) {
+      if (x === null || typeof x !== "object") return null;
+      const r = x as Record<string, unknown>;
+      if (typeof r.uid !== "string" || !USER_UID_RE.test(r.uid) || typeof r.name !== "string" || typeof r.agentName !== "string") return null;
+      seats.push({ uid: r.uid, name: r.name, agentName: r.agentName, ...(r.policy === "open" ? { policy: "open" as const } : {}) });
+    }
+  }
+  const groupOwnerUid = typeof o.groupOwnerUid === "string" && USER_UID_RE.test(o.groupOwnerUid) ? o.groupOwnerUid : undefined;
   return {
     kind: o.kind,
     agentIds: o.agentIds as string[],
     humans,
+    ...(seats !== undefined ? { seats } : {}),
+    ...(groupOwnerUid !== undefined ? { groupOwnerUid } : {}),
     ...(outreach !== undefined ? { outreach } : {}),
     ...(pair !== undefined ? { pair } : {}),
     ...(admins !== undefined ? { admins } : {}),
@@ -984,6 +1014,23 @@ export function decodeCsUp(b64: string): CsUp | null {
       return { t: "collab_decide", workspaceId: obj.workspaceId, sessionId: obj.sessionId, requestId: obj.requestId, decision: obj.decision };
     }
 
+    if (t === "seat_decide") {
+      if (typeof obj.workspaceId !== "string" || typeof obj.sessionId !== "string" || typeof obj.requestId !== "string") return null;
+      if (obj.decision !== "accepted" && obj.decision !== "declined") return null;
+      return { t: "seat_decide", workspaceId: obj.workspaceId, sessionId: obj.sessionId, requestId: obj.requestId, decision: obj.decision };
+    }
+
+    if (t === "group_leave") {
+      if (typeof obj.workspaceId !== "string" || typeof obj.sessionId !== "string") return null;
+      return { t: "group_leave", workspaceId: obj.workspaceId, sessionId: obj.sessionId };
+    }
+
+    if (t === "seat_policy") {
+      if (typeof obj.workspaceId !== "string" || typeof obj.sessionId !== "string") return null;
+      if (obj.policy !== "ask" && obj.policy !== "open") return null;
+      return { t: "seat_policy", workspaceId: obj.workspaceId, sessionId: obj.sessionId, policy: obj.policy };
+    }
+
     if (t === "chat_update") {
       if (typeof obj.workspaceId !== "string" || typeof obj.sessionId !== "string") return null;
       // 两格都没带的话这条帧没有意义——不是「什么都不改」，是发帧的人漏了东西
@@ -1106,6 +1153,19 @@ export function decodeCsDown(b64: string): CsDown | null {
         (obj.message === undefined || typeof obj.message === "string")
       ) {
         const result: CsDown = { t: "archive_result", workspaceId: obj.workspaceId, sessionId: obj.sessionId, ok: obj.ok };
+        if (typeof obj.message === "string") result.message = obj.message;
+        return result;
+      }
+      return null;
+    }
+
+    if (t === "seat_result") {
+      if (
+        typeof obj.workspaceId === "string" && typeof obj.sessionId === "string" && (obj.op === "decide" || obj.op === "policy" || obj.op === "leave") &&
+        typeof obj.ok === "boolean" && (obj.requestId === undefined || typeof obj.requestId === "string") && (obj.message === undefined || typeof obj.message === "string")
+      ) {
+        const result: Extract<CsDown, { t: "seat_result" }> = { t: "seat_result", workspaceId: obj.workspaceId, sessionId: obj.sessionId, op: obj.op, ok: obj.ok };
+        if (typeof obj.requestId === "string") result.requestId = obj.requestId;
         if (typeof obj.message === "string") result.message = obj.message;
         return result;
       }
