@@ -35,6 +35,7 @@ import { agentNameOf } from "../../../src/shared/workspaceView.js";
 import { chatSessionOf, closeChatIf, openChat, sendText, useChatStore } from "../cloud/chatStore.js";
 import { PickAgentsDialog } from "../group/PickAgentsDialog.js";
 import { decodeAppCard } from "../../../src/shared/appCard.js";
+import { decodeRoomInvite } from "../../../src/shared/appRoom.js";
 import { AppShareBubble } from "../apps/AppShareBubble.js";
 import { AppPickSheet } from "../apps/AppPickSheet.js";
 import { bringAgents, loadPairLane, loadPairPresence, usePairPresence } from "./pairLane.js";
@@ -159,10 +160,12 @@ function Bubble({ m, mine, name, meTile, friendTile, onLongPress, onOpenChat }: 
   const card = decodeContactCard(m.body);
   // 应用分享（#1648）
   const appCard = card === null ? decodeAppCard(m.body) : null;
+  // 房间邀请（#1675）：应用卡信封多一格 room
+  const invite = appCard !== null ? decodeRoomInvite(m.body) : null;
   const body = card !== null ? (
     <ContactCardBubble card={card} mine={mine} fromName={name} onOpenChat={onOpenChat} />
   ) : appCard !== null ? (
-    <AppShareBubble card={appCard} mine={mine} messageId={m.id} />
+    <AppShareBubble card={appCard} mine={mine} messageId={m.id} room={invite?.room ?? null} />
   ) : env !== null ? (
     (() => {
       const v = shareCardView(env, { mine, fromName: name });

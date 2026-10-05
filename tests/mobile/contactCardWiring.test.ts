@@ -10,7 +10,7 @@ const read = (p: string): string => readFileSync(new URL(`../../${p}`, import.me
 describe("FriendChatScreen", () => {
   const src = read("mobile/src/friends/FriendChatScreen.tsx");
   it("气泡：先认名片，再认应用分享（#1648），再认分享信封", () => {
-    expect(src).toMatch(/const card = decodeContactCard\(m\.body\);[\s\S]{0,120}const appCard = card === null \? decodeAppCard\(m\.body\) : null;\s+const body = card !== null \? \(\s+<ContactCardBubble card=\{card\} mine=\{mine\} fromName=\{name\} onOpenChat=\{onOpenChat\} \/>\s+\) : appCard !== null \? \(\s+<AppShareBubble[^>]*\/>\s+\) : env !== null \? \(/);
+    expect(src).toMatch(/const card = decodeContactCard\(m\.body\);[\s\S]{0,120}const appCard = card === null \? decodeAppCard\(m\.body\) : null;\s+(?:\/\/[^\n]*\n\s+)?const invite = appCard !== null \? decodeRoomInvite\(m\.body\) : null;\s+const body = card !== null \? \(\s+<ContactCardBubble card=\{card\} mine=\{mine\} fromName=\{name\} onOpenChat=\{onOpenChat\} \/>\s+\) : appCard !== null \? \(\s+<AppShareBubble[^>]*\/>\s+\) : env !== null \? \(/);
   });
   it("＋ 里「名片」；挑我的智能体 + 别的朋友（不含当前这位）", () => {
     expect(src).toMatch(/\{ key: "card", icon: "user-round", label: "名片"/);

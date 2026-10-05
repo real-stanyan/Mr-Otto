@@ -43,7 +43,7 @@ describe("分享应用给好友（#1648）", () => {
     expect(mini).toMatch(/<HeaderTextButton label="分享"/);
     expect(mini).toMatch(/for \(const p of people\) await sendToFriend\(p, body\);/);
     const chat = read("mobile/src/friends/FriendChatScreen.tsx");
-    expect(chat).toMatch(/<AppShareBubble card=\{appCard\} mine=\{mine\} messageId=\{m\.id\} \/>/);
+    expect(chat).toMatch(/<AppShareBubble card=\{appCard\} mine=\{mine\} messageId=\{m\.id\} room=\{invite\?\.room \?\? null\} \/>/);
     expect(read("mobile/src/apps/AppShareBubble.tsx")).toMatch(/cloudClient\.appAccept\(messageId\)/);
   });
 
@@ -130,5 +130,18 @@ describe("房间模式（#1675）", () => {
   it("房间模式下分享 / 让管理员修：分享卡用我自己那份的 currentVersion；修的那句标明是房主那一版", () => {
     expect(src).toMatch(/version: loaded\.app\.currentVersion/);
     expect(src).toMatch(/`\$\{loaded\.app\.name\}（房主那一版）`/);
+  });
+});
+
+describe("邀请卡（#1675）", () => {
+  it("私聊页把 room 一格传给应用卡气泡", () => {
+    const chat = read("mobile/src/friends/FriendChatScreen.tsx");
+    expect(chat).toMatch(/const invite = appCard !== null \? decodeRoomInvite\(m\.body\) : null;/);
+    expect(chat).toMatch(/<AppShareBubble card=\{appCard\} mine=\{mine\} messageId=\{m\.id\} room=\{invite\?\.room \?\? null\} \/>/);
+  });
+  it("加入：没有就先 appAccept 复制，再 joinRoom，进房间模式", () => {
+    const b = read("mobile/src/apps/AppShareBubble.tsx");
+    expect(b).toMatch(/await joinRoom\(supabase, room\.id\);/);
+    expect(b).toMatch(/navigation\.navigate\("MiniApp", \{ appId: myAppId, roomId: room\.id \}\)/);
   });
 });
