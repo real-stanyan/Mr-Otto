@@ -1,12 +1,11 @@
-// invite_collaborator —— A 的管理员把一个任务交给 B 的管理员协作（#1578，ADR-0368）。
+// invite_collaborator —— A 的管理员把一个任务交给 B 的管理员协作（#1578 → #1605 第 1 期 b）。
 //
-// 只挂在公开车道里的管理员身上（sessionService 按 L0 + pair + facing both 挂）。做两件事：落一条 task_collab（任务还归这边，
-// 对方是协作者；任务卡上写「协作：小红的管理员」），再走车道桥把邀请那句话发到对面——桥的目标固定是对方的管理员（laneBridge ④）。
-// 桥本身的四道闸（深度 / 每小时封顶 / 对面车道与客人名单 / 点谁）原样，这里不复制。
-// 只依赖注入的回调（硬规则「工具只依赖接口」）：不知道 store、不知道 Supabase。
+// 第 1 期 b 换了落点：不再往 B 公开给 A 的车道里丢一句话（那一轮是客人轮，B 的管理员每把刀都要 B 批、又没有审批卡），
+// 而是落一条 collab_request（镜像卡的事实：主人原话 + 说明 + 到目前的结果 + 24h）——A 这条会话一份（任务的协作者状态
+// 从它折），B 家的管理员车道一份（B 看卡、点头之后 B 的管理员才动）。只依赖注入的回调（硬规则「工具只依赖接口」）。
 import type { Tool } from "../../../src/tools/tool.js";
 import type { ExecutionWorld } from "../../../src/world/executionWorld.js";
-import { COLLAB_NOTE_MAX, INVITE_COLLABORATOR_TOOL_NAME, collabInviteText } from "../../../src/shared/collab.js";
+import { COLLAB_NOTE_MAX, INVITE_COLLABORATOR_TOOL_NAME } from "../../../src/shared/collab.js";
 import type { TaskRow } from "../../../src/shared/tasks.js";
 
 export interface CollabToolDeps {
@@ -14,10 +13,10 @@ export interface CollabToolDeps {
   peer: () => { uid: string; name: string };
   ownerName: () => string;
   tasks: () => ReadonlyMap<string, TaskRow>;
-  /** 落 task_collab */
-  record: (taskId: string, withUid: string, withName: string) => void;
-  /** 车道桥：发到对面（回的是桥那句人话，发没发成都在里面） */
-  send: (text: string) => Promise<string>;
+  /** 这条任务点起之前主人最近的那句原话（去掉 `[名字]: ` 前缀）；取不到回空串 */
+  ownerLineBefore: (taskId: string) => string;
+  /** 落 collab_request（本地一份 + 送到对面）；回拒绝的那句话或 null */
+  request: (o: { task: TaskRow; note: string; ownerLine: string; result: string }) => Promise<string | null>;
 }
 
 export function createCollabTool(deps: CollabToolDeps): Tool {
@@ -26,7 +25,8 @@ export function createCollabTool(deps: CollabToolDeps): Tool {
       name: INVITE_COLLABORATOR_TOOL_NAME,
       description:
         "把一个任务交给对方的管理员协作（需要对方那边的信息或动作时）。任务还归你牵头，对方是协作者，可以拒。" +
-        "先 create_task 再调；note 里写清要对方配合什么。不要直接找对方的别的智能体。",
+        "先 create_task 再调；note 里写清要对方配合什么。对方主人要先点头它的管理员才会动，不在线就得等（24 小时没回算失败）；" +
+        "它的回复会落在这条对话里。不要直接找对方的别的智能体。",
       parameters: {
         type: "object",
         properties: {
@@ -47,11 +47,13 @@ export function createCollabTool(deps: CollabToolDeps): Tool {
       const note = typeof a.note === "string" ? a.note.replace(/\s+/g, " ").trim() : "";
       if (note.length > COLLAB_NOTE_MAX) throw new Error(`note 最多 ${COLLAB_NOTE_MAX} 字`);
       const peer = deps.peer();
-      if (task.collaborator?.uid === peer.uid) return `「${task.title}」已经邀过${peer.name}的管理员了，等它回话就行。`;
-      const sent = await deps.send(collabInviteText(task, deps.ownerName(), note));
-      deps.record(task.id, peer.uid, peer.name);
-      // 对面那一轮是客人点起的，要对面主人批（ADR-0358）：主人不在线就停在那儿——回执说清，别让这边的管理员把「发到了」说成「在办了」
-      return `已邀请${peer.name}的管理员协作「${task.title}」。${sent} 注意：那边要 ${peer.name} 本人看到并点头，它的管理员才会动；${peer.name} 不在线就得等。告诉主人「已交给 ${peer.name} 的管理员，等那边回」，别说成已经在办。`;
+      const st = task.collaborator?.uid === peer.uid ? task.collaborator.state : undefined;
+      if (st === "pending") return `「${task.title}」已经交给${peer.name}的管理员了，等 ${peer.name} 点头，别重复发。`;
+      if (st === "accepted") return `${peer.name}的管理员已经在办「${task.title}」了，等它回话就行。`;
+      const refused = await deps.request({ task, note, ownerLine: deps.ownerLineBefore(task.id), result: task.summary ?? "" });
+      if (refused !== null) throw new Error(refused);
+      return `已把「${task.title}」交给${peer.name}的管理员，等 ${peer.name} 点头（24 小时没回算失败）；它答了会落在这条对话里。` +
+        `告诉主人「已交给 ${peer.name} 的管理员，等那边回」，别说成已经在办。`;
     },
   };
 }

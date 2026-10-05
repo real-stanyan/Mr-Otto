@@ -333,9 +333,11 @@ export type CsChatSpec =
     `humans`（协议 21）：群主之外的真人，名字是日志里的快照；私聊恒为空 */
 export interface CsChatInfo {
   /** `outreach`（#1441）：智能体替主人给朋友打电话开出来的外联会话；`pair`（#1461）：好友私聊旁的私密车道 */
-  kind: "dm" | "group" | "outreach" | "pair";
+  kind: "dm" | "group" | "outreach" | "pair" | "admins";
   agentIds: string[];
   humans: ChatHuman[];
+  /** 管理员车道才有（协议 29，#1605）：对面是哪位朋友 */
+  admins?: { peerUid: string; peerName: string };
   /** 外联会话才有（协议 22，#1441）：主人叫什么、这通电话此刻还开着没有。形状不对当缺席 */
   outreach?: { ownerName: string; active: boolean };
   /** 私密车道才有（协议 23，#1461）：配对的是哪位朋友、朝向。形状不对当缺席 */
@@ -404,6 +406,8 @@ export type CsUp =
       不依赖「正开着这条会话」。谁能归档由服务端判（owner 或建这条会话的人，
       issue #822 的判据原样）*/
   | { t: "archive"; workspaceId: string; sessionId: string }
+  /** 对面管理员的协作请求，主人接 / 不接（**控制房帧**，协议 29，#1605）：只有主人能点；sessionId 是自己家那条管理员车道 */
+  | { t: "collab_decide"; workspaceId: string; sessionId: string; requestId: string; decision: "accepted" | "declined" }
   /** 彻底删除一条云会话——**控制房帧**（协议 10，#1044）：形状与 `archive` 相同，
       判据也相同（owner 或建这条会话的人，服务端自己判一次）。归档的会话同样能删，
       而且那才是最常删的一批——所以这条帧不要求会话此刻还开着房间。
@@ -488,6 +492,8 @@ export type CsDown =
   /** chat_update 的回执（协议 20，#1280）。名单真变了的话房里还会收到一条
       `chat_roster_changed` 事件——那条是事实，这条只答「收没收下」 */
   | { t: "chat_update_result"; workspaceId: string; sessionId: string; ok: boolean; message?: string }
+  /** collab_decide 的回执（协议 29，#1605） */
+  | { t: "collab_decide_result"; workspaceId: string; sessionId: string; requestId: string; ok: boolean; message?: string }
   /** delete 的回执（协议 10，#1044）。删除没有任何广播可当回执——房间收掉了，
       日志也没了，房里的人拿到的是 `session_archived`（删除先走一遍归档那条路，
       让还在看的人知道发生了什么）。`ok=false` 的 message 分得清三种：这条会话
@@ -921,6 +927,12 @@ export function decodeCsUp(b64: string): CsUp | null {
         return { t: "delete", workspaceId: obj.workspaceId, sessionId: obj.sessionId };
       }
       return null;
+    }
+
+    if (t === "collab_decide") {
+      if (typeof obj.workspaceId !== "string" || typeof obj.sessionId !== "string" || typeof obj.requestId !== "string") return null;
+      if (obj.decision !== "accepted" && obj.decision !== "declined") return null;
+      return { t: "collab_decide", workspaceId: obj.workspaceId, sessionId: obj.sessionId, requestId: obj.requestId, decision: obj.decision };
     }
 
     if (t === "chat_update") {

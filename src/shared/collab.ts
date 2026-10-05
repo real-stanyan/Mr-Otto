@@ -61,3 +61,25 @@ export function collabInviteText(t: Pick<TaskRow, "id" | "title" | "brief">, own
   const extra = note === "" ? "" : ` ${promptSafe(note)}`;
   return `[协作邀请 ${t.id}] ${w} 这边在办「${promptSafe(t.title)}」${brief}。${w} 的管理员牵头，需要你这边配合一下——能答的答、要动手的回你主人批、不方便就直说。${extra}`.trim();
 }
+
+/** 主人点了「接」之后替主人落的开场白（#1605）：它读到的就是对面要它配合什么 */
+export function collabAcceptText(e: Pick<CollabRequestEvent, "requestId" | "title" | "fromAgentName" | "quote" | "result">): string {
+  const a = promptSafe(e.fromAgentName);
+  const w = promptSafe(e.quote.ownerName);
+  const parts = [`[系统] 你的主人接了 ${w} 的管理员「${a}」的协作请求 ${e.requestId}「${promptSafe(e.title)}」。`];
+  if (e.quote.ownerLine !== "") parts.push(`${w} 的原话：「${promptSafe(e.quote.ownerLine)}」。`);
+  if (e.quote.note !== "") parts.push(`${a} 的说明：${promptSafe(e.quote.note)}。`);
+  if (e.result !== "") parts.push(`到目前的结果：${promptSafe(e.result)}。`);
+  parts.push(`现在轮到你：按对 ${w} 的授权配合——事实直接答，要动手的按主人的规矩；回复写在这里，会原样送到「${a}」那边。`);
+  return parts.join("");
+}
+
+/** 管理员车道里管理员的那一段（deriveMessages 用） */
+export function adminsLaneText(ownerName: string, peerName: string): string {
+  const w = promptSafe(ownerName);
+  const p = promptSafe(peerName);
+  return (
+    `这是 ${w} 和朋友 ${p} 两家管理员之间的车道：${p} 的管理员找你配合的请求会到这里。${w} 点头之前你不动；点头之后你在这里回它，` +
+    `回的每一句会原样送到对面。${p} 本人在这里只看不说，两位主人都看得到全文——别说 ${w} 没授权给 ${p} 的事。\n`
+  );
+}

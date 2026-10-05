@@ -142,6 +142,8 @@ export interface FrameHandlerDeps {
       patch: { name?: string; agentIds?: string[]; humans?: string[]; facing?: "self" | "both" },
     ): Promise<{ ok: true } | { ok: false; message: string }>;
     ownerOf(workspaceId: string): Promise<string>;
+    /** 对面管理员的协作请求，主人接 / 不接（#1605）：房没开就开；判据在 CloudSession.decideCollab */
+    decideCollab(workspaceId: string, sessionId: string, byUid: string, requestId: string, decision: "accepted" | "declined"): Promise<{ ok: true } | { ok: false; message: string }>;
     /** 收尾一条云会话（issue #822）：落日志（CloudSession.archive）+ 写
         Supabase 那行的 archived 列 + 收掉房间。三件事在 daemon 里，因为
         只有它同时握着 supabase 句柄和 transport。false = 已经归档过了 */
@@ -451,7 +453,8 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
       if (
         msg.t !== "create" && msg.t !== "workspace" && msg.t !== "git_credential" &&
         msg.t !== "archive" && msg.t !== "delete" && msg.t !== "files" &&
-        msg.t !== "files_search" && msg.t !== "wiki_write" && msg.t !== "chat_update" && msg.t !== "human_call"
+        msg.t !== "files_search" && msg.t !== "wiki_write" && msg.t !== "chat_update" && msg.t !== "human_call" &&
+        msg.t !== "collab_decide"
       ) {
         deny(cid, "not_authorized");
         return;
@@ -604,6 +607,18 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           ok: r.ok,
           ...(r.ok ? {} : { message: r.message }),
         });
+        return;
+      }
+
+      if (msg.t === "collab_decide") {
+        // 只有主人能点（#1605）：决定的是「我的管理员要不要替对面干活」
+        const ownerUid = await deps.sessions.ownerOf(msg.workspaceId);
+        if (entry.uid !== ownerUid) {
+          deny(cid, "not_authorized");
+          return;
+        }
+        const r = await deps.sessions.decideCollab(msg.workspaceId, msg.sessionId, entry.uid, msg.requestId, msg.decision);
+        deps.send(cid, { t: "collab_decide_result", workspaceId: msg.workspaceId, sessionId: msg.sessionId, requestId: msg.requestId, ok: r.ok, ...(r.ok ? {} : { message: r.message }) });
         return;
       }
 

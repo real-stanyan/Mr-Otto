@@ -112,7 +112,7 @@ export interface UserMessageEvent extends SessionEventBase {
       与别的 greeting 两处不同：① 它**算主人亲口**（openingTraits 的 ownerSpoke 放行它——任务原话是主人写的）；
       ② 手机时间线**画它**（一条居中灰条「⏰ 定时任务「x」」）：别的 greeting 都有前一条可见事件解释「为什么它开口了」，
       这条没有。桌面照旧藏。同样不进协议位 */
-  greeting?: "voice_call" | "new_agent" | "callback" | "outreach" | "outreach_report" | "admin_intro" | "pair_call_summary" | "routine" | "dnd_report";
+  greeting?: "voice_call" | "new_agent" | "callback" | "outreach" | "outreach_report" | "admin_intro" | "pair_call_summary" | "routine" | "dnd_report" | "collab_accept";
   /** 这句话是**在语音通话里说出来的**（#1233）。缺席 = 打字打的 / 旧日志。
       **只是记号**：起 turn、排队、护栏、接力链首、派活全都不看它，模型投影
       （deriveMessages）读都不读——对模型来说这就是一条普通的用户消息，和从前
@@ -361,10 +361,13 @@ export interface RouteChangedEvent extends SessionEventBase {
 export interface CloudSessionFacts {
   workspaceId: string;
   /** 这是一条聊天（#1280）：私聊或群聊。缺席 = 团队会话（旧日志照常重放） */
-  chat?: { kind: "dm" | "group" | "outreach" | "pair" };
+  chat?: { kind: "dm" | "group" | "outreach" | "pair" | "admins" };
   /** 这是一条私密车道（#1461 P1，ADR-0346）：主人带进与朋友私聊的智能体住的那条会话。提示词里「你在帮谁、
       旁边在和谁聊、对方看不看得到你」从它投影；缺席 = 不是私密车道（旧日志照常重放）。名字是建会话那一刻的快照 */
   pair?: { ownerName: string; peerUid: string; peerName: string; facing: "self" | "both" };
+  /** 这是一条管理员车道（#1605）：朋友 `peerUid` 家的管理员找我家管理员的收件箱。名单固定只有管理员，朋友本人是只读客人。
+      缺席 = 不是管理员车道（旧日志照常重放） */
+  admins?: { ownerName: string; peerUid: string; peerName: string };
   /** 这是一条外联会话（#1441）：某只智能体替主人给他的朋友打电话 / 留言开出来的那条。
       提示词里「你在替谁、对着谁」从它投影；缺席 = 不是外联会话（旧日志照常重放） */
   outreach?: { ownerName: string; peerUid: string; peerName: string };
@@ -784,6 +787,8 @@ export interface CollabRequestEvent extends SessionEventBase {
   result: string;
   expiresTs: number;
   byAgentId: string;
+  /** 只在对面（B）那份上：A 那条会话在哪——B 的决定与回复送回去的地址 */
+  origin?: { workspaceId: string; sessionId: string };
   ignorable: true;
 }
 /** 对面主人的决定 / 超时（#1605）：B 点的由 B 那条 admins 会话落、镜像回 A；超时由 runtime 两边各落一条（byUid null） */
