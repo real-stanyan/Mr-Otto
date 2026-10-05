@@ -20,7 +20,9 @@
 - 协议版本严格相等、无最低版本闸（`frameHandler.ts:240`）。origin/main 上 `CS_PROTOCOL_VERSION = 28`，
   但已有 5 处注释写「协议 29」（`collab_decide`、`app_accept` 等，#1605 / #1648）而常量没升——合并时一并理顺。
 - HealthKit 事实（Apple 文档，实现时以真机为准）：
-  - 只读授权只需 `NSHealthShareUsageDescription`；`toShare` 为空时不需要 `NSHealthUpdateUsageDescription`。
+  - 只读授权只需 `NSHealthShareUsageDescription`；`toShare` 为空时运行时不需要 `NSHealthUpdateUsageDescription`。
+    **但上传校验需要**（2026-10-05 build 10 实测：带 HealthKit entitlement 时 `exportArchive` 缺它就 EXPORT FAILED），
+    所以照样加上，文案照实写「只读取、不写入」。
   - **读权限被拒时 HealthKit 不告诉 App**，查询照常成功、返回空——这是 Apple 的隐私设计，无法区分「没数据」与「没授权」。
   - 设备锁屏时健康数据库加密不可读；本设计只在 App 前台（WS 连着）时取数，天然避开。
   - 部分 iPad `HKHealthStore.isHealthDataAvailable()` 为 false。

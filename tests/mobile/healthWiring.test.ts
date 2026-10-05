@@ -10,10 +10,13 @@ const read = (p: string): string => readFileSync(new URL(`../../${p}`, import.me
 const app = JSON.parse(read("mobile/app.json")) as { expo: { runtimeVersion: string; ios: { infoPlist: Record<string, unknown>; entitlements: Record<string, unknown> } } };
 
 describe("app.json", () => {
-  it("HealthKit entitlement + 读取文案；没有写入文案", () => {
+  // 写入文案也得有（2026-10-05 build 10 实测）：只要带 HealthKit entitlement，App Store Connect 的导出校验就要求
+  // NSHealthUpdateUsageDescription，缺了 `xcodebuild -exportArchive` 直接 EXPORT FAILED。只读不变——Swift 那边 toShare 仍是空集，
+  // 文案照实说「不写入」
+  it("HealthKit entitlement + 读取文案 + 照实说不写入的写入文案", () => {
     expect(app.expo.ios.entitlements["com.apple.developer.healthkit"]).toBe(true);
     expect(app.expo.ios.infoPlist.NSHealthShareUsageDescription).toBe("你问智能体健康相关的问题时，读取你的步数、睡眠、心率、体重和体能训练来回答。");
-    expect(app.expo.ios.infoPlist.NSHealthUpdateUsageDescription).toBeUndefined();
+    expect(app.expo.ios.infoPlist.NSHealthUpdateUsageDescription).toBe("Otto 只读取健康数据，不会向「健康」写入任何内容。");
   });
   it("runtimeVersion 进位到 7（加了原生模块）", () => {
     expect(app.expo.runtimeVersion).toBe("7");
