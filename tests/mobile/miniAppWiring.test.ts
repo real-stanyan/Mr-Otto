@@ -46,6 +46,13 @@ describe("分享应用给好友（#1648）", () => {
     expect(chat).toMatch(/<AppShareBubble card=\{appCard\} mine=\{mine\} messageId=\{m\.id\} \/>/);
     expect(read("mobile/src/apps/AppShareBubble.tsx")).toMatch(/cloudClient\.appAccept\(messageId\)/);
   });
+
+  it("应用卡整张可点：发的人点开自己那份，收的人加过打开、没加过走添加（#1657）", () => {
+    const bubble = read("mobile/src/apps/AppShareBubble.tsx");
+    expect(bubble).toMatch(/if \(mine\) navigation\.navigate\("MiniApp", \{ appId: card\.appId \}\);/);
+    expect(bubble).toMatch(/else if \(added !== null\) navigation\.navigate\("MiniApp", \{ appId: added\.id \}\);/);
+    expect(bubble).toMatch(/onPress=\{open\}/);
+  });
 });
 
 describe("主页下拉出应用抽屉（#1648）", () => {
