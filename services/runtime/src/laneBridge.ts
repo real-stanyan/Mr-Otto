@@ -60,7 +60,7 @@ export function createLaneBridge(d: LaneBridgeDeps): LaneBridge {
         return "这会儿查不到对方有没有公开的智能体，这一句没发，稍后再试。";
       }
       const peerName = await d.labelOf(o.peerUid);
-      if (lane === null) return `${peerName} 还没有把智能体公开到这条私聊里，发不过去。要对方那边的信息或动作，用 invite_collaborator 交给 ${peerName} 的管理员（先 create_task）；或者请主人让 ${peerName} 把智能体设成「公开」。`;
+      if (lane === null) return `${peerName} 还没有把智能体公开到这条私聊里，发不过去。要对方那边的信息或动作，用 invite_collaborator 交给 ${peerName} 的管理员（先 create_task）；或者请主人让 ${peerName} 把智能体设成「公开」。（跟主人说这件事用他的语言，英文里叫 shared / public。）`;
       const target = await d.openLane(lane.workspaceId, lane.sessionId);
       if (target === null) return "对面的车道这会儿开不起来，这一句没发，稍后再试。";
       if (!target.isGuest(o.ownerUid)) return `${peerName} 那条车道没有把你的主人加进去（可能刚收成了仅 TA 可见），发不过去。`;
