@@ -28,7 +28,7 @@ const errs = [];
     const dom = new JSDOM(fs.readFileSync(file, "utf8"), {
       url: "file://" + file, runScripts: "dangerously", resources: "usable", pretendToBeVisual: true, virtualConsole: vc,
       beforeParse(w) {
-        w.ReactNativeWebView = { postMessage(raw) { try { const m = JSON.parse(raw); if (m && m.id) setTimeout(() => w.__ottoReply && w.__ottoReply(m.id, true, m.method === "storage.list" ? [] : null), 5); } catch (_) {} } };
+        w.ReactNativeWebView = { postMessage(raw) { try { const m = JSON.parse(raw); if (m && m.id) setTimeout(() => w.__ottoReply && w.__ottoReply(m.id, true, ["storage.list", "room.list", "room.rooms"].includes(m.method) ? [] : null), 5); } catch (_) {} } };
         w.eval(BRIDGE);
       },
     });
@@ -76,7 +76,13 @@ export function createBuildAppTool(deps: BuildAppDeps): Tool {
       description:
         `把你写在 /work/${APP_WORK_ROOT}/<slug>/ 下的应用打成一版交给主人。目录里要有 ${APP_MANIFEST_FILE}（name / slug / icon / entry / capabilities / ` +
         `description / design）和入口页；多页用相对路径互链。没有外网：不要外链脚本、不要 fetch，要数据走 window.otto。` +
-        `每次调用出一个新版本（同一个 slug 就是同一个应用的下一版）。打完主人聊天里会出一张卡，点开就能用。`,
+        `每次调用出一个新版本（同一个 slug 就是同一个应用的下一版）。打完主人聊天里会出一张卡，点开就能用。` +
+        `要和好友一起玩 / 一起记的，清单 capabilities 加 room，用 otto.room：current()（不在房间回 null；在房间回 {id,title,hostUid,closed,me:{uid,name},members:[{uid,name,status}]}）/ create({title}) / invite()（弹好友选择）/ rooms() / open(id) / leave()；` +
+        `共享数据 get(key) / list(prefix) / set(key, value, {ifRev}) → {ok, rev} 或 {ok:false, rev, value}（回合制落子带 ifRev 防抢写，0 = 只在还没有时写）/ remove(key)；` +
+        `即时消息 send(msg)（≤ 4 KB、每秒 ≤ 20 条）；ping(text) 推给其他成员（轮到谁了；≤ 80 字，同人同房 10 秒一条、每小时 60 条，限速时回 false 不抛）；` +
+        `current() 是 null 时 get / list / set / remove / send / ping 都会拒（「还没进房间」），先 create 或从邀请进来。` +
+        `事件 otto.on('room.change' | 'room.message' | 'room.members' | 'room.closed', cb)：room.change 给 {key, value, rev, by}，删掉的给 {key, removed:true}，自己的写也会收到（拿它统一刷新画面）；` +
+        `room.message 给 {from, msg}，from 是对方自报的、不是身份证明——胜负结果要写进 set（服务端记 by），别只靠消息。个人的东西仍放 otto.storage。`,
       parameters: {
         type: "object",
         properties: {

@@ -76,11 +76,15 @@ export function muteKeyFor(chat: RingChatKind, sessionId: string, agentId: strin
     别的几种可以是空串 */
 export type AlertTarget =
   | { kind: "cloud"; chat: Exclude<RingChatKind, "human">; workspaceId: string; sessionId: string; agentId: string }
-  | { kind: "friend"; uid: string };
+  | { kind: "friend"; uid: string }
+  /** 应用房间的叫人（#1675）：点开进那一局（hostAppId 用来找我名下对应房主应用的那一份） */
+  | { kind: "room"; roomId: string; hostAppId: string };
 
 /** 这条推送对应列表里哪一行（手机前台时：人正看着这一条就不弹） */
 export function alertKey(t: AlertTarget): string {
-  return t.kind === "friend" ? `f:${t.uid}` : (muteKeyFor(t.chat, t.sessionId, t.agentId) as string);
+  if (t.kind === "friend") return `f:${t.uid}`;
+  if (t.kind === "room") return `r:${t.roomId}`;
+  return muteKeyFor(t.chat, t.sessionId, t.agentId) as string;
 }
 
 export interface AlertPush {
@@ -120,6 +124,11 @@ export function alertTargetFromPayload(payload: unknown): AlertTarget | null {
   if (o.kind === "friend") {
     const uid = str("uid");
     return uid === null ? null : { kind: "friend", uid };
+  }
+  if (o.kind === "room") {
+    const roomId = str("roomId");
+    const hostAppId = str("hostAppId");
+    return roomId === null || hostAppId === null ? null : { kind: "room", roomId, hostAppId };
   }
   if (o.kind !== "cloud" || typeof o.chat !== "string" || !CLOUD_CHATS.has(o.chat)) return null;
   const workspaceId = str("workspaceId");

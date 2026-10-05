@@ -16,7 +16,7 @@ export const APP_ENTRY = "index.html";
 export const APP_MANIFEST_FILE = "manifest.json";
 
 /** 桥能力（spec §3.2）。第一版四件 + 按需的原生能力；清单里没声明的调了就拒 */
-export const APP_CAPABILITIES = ["storage", "ask", "share", "nav", "notify", "remind", "camera", "haptic"] as const;
+export const APP_CAPABILITIES = ["storage", "ask", "share", "nav", "notify", "remind", "camera", "haptic", "room"] as const;
 export type AppCapability = (typeof APP_CAPABILITIES)[number];
 
 /** 文件扩展名白名单：能进 WebView 的静态资源。没有 .wasm / .mjs 之外的脚本形态 */

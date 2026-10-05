@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
 import type { ExecutionWorld } from "../../src/world/executionWorld.js";
-import { createBuildAppTool, type BuildAppDeps } from "../../services/runtime/src/buildAppTool.js";
+import { APP_CHECK_JS, createBuildAppTool, type BuildAppDeps } from "../../services/runtime/src/buildAppTool.js";
 import { createInMemoryAppStore } from "../../services/runtime/src/appStore.js";
 
 const world = {} as ExecutionWorld;
@@ -176,5 +176,17 @@ describe("build_app 打包前在沙箱里试开每一页（#1591 真机）", () 
   it("检查本身没跑起来（装不上 jsdom 等）：不拦，回执里说一句", async () => {
     const r = withCheck({ stdout: "", stderr: "npm ERR", exitCode: 5 });
     expect(await r.tool.run({ dir: "apps/notes" }, world)).toContain("没能在沙箱里试开页面");
+  });
+});
+
+describe("房间（#1675）", () => {
+  it("jsdom 假桥：room.list / room.rooms 与 storage.list 一样回 []（用了房间的应用试开不因 null.map 报错）", () => {
+    expect(APP_CHECK_JS).toContain(`["storage.list", "room.list", "room.rooms"].includes(m.method) ? [] : null`);
+  });
+  it("工具说明写了房间 API", () => {
+    const def = createBuildAppTool({ agentId: "a", workspaceId: "w", ownerUid: "u", exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }), upload: async () => {}, store: createInMemoryAppStore(), card: () => {} }).def;
+    for (const s of ["otto.room", "ifRev", "room.change", "ping"]) expect(def.description).toContain(s);
+    // #1675 终审：限速回 false、不在房间拒、current() 的形状、删除也走 room.change、from 是自报的
+    for (const s of ["回 false", "还没进房间", "me:{uid,name}", "members:[{uid,name,status}]", "{key, removed:true}", "自己的写也会收到", "from 是对方自报的", "胜负结果要写进 set"]) expect(def.description).toContain(s);
   });
 });

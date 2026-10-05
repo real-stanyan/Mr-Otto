@@ -1,14 +1,16 @@
 // 小应用的宿主（#1591 第 1 期 b，spec §3.4）：拉这一版的清单与文件表 → 文件落本机 → WebView 以 file:// 载入入口页 →
 // 桥（window.otto）：storage 走 app_data、nav 换页、share 走系统分享单、ask 把人带到管理员私聊并发出那句（plan 小修 3）、haptic。
 // 没有外网：WebView 只许读本机这一版的目录；应用自己乱发的消息只会被忽略（parseBridgeRequest）。
-import { useNavigation } from "@react-navigation/native";
+import { useFocusEffect, useNavigation } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ActivityIndicator, Pressable, Share, Text, View } from "react-native";
+import { ActivityIndicator, AppState, Pressable, Share, Text, View } from "react-native";
 import * as Haptics from "expo-haptics";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
 import type { AppRow, AppVersionRow } from "../../../src/shared/apps.js";
-import { APP_BRIDGE_JS, appAskText, appFixText, bridgeDenied, bridgeReplyJs, parseBridgeError, parseBridgeRequest, type BridgeRequest } from "../../../src/shared/appBridge.js";
+import { encodeRoomInvite, familyOf, type RoomMember, type RoomRow } from "../../../src/shared/appRoom.js";
+import { createRoom, fetchMembers, fetchRoom, inviteToRoom, joinRoom, leaveRoom, listRooms, pingRoom, releaseRoomChannels, roomData, subscribeRoom, type RoomLink } from "../../../src/shared/appRoomApi.js";
+import { APP_BRIDGE_JS, appAskText, appFixText, bridgeDenied, bridgeEventJs, bridgeReplyJs, parseBridgeError, parseBridgeRequest, type BridgeRequest } from "../../../src/shared/appBridge.js";
 import { appData, appPageOk, fetchAppVersion, fetchApps } from "../../../src/shared/appsApi.js";
 import { ADMIN_AGENT_ID } from "../../../src/shared/workspaceAgents.js";
 import { HeaderTextButton } from "../chrome/HeaderTextButton.js";
@@ -22,23 +24,50 @@ import { friendName } from "../../../src/shared/wechatInbox.js";
 import { PickAgentsDialog } from "../group/PickAgentsDialog.js";
 import { sendToFriend, useFriends } from "../friends/friendsStore.js";
 import { useMyName } from "../tabs/MeScreen.js";
+import { setOpenKey } from "../inbox/seenStore.js";
 import { markAppOpened } from "./recentApps.js";
 import { appFileUri, ensureAppFiles } from "./appFiles.js";
 
 type Props = NativeStackScreenProps<RootStackParams, "MiniApp">;
 
-type Loaded = { app: AppRow; version: AppVersionRow; dirUri: string; uid: string };
+/** 房间频道断了的重订（spec §5.2）：等 2s 起翻倍、单次封顶 30s，连败 6 次放弃（订上了清零；从后台回来重新算） */
+const RELINK_TRIES_MAX = 6;
+const RELINK_WAIT_MAX_MS = 30_000;
+
+type Loaded = { app: AppRow; version: AppVersionRow; dirUri: string; uid: string; room: RoomRow | null; members: RoomMember[] };
+
+/** 数据类的 room.* 要在房间里才能调 */
+function needRoom(l: Loaded): RoomRow {
+  if (l.room === null) throw new Error("还没进房间——先 otto.room.create() 或从邀请进来");
+  return l.room;
+}
+
+/** room.rooms() 交给应用的形状（spec）：时间给 ISO 串 */
+function roomSummary(r: RoomRow): { id: string; title: string; hostUid: string; closed: boolean; updatedAt: string } {
+  return { id: r.id, title: r.title, hostUid: r.hostUid, closed: r.closed, updatedAt: new Date(r.updatedTs).toISOString() };
+}
 
 export function MiniAppScreen({ route, navigation }: Props) {
   const { c } = usePalette();
-  const { appId } = route.params;
+  const { appId, roomId } = route.params;
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState<string | null>(null);
   /** 应用自己报上来的第一条错（#1591 真机）：露一条，能一键让管理员修 */
   const [appError, setAppError] = useState<string | null>(null);
   // 分享给好友（#1648）：挑好友 → 私信里一张应用卡，对方点「添加」复制一份到 TA 名下
-  const [sharing, setSharing] = useState<{ key: number; visible: boolean } | null>(null);
+  const [sharing, setSharing] = useState<{ key: number; visible: boolean; mode: "share" | "invite" } | null>(null);
+  /** room.invite() 的回执在选人框关掉时给（选了谁 / 取消 = 空） */
+  const inviteDone = useRef<((uids: string[]) => void) | null>(null);
+  const roomLink = useRef<RoomLink | null>(null);
+  /** 上一条房间链拆完的那一刻：新订阅排在它后面（同名频道还在 leaving 时 subscribe 是空操作） */
+  const prevClose = useRef<Promise<void>>(Promise.resolve());
+  /** 连着重订失败了几次（跨 effect 重跑留着） */
+  const relinkFails = useRef(0);
+  /** 真进过后台没有：拉通知栏 / 控制中心 / 弹窗只是 inactive → active，socket 好好的，不重订 */
+  const sawBackground = useRef(false);
+  /** 重订房间频道的计数（spec §5.2）：回前台 / 频道断了各加一，订阅 effect 跟着重跑并 resync */
+  const [relink, setRelink] = useState(0);
   const [shareBusy, setShareBusy] = useState(false);
   const [shareError, setShareError] = useState<string | null>(null);
   const friends = useFriends();
@@ -58,13 +87,21 @@ export function MiniAppScreen({ route, navigation }: Props) {
         if (app === null) app = (await fetchApps(supabase))?.find((a) => a.id === appId) ?? null;
         if (app === null) throw new Error("没有这个应用了");
         if (app.currentVersion < 1) throw new Error("这个应用还没有打出第一版");
-        const version = await fetchAppVersion(supabase, app.id, app.currentVersion);
-        if (version === null) throw new Error("这一版的清单读不出来");
-        const dir = await ensureAppFiles(uid, app.id, version.version, version.files);
+        const room = roomId === undefined ? null : await fetchRoom(supabase, roomId);
+        if (roomId !== undefined && room === null) throw new Error("进不了这一局（你不在里面，或它已经没了）");
+        const version = room === null
+          ? await fetchAppVersion(supabase, app.id, app.currentVersion)
+          : await fetchAppVersion(supabase, room.hostAppId, room.hostVersion);
+        if (version === null) throw new Error(room === null ? "这一版的清单读不出来" : "进不了这一局的那一版（先在私聊里点加入）");
+        const dir = room === null
+          ? await ensureAppFiles(uid, app.id, version.version, version.files)
+          : await ensureAppFiles(room.hostUid, room.hostAppId, room.hostVersion, version.files);
+        const members = room === null ? [] : ((await fetchMembers(supabase, room.id)) ?? []);
         if (!alive) return;
-        setLoaded({ app, version, dirUri: dir.uri, uid });
-        loadedRef.current = { app, version, dirUri: dir.uri, uid };
-        if (route.params.share === true) setSharing({ key: Date.now(), visible: true });
+        const l: Loaded = { app, version, dirUri: dir.uri, uid, room, members };
+        setLoaded(l);
+        loadedRef.current = l;
+        if (route.params.share === true) setSharing({ key: Date.now(), visible: true, mode: "share" });
         markAppOpened(app.id);
         setPage(version.manifest.entry);
       } catch (e) {
@@ -72,16 +109,19 @@ export function MiniAppScreen({ route, navigation }: Props) {
       }
     })();
     return () => { alive = false; };
-  }, [appId]);
+  }, [appId, roomId]);
 
   const name = loaded?.app.name ?? appById(appId)?.name ?? "应用";
   useLayoutEffect(() => {
     navigation.setOptions({
-      title: name,
+      title: loaded?.room?.title ?? name,
       // 改一下 = 跟管理员说（spec §3.3「改 = 新版本」：同一条任务链，专员出下一版）
       headerRight: () => (
         <View style={{ flexDirection: "row", alignItems: "center" }}>
-          <HeaderTextButton label="分享" disabled={loadedRef.current === null} onPress={() => setSharing({ key: Date.now(), visible: true })} />
+          {loaded !== null && loaded.room !== null && loaded.room.hostUid === loaded.uid && !loaded.room.closed ? (
+            <HeaderTextButton label="邀请" disabled={false} onPress={() => setSharing({ key: Date.now(), visible: true, mode: "invite" })} />
+          ) : null}
+          <HeaderTextButton label="分享" disabled={loadedRef.current === null} onPress={() => setSharing({ key: Date.now(), visible: true, mode: "share" })} />
           <HeaderTextButton label="改一下" disabled={false} onPress={() => { toast("跟管理员说要改什么，专员会出下一版"); navigation.navigate("Chat", { kind: "agent", agentId: ADMIN_AGENT_ID }); }} />
         </View>
       ),
@@ -127,8 +167,162 @@ export function MiniAppScreen({ route, navigation }: Props) {
         void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
         return true;
       }
+      case "room.current": {
+        const r = l.room;
+        if (r === null) return null;
+        const names = new Map((friends.rows ?? []).map((f) => [f.profile.id, friendName(f.profile)] as const));
+        names.set(l.uid, me.name);
+        return {
+          id: r.id, title: r.title, hostUid: r.hostUid, version: r.hostVersion, closed: r.closed,
+          me: { uid: l.uid, name: me.name },
+          members: l.members.map((m) => ({ uid: m.uid, name: names.get(m.uid) ?? m.uid.slice(0, 8), status: m.status })),
+        };
+      }
+      case "room.create": {
+        const title = typeof (a0 as { title?: unknown })?.title === "string" ? (a0 as { title: string }).title : `${l.app.name} · 一局`;
+        const id = await createRoom(supabase, l.app.id, title);
+        navigation.replace("MiniApp", { appId: l.app.id, roomId: id });
+        return { id };
+      }
+      case "room.open": {
+        if (typeof a0 !== "string") throw new Error("要给房间 id");
+        if (l.room !== null && a0 === l.room.id) return true; // 就在这一间：不重进
+        const rooms = (await listRooms(supabase, familyOf(l.app), familyOf(l.app))) ?? [];
+        if (!rooms.some((r) => r.id === a0)) throw new Error("没有这一间（或你不在里面）");
+        // 只是被邀请、还没加入的：读房主那一版要先是成员（RLS 认 joined），先替 TA 加入
+        const mine = ((await fetchMembers(supabase, a0)) ?? []).find((m) => m.uid === l.uid);
+        if (mine?.status === "invited") await joinRoom(supabase, a0);
+        navigation.replace("MiniApp", { appId: l.app.id, roomId: a0 });
+        return true;
+      }
+      case "room.rooms": return ((await listRooms(supabase, familyOf(l.app), familyOf(l.app))) ?? []).map(roomSummary);
+      case "room.invite": {
+        const r = needRoom(l);
+        if (r.hostUid !== l.uid) throw new Error("只有房主能邀请");
+        return await new Promise<string[]>((resolve) => {
+          inviteDone.current?.([]);
+          inviteDone.current = resolve;
+          setSharing({ key: Date.now(), visible: true, mode: "invite" });
+        });
+      }
+      case "room.leave": {
+        await leaveRoom(supabase, needRoom(l).id);
+        navigation.replace("MiniApp", { appId: l.app.id });
+        return true;
+      }
+      case "room.get": return roomData.get(supabase, needRoom(l).id, a0);
+      case "room.list": return roomData.list(supabase, needRoom(l).id, a0);
+      case "room.set": return roomData.set(supabase, needRoom(l).id, a0, a1, req.args[2]);
+      case "room.remove": await roomData.remove(supabase, needRoom(l).id, a0); return true;
+      case "room.send": {
+        needRoom(l);
+        const link = roomLink.current;
+        if (link === null) throw new Error("还没连上房间");
+        await link.send(a0);
+        return true;
+      }
+      case "room.ping": return pingRoom(supabase, needRoom(l).id, a0);
     }
-  }, [nav, navigation]);
+  }, [nav, navigation, friends, me]);
+
+  useEffect(() => {
+    if (loaded === null || loaded.room === null) return;
+    const roomId = loaded.room.id;
+    const uid = loaded.uid;
+    /** 自己关的（离开页面 / 重订前）——之后频道报的 CLOSED 不算断，也不再订 */
+    let closing = false;
+    let retry: ReturnType<typeof setTimeout> | null = null;
+    let synced = false;
+    let link: RoomLink | null = null;
+    const push = (js: string): void => { if (!closing) web.current?.injectJavaScript(js); };
+    const refreshMembers = (): void => {
+      void fetchMembers(supabase, roomId).then((m) => {
+        const cur = loadedRef.current;
+        if (closing || m === null || cur === null) return;
+        const next = { ...cur, members: m };
+        loadedRef.current = next;
+        setLoaded(next);
+        push(bridgeEventJs("room.members", { members: m }));
+      });
+    };
+    /** 频道断了：指数退避再重订，连败到顶就放弃（服务端一直拒时不至于一直打） */
+    const again = (): void => {
+      if (closing || retry !== null) return;
+      if (relinkFails.current >= RELINK_TRIES_MAX) return;
+      const wait = Math.min(2000 * 2 ** relinkFails.current, RELINK_WAIT_MAX_MS);
+      relinkFails.current += 1;
+      retry = setTimeout(() => { retry = null; if (!closing) setRelink((n) => n + 1); }, wait);
+    };
+    const before = prevClose.current;
+    const started = before
+      .then(() => releaseRoomChannels(supabase, roomId))
+      .then(() => {
+        if (closing) return;
+        link = subscribeRoom(supabase, roomId, uid, {
+          change: (e) => push(bridgeEventJs("room.change", e)),
+          members: refreshMembers,
+          closed: () => {
+            const cur = loadedRef.current;
+            if (cur !== null && cur.room !== null) {
+              const next = { ...cur, room: { ...cur.room, closed: true } };
+              loadedRef.current = next;
+              setLoaded(next);
+            }
+            push(bridgeEventJs("room.closed", {}));
+          },
+          message: (from, msg) => push(bridgeEventJs("room.message", { from, msg })),
+          status: (s) => {
+            if (closing) return;
+            if (s === "CHANNEL_ERROR" || s === "TIMED_OUT" || s === "CLOSED") again();
+            else if (s === "SUBSCRIBED") {
+              relinkFails.current = 0;
+              // 重订上了（不是第一次订）：断着的那段可能漏了推送，全量补一遍
+              if (relink > 0 && !synced) {
+                synced = true;
+                void roomData.list(supabase, roomId, "").then((rows) => {
+                  for (const e of rows) push(bridgeEventJs("room.change", e));
+                }, () => undefined);
+                refreshMembers();
+              }
+            }
+          },
+        });
+        roomLink.current = link;
+      })
+      .catch(() => { if (!closing) again(); });
+    // 收尾：还没订上的不会再订（closing）；订上了的拆掉——下一条订阅等它拆完
+    return () => {
+      closing = true;
+      if (retry !== null) clearTimeout(retry);
+      prevClose.current = started.then(() => link?.close()).catch(() => undefined);
+    };
+  }, [loaded?.room?.id, relink]);
+
+  // 正看着这一间（同 ChatScreen / FriendChatScreen 的 openKey）：这间的叫人推送不弹横幅（messagePush 比 alertKey = r:<id>）
+  const openRoomId = loaded?.room?.id ?? null;
+  useFocusEffect(
+    useCallback(() => {
+      if (openRoomId === null) return undefined;
+      setOpenKey("r:" + openRoomId);
+      return () => {
+        setOpenKey(null);
+      };
+    }, [openRoomId]),
+  );
+
+  // 真从后台回来才重订（spec §5.2：后台里 socket 多半被系统掐了）
+  useEffect(() => {
+    if (loaded === null || loaded.room === null) return;
+    const sub = AppState.addEventListener("change", (st) => {
+      if (st === "background") sawBackground.current = true;
+      else if (st === "active" && sawBackground.current) {
+        sawBackground.current = false;
+        relinkFails.current = 0;
+        setRelink((n) => n + 1);
+      }
+    });
+    return () => sub.remove();
+  }, [loaded?.room?.id]);
 
   const onMessage = useCallback((e: WebViewMessageEvent) => {
     const err = parseBridgeError(e.nativeEvent.data);
@@ -181,22 +375,48 @@ export function MiniAppScreen({ route, navigation }: Props) {
         key={sharing.key}
         visible={sharing.visible}
         ws={{ id: "", name: "", ownerUid: "", members: [], connectors: [], sessions: [], agents: [], sandboxApproval: null, kind: "home" }}
-        title={`分享「${loaded.app.name}」`}
-        lead="挑要分享给的朋友。TA 点「添加」会复制一份到自己名下，数据各存各的。"
+        title={sharing.mode === "invite" ? `邀请朋友进「${loaded.room?.title ?? ""}」` : `分享「${loaded.app.name}」`}
+        lead={sharing.mode === "invite" ? "挑要一起玩的朋友。TA 点开邀请就能进来，没有这个应用会自动装上。" : "挑要分享给的朋友。TA 点「添加」会复制一份到自己名下，数据各存各的。"}
         options={[]}
         people={(friends.rows ?? []).filter((r) => r.status === "accepted").map((r) => ({ uid: r.profile.id, name: friendName(r.profile), url: r.profile.avatarUrl }))}
         peopleLabel="朋友"
         min={1}
-        okLabel="分享"
+        okLabel={sharing.mode === "invite" ? "邀请" : "分享"}
         busy={shareBusy}
         error={shareError}
         onOk={(_agents, _n, people) => {
+          if (sharing.mode === "invite") {
+            void (async () => {
+              setShareBusy(true);
+              setShareError(null);
+              try {
+                const room = needRoom(loaded);
+                const card = {
+                  appId: room.hostAppId, version: room.hostVersion, name: loaded.app.name, icon: loaded.app.icon, slug: loaded.app.slug,
+                  description: loaded.app.description, from: { uid: loaded.uid, name: me.name },
+                };
+                for (const uid of people) {
+                  await inviteToRoom(supabase, room.id, uid);
+                  await sendToFriend(uid, encodeRoomInvite(card, { id: room.id, title: room.title }));
+                }
+                inviteDone.current?.(people);
+                inviteDone.current = null;
+                setSharing((d) => (d === null ? d : { ...d, visible: false }));
+                toast(people.length === 1 ? "邀请发出去了" : `邀请了 ${people.length} 位朋友`);
+              } catch (e) {
+                setShareError(e instanceof Error ? e.message : String(e));
+              } finally {
+                setShareBusy(false);
+              }
+            })();
+            return;
+          }
           void (async () => {
             setShareBusy(true);
             setShareError(null);
             try {
               const body = encodeAppCard({
-                appId: loaded.app.id, version: loaded.version.version, name: loaded.app.name, icon: loaded.app.icon, slug: loaded.app.slug,
+                appId: loaded.app.id, version: loaded.app.currentVersion, name: loaded.app.name, icon: loaded.app.icon, slug: loaded.app.slug,
                 description: loaded.app.description, from: { uid: loaded.uid, name: me.name },
               });
               for (const p of people) await sendToFriend(p, body);
@@ -209,7 +429,11 @@ export function MiniAppScreen({ route, navigation }: Props) {
             }
           })();
         }}
-        onClose={() => setSharing((d) => (d === null ? d : { ...d, visible: false }))}
+        onClose={() => {
+          inviteDone.current?.([]);
+          inviteDone.current = null;
+          setSharing((d) => (d === null ? d : { ...d, visible: false }));
+        }}
         onExited={() => { setSharing(null); setShareError(null); }}
       />
     ) : null}
@@ -218,7 +442,7 @@ export function MiniAppScreen({ route, navigation }: Props) {
         <Text numberOfLines={2} style={{ flex: 1, fontSize: 13, color: c.destructive }}>{`这个应用出错了：${appError}`}</Text>
         <Pressable
           accessibilityRole="button"
-          onPress={() => navigation.navigate("Chat", { kind: "agent", agentId: ADMIN_AGENT_ID, dispatch: appFixText(loaded.app.name, loaded.version.version, appError) })}
+          onPress={() => navigation.navigate("Chat", { kind: "agent", agentId: ADMIN_AGENT_ID, dispatch: appFixText(loaded.room === null ? loaded.app.name : `${loaded.app.name}（房主那一版）`, loaded.version.version, appError) })}
           style={({ pressed }) => [{ paddingHorizontal: 12, height: 32, borderRadius: 16, alignItems: "center", justifyContent: "center", backgroundColor: c.brand }, pressed && { opacity: 0.7 }]}
         >
           <Text style={{ fontSize: 13, fontWeight: "600", color: "#fff" }}>让管理员修</Text>

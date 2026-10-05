@@ -11,6 +11,7 @@ import {
   inboxUnreadChats, initialOf, isHidden, listTimeLabel, markSeen, needsTimeRow, parseSeen, serializeSeen, sortFriends, splitInbox,
   teamChatTitle, timelineTimeLabel, type InboxRow, type SeenState,
 } from "../../src/shared/wechatInbox.js";
+import { encodeRoomInvite } from "../../src/shared/appRoom.js";
 import type { WorkspaceMentionRow } from "../../src/shared/workspaceMentions.js";
 import type { WorkspaceAgentRow, WorkspaceSnapshot } from "../../src/shared/workspaces.js";
 import { assembleGuestChat } from "../../src/shared/chatGuests.js";
@@ -282,6 +283,10 @@ describe("朋友", () => {
     const card = JSON.stringify({ otto: "otto.contact-card", v: 1, card: { kind: "agent", agentId: "a_0123456789ab", name: "翻译", description: "", instructions: "秘密提示词", avatarSlot: null, from: { uid: "22222222-2222-4222-8222-222222222222", name: "小红" } } });
     expect(dmPreview(card)).toBe("[智能体名片] 翻译");
     expect(dmPreview(card)).not.toContain("秘密");
+  });
+  it("邀请卡（#1675）：列表第二行是 [邀请]，不是 [应用]", () => {
+    const card = { appId: "0ffc3e43-153d-4a2b-a4e6-9e6ddcecee7b", version: 1, name: "五子棋", icon: "⚫", slug: "gomoku", description: "", from: { uid: "2819d0bb-933b-499d-be44-2bb51b5a8391", name: "S" } };
+    expect(dmPreview(encodeRoomInvite(card, { id: "11111111-2222-4333-8444-555555555555", title: "局" }))).toBe("[邀请] ⚫ 五子棋");
   });
   it("按名字排", () => {
     const list = sortFriends([{ profile: profile("b", "王") }, { profile: profile("a", "阿杰") }]);
