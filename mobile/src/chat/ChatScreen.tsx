@@ -792,7 +792,7 @@ export function ChatScreen({ route, navigation }: Props) {
             <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
               {isOutreach ? (
                 <Text style={{ fontSize: 14, lineHeight: 20, color: c.mutedForeground, textAlign: "center", paddingHorizontal: 32 }}>
-                  {`${title}打来的电话会记在这里。`}
+                  {composerPlan.kind === "normal" ? `可以在这里和${title}说话，它打来的电话也记在这里。` : `${title}打来的电话会记在这里。`}
                 </Text>
               ) : <Hello ws={ws} kind={kind} agentIds={agentIds} title={title} people={humans.map((h) => ({ uid: h.uid, name: h.name, avatarUrl: h.url }))} />}
             </View>
