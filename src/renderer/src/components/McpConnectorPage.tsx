@@ -10,7 +10,7 @@
 import { ArrowLeft, Check, Loader2, Plus, ShieldCheck } from "lucide-react";
 import { cn } from "@/lib/utils.js";
 import { HINT } from "../settingsShell.js";
-import type { CatalogEntry } from "../../../shared/mcpCatalog.js";
+import { desktopBlocked, type CatalogEntry } from "../../../shared/mcpCatalog.js";
 import { installSlot, type DirectoryItem } from "../lib/mcpDirectory.js";
 import type { McpServerStatus } from "../../../shared/mcp.js";
 import { McpServerEditor } from "./McpServerEditor.js";
@@ -41,6 +41,8 @@ export function McpConnectorPage({
   const { entry, verified } = item;
   const slot = installSlot(item, busy);
   const facts = connectorFacts(entry);
+  // 预置客户端的条目（Gmail，#1619）也算"桌面接不上"，横幅说在手机上接
+  const blocked = desktopBlocked(entry);
   const tools = toolsNote(item.installed, server?.tools.map((t) => t.name));
 
   return (
@@ -82,7 +84,7 @@ export function McpConnectorPage({
           tooltip 要悬停才有，而用户是带着"为什么点了没反应"这个问题进来的，
           答案该在他视线落点上。上一版这句话只活在 catalog 的注释和 authNote
           里，一个用户都没看见过（issue #760） */}
-      {entry.blocked !== undefined && item.installed !== "connected" && (
+      {blocked !== undefined && item.installed !== "connected" && (
         <p
           // 这台此刻的原始错误挪到这儿来了：管理面那条红字被收起了（它说的
           // 「凭据不对」会把用户支去检查 token，而那不是问题所在），但证据
@@ -93,7 +95,7 @@ export function McpConnectorPage({
             "text-[12.5px] leading-[1.6] text-warn"
           )}
         >
-          {entry.blocked}
+          {blocked}
         </p>
       )}
 
@@ -162,7 +164,7 @@ export function McpConnectorPage({
       {server !== undefined && (
         <section className="flex flex-col gap-2">
           <span className={SECTION_LABEL}>设置</span>
-          <McpServerEditor server={server} blocked={entry.blocked} />
+          <McpServerEditor server={server} blocked={blocked} />
         </section>
       )}
 

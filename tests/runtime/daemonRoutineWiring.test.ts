@@ -28,3 +28,12 @@ describe("daemon.ts：定时任务的接线（#1283）", () => {
     expect(src.match(/select\("workspace_id,publisher_uid,archived"\)/g)).toHaveLength(1);
   });
 });
+
+describe("findDmSession 按第一只认（#1606 之后管理员私聊里也含着专员）", () => {
+  it("含着的捞出来、挑 agent_ids[0] 对得上的那条；不再 maybeSingle", () => {
+    const n = src.indexOf("async function findDmSession(");
+    const body = src.slice(n, src.indexOf("/** 主人设的公开智能体", n));
+    expect(body).not.toMatch(/\.maybeSingle\(\)/);
+    expect(body).toMatch(/\.find\(\(r\) => Array\.isArray\(r\.agent_ids\) && r\.agent_ids\[0\] === agentIds\[0\]\)/);
+  });
+});

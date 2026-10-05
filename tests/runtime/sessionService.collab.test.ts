@@ -204,3 +204,31 @@ describe("A 家：invite_collaborator 的落点", () => {
     store.close();
   });
 });
+
+describe("A 家开房时重送还在等点头的请求（#1605 真机）", () => {
+  it("日志里有请求没决定 → 开房就送一遍；有决定的 / 过期的 / 不是这边发的不送", async () => {
+    const store = newStore();
+    const b = bridgeStub();
+    store.append({ sessionId: "s1", ts: 1, type: "session_created", workspace: "/work", cloud: { workspaceId: "wa", chat: { kind: "pair" }, pair: { ownerName: "继爸", peerUid: "u_b", peerName: "Stan Yan", facing: "self" }, home: true } });
+    const mk = (id: string, extra: Partial<CollabRequestEvent> = {}) => ({ ...REQUEST, sessionId: "s1", requestId: id, fromUid: "u_a", origin: undefined, ...extra }) as unknown as SessionEvent;
+    store.append(mk("r_live"));
+    store.append(mk("r_done"));
+    store.append({ sessionId: "s1", ts: 5, type: "collab_decision", requestId: "r_done", decision: "declined", byUid: "u_b", ignorable: true });
+    store.append(mk("r_old", { expiresTs: 1 }));
+    store.append(mk("r_theirs", { fromUid: "u_x" }));
+    createCloudSession({
+      diskUsage: () => null, routines: null, onOutreachEnded: null, signSpeechTicket: async () => "t", pairMessages: null, outreach: null, callback: null,
+      approveAll: true, sessionMeta: createInMemoryCloudSessionMeta(),
+      workspaceId: "wa", sessionId: "s1", ownerUid: "u_a", createdByUid: "u_a",
+      store, world: fakeWorld, px, hostUids: async () => ["u_a"], agents: async () => [ADMIN],
+      adapterFor: (): ModelAdapter => ({ model: "m", async chat(): Promise<ModelReply> { return { content: "x" }; } }),
+      onEvent: () => {}, onUsage: () => {}, wiki: testWiki(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true, contextWindowOf: () => undefined, sandboxApproval: async () => "ask", workspaceLock: createWorkspaceLock(), relayRemainingMicro: async () => null,
+      adminsBridge: b.bridge,
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(b.requests.map((x) => x.event.requestId)).toEqual(["r_live"]);
+    expect(b.requests[0]).toMatchObject({ ownerUid: "u_a", peerUid: "u_b", origin: { workspaceId: "wa", sessionId: "s1" } });
+    store.close();
+  });
+});

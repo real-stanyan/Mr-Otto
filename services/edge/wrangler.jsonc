@@ -55,4 +55,6 @@
   //   npx wrangler secret put QWEN_API_KEY        # 千问 = DashScope 国际站
   //   npx wrangler secret put STRIPE_SECRET_KEY     # sk_live_… / sk_test_…
   //   npx wrangler secret put STRIPE_WEBHOOK_SECRET # whsec_…（Stripe Dashboard 的端点密钥）
+  //   npx wrangler secret put GOOGLE_OAUTH_CLIENT_ID      # 手机接 Gmail 的预置客户端（#1619）
+  //   npx wrangler secret put GOOGLE_OAUTH_CLIENT_SECRET
 }

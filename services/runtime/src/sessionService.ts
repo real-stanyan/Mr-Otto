@@ -1429,6 +1429,16 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     }, wait);
   }
   for (const id of collabRequests.keys()) armCollabExpiry(id);
+  // 开房时把这边还在等点头的请求再送一遍（#1605 真机 2026-10-05）：送不送到不能靠管理员自觉——它看见自己说过「交给了」
+  // 就只会复述，不会再调工具。对面按 requestId 去重，重送是安全的；只有发起这一侧（车道里、请求是这边落的）送
+  if (isPair && pairFacts !== undefined && (opts.adminsBridge ?? null) !== null) {
+    for (const r of collabRequests.values()) {
+      if (r.decision !== null || r.event.expiresTs <= Date.now() || r.event.fromUid !== opts.ownerUid) continue;
+      void opts.adminsBridge!.deliverRequest({ ownerUid: opts.ownerUid, peerUid: pairFacts.peerUid, event: r.event, origin: { workspaceId: opts.workspaceId, sessionId } })
+        .then((refused) => { if (refused !== null) console.warn(`[otto-runtime] 开房重送协作请求没送到（session=${sessionId} request=${r.event.requestId}）：${refused}`); })
+        .catch((err: unknown) => console.warn(`[otto-runtime] 开房重送协作请求失败（session=${sessionId}）：${err instanceof Error ? err.message : String(err)}`));
+    }
+  }
   /** B 的管理员这一轮说的话送回 A（#1605）：只送主人接了的那条请求的 origin；系统替它应的那句（ack）不送 */
   async function mirrorAdminsReply(spec: AgentSpec, scanFrom: number): Promise<void> {
     const bridge = opts.adminsBridge ?? null;
@@ -1828,16 +1838,33 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
             request: async ({ task, note, ownerLine, result }) => {
               if (archived) return "这条会话已经收尾了";
               const requestId = `r_${randomUUID().slice(0, 8)}`;
-              // 先 task_collab 再 collab_request：重放时 foldTask 要先见到协作者那一格，请求才记得上 pending
-              notify(store.append({ sessionId, ts: Date.now(), type: "task_collab", taskId: task.id, withUid: pairFacts.peerUid, withName: pairFacts.peerName, byAgentId: spec.agentId, ignorable: true }));
-              const event = store.append({
-                sessionId, ts: Date.now(), type: "collab_request", requestId, taskId: task.id, title: task.title,
+              const draft: CollabRequestEvent = {
+                sessionId, seq: 0, ts: Date.now(), type: "collab_request", requestId, taskId: task.id, title: task.title,
                 fromUid: opts.ownerUid, fromAgentName: specNames.get(spec.agentId) ?? spec.name,
                 quote: { ownerName: pairFacts.ownerName, ownerLine, note }, result: result.slice(0, 500), expiresTs: Date.now() + COLLAB_EXPIRE_MS,
                 byAgentId: spec.agentId, ignorable: true,
-              }) as CollabRequestEvent;
-              notify(event);
-              return adminsBridge.deliverRequest({ ownerUid: opts.ownerUid, peerUid: pairFacts.peerUid, event, origin: { workspaceId: opts.workspaceId, sessionId } });
+              };
+              // **先送达、再落本地**（真机 2026-10-05：对面建车道撞了约束，这边却已经落了请求，任务卡写着「等 TA 点头」）。
+              // 送不到 = 这边一个字不落，回那句话
+              const refused = await adminsBridge
+                .deliverRequest({ ownerUid: opts.ownerUid, peerUid: pairFacts.peerUid, event: draft, origin: { workspaceId: opts.workspaceId, sessionId } })
+                .catch((err: unknown) => {
+                  console.warn(`[otto-runtime] 协作请求送不过去（session=${sessionId}）：${err instanceof Error ? err.message : String(err)}`);
+                  return "对面那边这会儿接不住，稍后再试";
+                });
+              if (refused !== null) return refused;
+              // 先 task_collab 再 collab_request：重放时 foldTask 要先见到协作者那一格，请求才记得上 pending
+              notify(store.append({ sessionId, ts: Date.now(), type: "task_collab", taskId: task.id, withUid: pairFacts.peerUid, withName: pairFacts.peerName, byAgentId: spec.agentId, ignorable: true }));
+              const { seq: _seq, ...rest } = draft;
+              notify(store.append({ ...rest, ts: Date.now() }));
+              return null;
+            },
+            redeliver: async (requestId) => {
+              const e = store.load(sessionId).find((x): x is CollabRequestEvent => x.type === "collab_request" && x.requestId === requestId);
+              if (e === undefined) return "找不到那条请求";
+              return adminsBridge
+                .deliverRequest({ ownerUid: opts.ownerUid, peerUid: pairFacts.peerUid, event: e, origin: { workspaceId: opts.workspaceId, sessionId } })
+                .catch(() => "对面那边这会儿接不住，稍后再试");
             },
           });
     const engine = new LoopEngine({

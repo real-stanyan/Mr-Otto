@@ -14,12 +14,13 @@ import { appRows } from "../../../src/shared/mobileMachine.js";
 import { HeaderTextButton } from "../chrome/HeaderTextButton.js";
 import { refreshHome, useHome } from "../home/homeStore.js";
 import type { RootStackParams } from "../nav/types.js";
-import { space, type as t, usePalette } from "../theme.js";
+import { space, type as t, usePalette, withAlpha } from "../theme.js";
 import { toast } from "../wx/toast.js";
 import { Button, Group, Inset, ListPage, Note, Row } from "../ui.js";
 import { AppTile } from "./AppTile.js";
 import { ConnectAppDialog } from "./ConnectAppDialog.js";
 import { refreshConnectors, useConnectors } from "./connectorsStore.js";
+import { refreshApps, useApps } from "../apps/appsStore.js";
 
 type Props = NativeStackScreenProps<RootStackParams, "Apps">;
 
@@ -30,6 +31,8 @@ export function AppsScreen({ navigation }: Props) {
   const { c } = usePalette();
   const home = useHome();
   const cloud = useConnectors();
+  // 我的应用（#1591）：管理员派应用专员做的小应用；进这一页 / 回到这一页时拉一次
+  const mine = useApps();
   /** 正在重新登录的那一台（目录条目 id） */
   const [relogin, setRelogin] = useState<string | null>(null);
 
@@ -37,6 +40,7 @@ export function AppsScreen({ navigation }: Props) {
     useCallback(() => {
       void refreshHome();
       void refreshConnectors();
+      void refreshApps();
     }, []),
   );
   useLayoutEffect(() => {
@@ -61,6 +65,21 @@ export function AppsScreen({ navigation }: Props) {
   return (
     <ListPage>
       <View style={{ gap: space.sm }}>
+        {mine.error !== null ? <Inset><Note tone="warn">{mine.error}</Note></Inset> : null}
+        {mine.apps !== null && mine.apps.length > 0 ? (
+          <Group header="我的应用" footer="管理员派应用专员做的小应用，点开就能用；要改就跟管理员说一句。" inset={TILE_INSET}>
+            {mine.apps.map((a) => (
+              <Row
+                key={a.id}
+                leading={<View style={{ width: 40, height: 40, borderRadius: 10, alignItems: "center", justifyContent: "center", backgroundColor: withAlpha(c.foreground, 0.06) }}><Text style={{ fontSize: 22 }}>{a.icon}</Text></View>}
+                label={a.name}
+                detail={a.description === "" ? `v${a.currentVersion}` : a.description}
+                chevron
+                onPress={() => navigation.navigate("MiniApp", { appId: a.id })}
+              />
+            ))}
+          </Group>
+        ) : null}
         {cloud.loadError !== null ? <Inset><Note tone="warn">{cloud.loadError}</Note></Inset> : null}
         {phone === null ? null : phone.length === 0 ? (
           <View style={{ paddingTop: 36, paddingHorizontal: 32, paddingBottom: 8, alignItems: "center", gap: 14 }}>

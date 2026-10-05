@@ -15,6 +15,10 @@ const item = (over: Partial<CloudViewItem> = {}): CloudViewItem => ({
 const DAY = 86_400_000;
 
 describe("目录", () => {
+  it("Gmail 在手机目录里：去浏览器登录，不置灰（预置客户端，#1619）", () => {
+    const g = connectCatalog(null, "gmail").flatMap((x) => x.items).find((i) => i.id === "gmail")!;
+    expect(g).toMatchObject({ kind: "browser", blocked: null, category: "协作与项目" });
+  });
   it("只列 http；没有「本机工具」分组；已接的标出来", () => {
     const groups = connectCatalog([item()], "");
     const all = groups.flatMap((g) => g.items);

@@ -259,6 +259,11 @@ export const CLOUD_TEXT = {
   unknown: "没接上，再试一次",
 } as const;
 
+/** 预置客户端的条目、edge 上还没配那套凭据（#1619）：不是用户的错，也不是「去电脑上接」 */
+export function presetUnconfiguredText(name: string): string {
+  return `${name} 还没开放，稍后再试`;
+}
+
 /** edge 的错误回包（`{error:{message,type:"otto_edge",code}}`）→ 那句话。认不出回 null，调用方写 HTTP 状态 */
 export function parseCloudError(status: number, payload: unknown): string | null {
   if (status < 400 || !isObj(payload) || !isObj(payload.error)) return null;

@@ -3,13 +3,14 @@
 // 注册表（GET，无副作用）。两条路都没有副作用，免审批不变（ADR-0171 4.6）。
 
 import type { Tool } from "./tool.js";
-import { searchCatalog, type CatalogEntry } from "../shared/mcpCatalog.js";
+import { desktopBlocked, searchCatalog, type CatalogEntry } from "../shared/mcpCatalog.js";
 import type { ExecutionWorld } from "../world/executionWorld.js";
 import { mapRegistryResponse, registrySearchUrl } from "../shared/mcpRegistry.js";
 
 /** 一条目录 → 说给水獭听的那段话。
-    导出只为了测：目录里此刻一条 blocked 都没有（#766），而"接不上的要跟水獭
-    说一声"这条行为仍然要钉住——拿合成条目测它，比等下一台坏 server 出现再说好 */
+    导出只为了测：目录条目自己此刻一条 blocked 都没有（#766），走到这条分支的只有 desktopBlocked
+    补上的预置客户端条目（Gmail，#1619）；"接不上的要跟水獭说一声"这条行为仍然要钉住——
+    拿合成条目测它，比等下一台坏 server 出现再说好 */
 export function render(e: CatalogEntry): string {
   const lines = [
     `## ${e.name}（建议 id: ${e.id}）`,
@@ -30,8 +31,9 @@ export function render(e: CatalogEntry): string {
   // 它拆成独立字段之后，不补这一行就等于**只有界面知道、agent 不知道**——
   // 水獭会照样 mcp_configure 落盘再 mcp_authorize，撞同一堵墙，还白留一台
   // 永远连不上的 server 在用户的 mcp.json 里
-  if (e.blocked !== undefined) {
-    lines.push(`现在接不上：${e.blocked}。别装这台，把这句原因直接告诉用户。`);
+  const blocked = desktopBlocked(e);
+  if (blocked !== undefined) {
+    lines.push(`现在接不上：${blocked}。别装这台，把这句原因直接告诉用户。`);
   }
   return lines.join("\n");
 }

@@ -87,6 +87,10 @@ export interface Env {
   /** Stripe。`wrangler secret put STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` */
   STRIPE_SECRET_KEY?: string;
   STRIPE_WEBHOOK_SECRET?: string;
+  /** 手机接 Gmail 用的预置 Google OAuth 客户端（#1619，Web application 类型，回调填 edge 的 /px/v1/cloud/callback）。
+      `wrangler secret put GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET`。任一没配 = 「Gmail 还没开放」 */
+  GOOGLE_OAUTH_CLIENT_ID?: string;
+  GOOGLE_OAUTH_CLIENT_SECRET?: string;
   /** 这份 worker 的内容指纹（#791，ADR-0258）。**vars 不是 secret**，由
       `scripts/edge-deploy.mjs` 用 `wrangler deploy --var BUILD_STAMP:<戳>` 注入，
       所以 wrangler.jsonc 里没有它——写死在那儿的话每次部署都要手改一行 */
@@ -276,6 +280,12 @@ export class Escrow extends DurableObject<Env> {
       random: (n) => crypto.getRandomValues(new Uint8Array(n)),
       // 故意取生产默认：wrangler dev 也用生产回调注册客户端（手机只认一个回调地址，单一来源）
       callbackUrl: `${DEFAULT_EDGE_BASE_URL}/px/v1/cloud/callback`,
+      presetClient: (name) => {
+        if (name !== "google") return null;
+        const id = this.env.GOOGLE_OAUTH_CLIENT_ID;
+        const secret = this.env.GOOGLE_OAUTH_CLIENT_SECRET;
+        return id && secret ? { client_id: id, client_secret: secret } : null;
+      },
       homeIdOf: async (uid) => {
         try {
           const res = await fetch(`${rest}/workspaces?select=id&owner_uid=eq.${encodeURIComponent(uid)}&kind=eq.home&limit=1`, { headers: supaHeaders });

@@ -123,7 +123,9 @@ export type ChatRow =
     status: TaskStatus; assigneeName: string | null; question: string | null; summary: string | null;
     /** 协作者（#1578）：「小红的管理员」 */
     collaboratorName: string | null;
-  };
+  }
+  /** 应用卡（#1591）：专员 build_app 打出一版，一张卡「打开」。在 app_card 的位置 */
+  | { kind: "app"; key: string; ts: number; appId: string; version: number; name: string; icon: string; note: string; byName: string };
 
 type ItemRow = Exclude<ChatRow, { kind: "time" }>;
 
@@ -247,6 +249,10 @@ export function chatRows(o: {
       continue;
     }
     // 选人卡（#1520）：只在 offered 的位置画一行；之后的 picked / dismissed / failed 只改这一行的状态
+    if (e.type === "app_card") {
+      items.push({ kind: "app", key: `app-${e.seq}`, ts: e.ts, appId: e.appId, version: e.version, name: e.name, icon: e.icon, note: e.note, byName: agentNameOf(o.ws, e.byAgentId) });
+      continue;
+    }
     if (e.type.startsWith("task_")) {
       if (e.type === "task_created") {
         const t = tasks.get(e.taskId);

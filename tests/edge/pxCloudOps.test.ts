@@ -4,7 +4,7 @@ import {
   cloudCallback, cloudConnect, cloudGrant, cloudRefresh, cloudRemove, cloudViewOf,
   type CloudOpsDeps, type CloudStore, type PendingAuth,
 } from "../../services/edge/src/pxCloudOps.js";
-import { CLOUD_TEXT, upsertCloudService, type CloudBox } from "../../src/shared/remote/pxCloud.js";
+import { CLOUD_TEXT, presetUnconfiguredText, upsertCloudService, type CloudBox } from "../../src/shared/remote/pxCloud.js";
 import type { CatalogEntry } from "../../src/shared/mcpCatalog.js";
 
 const UID = "8f0c6a0e-1111-4222-8333-444455556666";
@@ -19,6 +19,10 @@ const CATALOG: CatalogEntry[] = [
   { id: "context7", name: "Context7", description: "", transport: "http", url: "https://mcp.context7.com/mcp", params: [], auth: "none", authNote: "" },
   { id: "local", name: "Local", description: "", transport: "stdio", command: "npx", params: [], auth: "none", authNote: "" },
   { id: "plain", name: "Plain", description: "", transport: "http", url: "http://insecure.example/mcp", params: [], auth: "none", authNote: "" },
+  {
+    id: "gmail", name: "Gmail", description: "", transport: "http", url: "https://gmail.example/mcp/v1", params: [], auth: "oauth", authNote: "",
+    presetClient: "google", scopes: ["g.read", "g.compose"], authorizeParams: { access_type: "offline", prompt: "consent" },
+  },
 ];
 
 /** 内存假货。atomic 串行化并记录临界区里有没有打过 fetch（Global Constraints：临界区里不许外呼）；
@@ -59,6 +63,17 @@ function upstream(store: { inAtomic: () => boolean }, opts: { token401?: boolean
     if (url === "https://auth.notion.com/t") {
       const b = new URLSearchParams(String(init.body));
       return b.get("grant_type") === "refresh_token" ? J(400, { error: "invalid_grant" }) : J(200, { access_token: "AT", refresh_token: "RT" });
+    }
+    if (url === "https://gmail.example/.well-known/oauth-protected-resource/mcp/v1") {
+      return J(200, { resource: "https://gmail.example/mcp/v1", authorization_servers: ["https://accounts.example/"], scopes_supported: ["https://mail.example/", "g.read", "g.compose"] });
+    }
+    if (url === "https://accounts.example/.well-known/oauth-authorization-server") {
+      return J(200, { authorization_endpoint: "https://accounts.example/auth", token_endpoint: "https://oauth2.example/token" });
+    }
+    if (url === "https://oauth2.example/token") {
+      const b = new URLSearchParams(String(init.body));
+      if (b.get("client_secret") !== "GSECRET") return J(401, { error: "invalid_client" });
+      return b.get("grant_type") === "refresh_token" ? J(200, { access_token: "AT2" }) : J(200, { access_token: "AT", refresh_token: "RT" });
     }
     if (url.startsWith("https://")) {
       if (opts.token401) return new Response("", { status: 401 });
@@ -524,5 +539,159 @@ describe("cloudRefresh：没有 oauth 的应用被 401（Task 7 I1a）", () => {
     await cloudRefresh(x.d, "cloud-github");
     await cloudConnect(x.d, UID, { catalogId: "github", params: { github_token: "new" } });
     expect(x.m.peekBox()!.services[0]).toMatchObject({ status: "ok", headers: { Authorization: "Bearer new" } });
+  });
+});
+
+describe("预置 OAuth 客户端（#1619）", () => {
+  const PRESET = { client_id: "gcid.apps.example", client_secret: "GSECRET" };
+  const withPreset = (p: typeof PRESET | null = PRESET) => deps({ presetClient: () => p });
+
+  it("不调注册；授权 URL 用预置 client_id、目录的 scope 与额外参数", async () => {
+    const { d, up } = withPreset();
+    const r = await cloudConnect(d, UID, { catalogId: "gmail", params: {} });
+    expect(r.ok).toBe(true);
+    if (!r.ok || r.reply.kind !== "authorize") throw new Error("应当回 authorize");
+    const u = new URL(r.reply.authorizeUrl);
+    expect(u.origin + u.pathname).toBe("https://accounts.example/auth");
+    expect(u.searchParams.get("client_id")).toBe("gcid.apps.example");
+    expect(u.searchParams.get("scope")).toBe("g.read g.compose");
+    expect(u.searchParams.get("access_type")).toBe("offline");
+    expect(u.searchParams.get("prompt")).toBe("consent");
+    expect(up.calls.some((c) => c.includes("register"))).toBe(false);
+  });
+
+  it("没配凭据：503 preset_unconfigured，一发外呼都没有", async () => {
+    const { d, up } = withPreset(null);
+    expect(await cloudConnect(d, UID, { catalogId: "gmail", params: {} }))
+      .toEqual({ ok: false, status: 503, code: "preset_unconfigured", message: presetUnconfiguredText("Gmail") });
+    expect(presetUnconfiguredText("Gmail")).toBe("Gmail 还没开放，稍后再试");
+    expect(up.calls).toEqual([]);
+    const none = deps(); // deps 里根本没有 presetClient
+    expect(await cloudConnect(none.d, UID, { catalogId: "gmail", params: {} })).toMatchObject({ status: 503 });
+  });
+
+  it("pending 与落箱里都没有 client_secret；换 token 时带上了（假上游不带 secret 就 401）", async () => {
+    const { d, m } = withPreset();
+    const r = await cloudConnect(d, UID, { catalogId: "gmail", params: {} });
+    if (!r.ok || r.reply.kind !== "authorize") throw new Error("应当回 authorize");
+    const state = new URL(r.reply.authorizeUrl).searchParams.get("state")!;
+    const p = m.pending.get(state)!;
+    expect(p.clientInformation).toEqual({ client_id: "gcid.apps.example", preset: "google" });
+    expect(await cloudCallback(d, UID, { state, code: "C", error: null })).toEqual({ ok: true, serverId: "cloud-gmail" });
+    const svc = m.peekBox()!.services[0]!;
+    expect(svc.oauth!.clientInformation).toEqual({ client_id: "gcid.apps.example", preset: "google" });
+    expect(JSON.stringify(m.peekBox())).not.toContain("GSECRET");
+  });
+
+  it("回调时凭据被撤了：不换 token，说还没开放", async () => {
+    let p: typeof PRESET | null = PRESET;
+    const { d, up } = deps({ presetClient: () => p });
+    const r = await cloudConnect(d, UID, { catalogId: "gmail", params: {} });
+    if (!r.ok || r.reply.kind !== "authorize") throw new Error("应当回 authorize");
+    const state = new URL(r.reply.authorizeUrl).searchParams.get("state")!;
+    p = null;
+    expect(await cloudCallback(d, UID, { state, code: "C", error: null })).toEqual({ ok: false, message: presetUnconfiguredText("Gmail") });
+    expect(up.calls.some((c) => c === "https://oauth2.example/token")).toBe(false);
+  });
+
+  it("续期：带上现取的 secret；写回的箱里仍没有 secret，旧 refresh_token 保留", async () => {
+    const { d, m } = withPreset();
+    const r = await cloudConnect(d, UID, { catalogId: "gmail", params: {} });
+    if (!r.ok || r.reply.kind !== "authorize") throw new Error("应当回 authorize");
+    const state = new URL(r.reply.authorizeUrl).searchParams.get("state")!;
+    await cloudCallback(d, UID, { state, code: "C", error: null });
+    const oauth = await cloudRefresh(d, "cloud-gmail");
+    expect(oauth?.tokens).toMatchObject({ access_token: "AT2", refresh_token: "RT" });
+    expect(oauth?.clientInformation).toEqual({ client_id: "gcid.apps.example", preset: "google" });
+    expect(JSON.stringify(m.peekBox())).not.toContain("GSECRET");
+    expect(m.peekBox()!.services[0]!.status).toBe("ok");
+  });
+
+  it("非预置应用：厂商注册回包里带 preset 字段也骗不到 secret，且存下的 clientInformation 不留 preset", async () => {
+    const m = memStore();
+    const up = upstream(m.store, {});
+    const bodies = new Map<string, string[]>();
+    const f = async (url: string, init: RequestInit): Promise<Response> => {
+      if (url === "https://auth.notion.com/r") {
+        if (m.store.inAtomic()) throw new Error("临界区里外呼了");
+        return J(201, { client_id: "cid", preset: "google" });
+      }
+      bodies.set(url, [...(bodies.get(url) ?? []), String(init.body ?? "")]);
+      return up.f(url, init);
+    };
+    const { d } = deps({ store: m.store, fetch: f, presetClient: () => PRESET });
+    const r = await cloudConnect(d, UID, { catalogId: "notion", params: {} });
+    if (!r.ok || r.reply.kind !== "authorize") throw new Error("应当回 authorize");
+    const state = new URL(r.reply.authorizeUrl).searchParams.get("state")!;
+    expect(m.pending.get(state)!.clientInformation).toEqual({ client_id: "cid" });
+    expect(await cloudCallback(d, UID, { state, code: "C", error: null })).toEqual({ ok: true, serverId: "cloud-notion" });
+    const sent = (bodies.get("https://auth.notion.com/t") ?? []).join("\n");
+    expect(sent).not.toBe("");
+    expect(sent).not.toContain("GSECRET");
+    expect(m.peekBox()!.services[0]!.oauth!.clientInformation).toEqual({ client_id: "cid" });
+  });
+
+  it("续期时凭据取不到 = transient：不外呼、不标 needs_login", async () => {
+    let p: typeof PRESET | null = PRESET;
+    const { d, m, up } = deps({ presetClient: () => p });
+    const r = await cloudConnect(d, UID, { catalogId: "gmail", params: {} });
+    if (!r.ok || r.reply.kind !== "authorize") throw new Error("应当回 authorize");
+    const state = new URL(r.reply.authorizeUrl).searchParams.get("state")!;
+    await cloudCallback(d, UID, { state, code: "C", error: null });
+    p = null;
+    const before = up.calls.length;
+    expect(await cloudRefresh(d, "cloud-gmail")).toBeNull();
+    expect(up.calls.length).toBe(before);
+    expect(m.peekBox()!.services[0]!.status).toBe("ok");
+  });
+
+  it("续期时我们的 secret 被拒（invalid_client）= transient：不标 needs_login，用户登录没坏（#1619 终审 F3）", async () => {
+    let p = PRESET;
+    const { d, m, up } = deps({ presetClient: () => p });
+    const logs: string[] = [];
+    d.log = (s: string) => { logs.push(s); };
+    const r = await cloudConnect(d, UID, { catalogId: "gmail", params: {} });
+    if (!r.ok || r.reply.kind !== "authorize") throw new Error("应当回 authorize");
+    const state = new URL(r.reply.authorizeUrl).searchParams.get("state")!;
+    await cloudCallback(d, UID, { state, code: "C", error: null });
+    p = { ...PRESET, client_secret: "WRONG" }; // 轮换时贴错了
+    const before = up.calls.length;
+    expect(await cloudRefresh(d, "cloud-gmail")).toBeNull();
+    expect(up.calls.length).toBe(before + 1); // 这回真的外呼了、被上游 401 invalid_client 打回
+    expect(m.peekBox()!.services[0]!.status).toBe("ok");
+    expect(m.peekBox()!.services[0]!.oauth!.tokens).toMatchObject({ refresh_token: "RT" });
+    expect(logs).toContain("[px-cloud] refresh cloud-gmail preset invalid_client");
+  });
+
+  it("护栏：非预置应用续期被 invalid_grant / invalid_client 拒，照旧标 needs_login", async () => {
+    for (const reply of [J(400, { error: "invalid_grant" }), J(401, { error: "invalid_client" })]) {
+      const x = deps({ presetClient: () => PRESET });
+      await loginNotion(x);
+      wrapFetch(x, (url, init) => (isRefresh(url, init) ? reply.clone() : undefined));
+      expect(await cloudRefresh(x.d, "cloud-notion")).toBeNull();
+      expect(x.m.peekBox()!.services[0]!.status).toBe("needs_login");
+    }
+  });
+
+  it("护栏：目录条目不是预置的，存下来的 clientInformation.preset 骗不到 secret（resolveClient 只看目录）", async () => {
+    const m = memStore();
+    const bodies: string[] = [];
+    const up = upstream(m.store, {});
+    const f = async (url: string, init: RequestInit): Promise<Response> => {
+      if (url === "https://auth.notion.com/t") bodies.push(String(init.body ?? ""));
+      return up.f(url, init);
+    };
+    const { d } = deps({ store: m.store, fetch: f, presetClient: () => PRESET });
+    await m.store.atomic(async () => {
+      await m.store.putBox(upsertCloudService(
+        { v: 1, hostUid: UID, services: [], updatedTs: 0 },
+        {
+          serverId: "cloud-notion", catalogId: "notion", url: "https://mcp.notion.com/mcp", toolDefs: [],
+          oauth: { tokens: { access_token: "AT", refresh_token: "RT" }, clientInformation: { client_id: "cid", preset: "google" }, tokenEndpoint: "https://auth.notion.com/t" },
+        }, HOME, 1_000_000));
+    });
+    await cloudRefresh(d, "cloud-notion");
+    expect(bodies.length).toBe(1); // 确实打到了那个 token 端点，下面的「不含」才有意义
+    expect(bodies.join("\n")).not.toContain("GSECRET");
   });
 });

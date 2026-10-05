@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { mcpCatalogTool, render } from "../../src/tools/mcpCatalog.js";
-import type { CatalogEntry } from "../../src/shared/mcpCatalog.js";
+import { MCP_CATALOG, PRESET_ON_PHONE, type CatalogEntry } from "../../src/shared/mcpCatalog.js";
 import type { ExecutionWorld } from "../../src/world/executionWorld.js";
 
 function worldWith(getJson?: (url: string) => Promise<unknown>): ExecutionWorld {
@@ -60,6 +60,11 @@ describe("mcp_catalog 工具", () => {
     });
     expect(out).toContain("现在接不上");
     expect(out).toContain("别装这台");
+  });
+
+  it("预置客户端的条目：告诉水獭别装，去手机上接（#1619）", () => {
+    const gmail = MCP_CATALOG.find((e) => e.id === "gmail")!;
+    expect(render(gmail)).toContain(`现在接不上：${PRESET_ON_PHONE}`);
   });
 
   it("没标 blocked 的不会平白多出那句话", async () => {

@@ -12,14 +12,16 @@ const row = (id: string, status: TaskRow["status"], extra: Partial<TaskRow> = {}
 
 function harness(tasks: TaskRow[], refuse: string | null = null) {
   const requests: Parameters<CollabToolDeps["request"]>[0][] = [];
+  const redelivered: string[] = [];
   const tool = createCollabTool({
     peer: () => ({ uid: "u_xh", name: "小红" }),
     ownerName: () => "Stan",
     tasks: () => new Map(tasks.map((t) => [t.id, t])),
     ownerLineBefore: (taskId) => (taskId === "t1" ? "@我的管理员 问问小红周六来不来" : ""),
     request: async (o) => { requests.push(o); return refuse; },
+    redeliver: async (id) => { redelivered.push(id); return refuse; },
   });
-  return { tool, requests };
+  return { tool, requests, redelivered };
 }
 
 describe("invite_collaborator", () => {
@@ -38,11 +40,15 @@ describe("invite_collaborator", () => {
     await expect(h.tool.run({ taskId: "t3", note: "x".repeat(501) }, world)).rejects.toThrow("最多 500");
     const refused = harness([row("t3", "open")], "你们已经不是朋友了，送不过去");
     await expect(refused.tool.run({ taskId: "t3" }, world)).rejects.toThrow("不是朋友");
+    await expect(refused.tool.run({ taskId: "t3" }, world)).rejects.toThrow("别说已经交给了");
   });
   it("等点头 / 在办的不重发；不方便 / 没回的可以再邀", async () => {
-    const pending = harness([row("t2", "open", { collaborator: { uid: "u_xh", name: "小红", state: "pending" } })]);
+    const pending = harness([row("t2", "open", { collaborator: { uid: "u_xh", name: "小红", state: "pending", requestId: "r_1" } })]);
     expect(await pending.tool.run({ taskId: "t2" }, world)).toContain("等 小红 点头");
     expect(pending.requests).toEqual([]);
+    expect(pending.redelivered).toEqual(["r_1"]); // 等点头的再送一次（对面去重）——修好之前没送到的那条靠它补上
+    const stuck = harness([row("t2", "open", { collaborator: { uid: "u_xh", name: "小红", state: "pending", requestId: "r_1" } })], "对方还没有主场");
+    await expect(stuck.tool.run({ taskId: "t2" }, world)).rejects.toThrow("没送到");
     const accepted = harness([row("t2", "open", { collaborator: { uid: "u_xh", name: "小红", state: "accepted" } })]);
     expect(await accepted.tool.run({ taskId: "t2" }, world)).toContain("已经在办");
     const declined = harness([row("t2", "open", { collaborator: { uid: "u_xh", name: "小红", state: "declined" } })]);

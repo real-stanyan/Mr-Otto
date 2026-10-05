@@ -46,10 +46,14 @@ export interface AgentRosterRow {
     **不按最近活动排**：十来只智能体时固定顺序比「刚说话的顶上去」好找——这是通讯录，
     不是会话列表（维护者选的方向 A）。代价是「谁刚回过我」在这一栏上看不出来。 */
 export function rosterRows(home: WorkspaceSnapshot, chats: readonly CloudSessionListRow[]): AgentRosterRow[] {
-  // 名单恰好一只的私聊才算数：库里那条唯一索引已经保证了这件事，这里是第二道——
-  // 一条名单里有两只的 "dm" 是脏数据，认了它会让两只智能体指向同一条线
+  // 名单恰好一只的私聊才算数，**管理员那条除外**：#1606（0064）之后管理员能把专员拉进自己的私聊，名单是
+  // 「admin 打头、1~6 只」，它还是与管理员的私聊（0037 的唯一索引按 agent_ids[1] 认它）。真机 2026-10-05：
+  // 管理员拉了店铺管家进来，这一道把那条认成脏数据，管理员页成了「说第一句话就开始了」的空草稿。
+  // 别的私聊照旧恰好一只：两只的「dm」认了会让两只智能体指向同一条线
   const dmOf = new Map(
-    chats.filter((c) => c.chatKind === "dm" && c.agentIds.length === 1).map((c) => [c.agentIds[0]!, c]),
+    chats
+      .filter((c) => c.chatKind === "dm" && (c.agentIds.length === 1 || (c.agentIds[0] === ADMIN_AGENT_ID && c.agentIds.length >= 1)))
+      .map((c) => [c.agentIds[0]!, c]),
   );
   return home.agents.map((a) => {
     const dm = dmOf.get(a.agentId);
