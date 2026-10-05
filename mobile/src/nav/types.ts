@@ -33,6 +33,8 @@ export type RootStackParams = {
   FriendChat: { uid: string };
   /** 我带进和这位朋友私聊的智能体（#1642）：私聊页里点我自己的头像进来——给谁看、带上、移除 */
   LaneAgents: { uid: string };
+  /** 朋友带来的智能体（#1653）：私聊页里点朋友的头像进来，只读。agents / hidden 是私聊页那一刻头像底下那一排的快照 */
+  PeerLaneAgents: { uid: string; agents: { agentId: string; name: string; slot: number; description: string }[]; hidden: number };
   /** 人与人的通话页（#1534）：哪一通、和谁、是不是来电。状态在 call/humanCall.ts 的 store 里 */
   HumanCall: { callId: string; friendUid: string; incoming: boolean };
   ChatInfo: InfoRoute;

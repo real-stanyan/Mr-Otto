@@ -409,7 +409,19 @@ export function FriendChatScreen({ route, navigation }: Props) {
       {...(openLaneAgents !== undefined ? { onPress: openLaneAgents } : {})}
     />
   );
-  const friendTile = <HumanAvatar name={name} url={row?.profile.avatarUrl ?? ""} dots={peerDots} hidden={hiddenDots} dim={peerDim} label={laneDotsLabel(name, peerDots.map((d) => d.name), hiddenDots)} />;
+  // 点朋友的头像看 TA 带来的那几只（#1653，只读）：交过去的是头像底下这一排的快照
+  const openPeerAgents = (): void => navigation.navigate("PeerLaneAgents", {
+    uid,
+    agents: peerNames.map((a) => ({ agentId: a.agentId, name: a.name, slot: slotOfPeerAgent(a.agentId), description: peerWs?.agents.find((x) => x.agentId === a.agentId)?.description ?? "" })),
+    hidden: hiddenDots,
+  });
+  const friendTile = (
+    <HumanAvatar
+      name={name} url={row?.profile.avatarUrl ?? ""} dots={peerDots} hidden={hiddenDots} dim={peerDim}
+      label={`${laneDotsLabel(name, peerDots.map((d) => d.name), hiddenDots)}，点一下看${name}带来的智能体`}
+      {...(friend ? { onPress: openPeerAgents } : {})}
+    />
+  );
 
   useEffect(() => {
     void openThread(uid);
