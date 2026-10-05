@@ -6,8 +6,20 @@ import { missingParams } from "./mcpCatalogFill.js";
 import { catalogIcon } from "./appIcon.js";
 import type { CloudViewItem } from "./remote/pxCloud.js";
 
-/** 用 edge 的 https 回调实测过接不上的（Task 13 的探针产出）。值是给人看的那句原因 */
-export const MOBILE_OAUTH_BLOCKED: Readonly<Record<string, string>> = {};
+/** 用 edge 的 https 回调实测过接不上的（Task 13 的探针产出）。值是给人看的那句原因。
+    2026-10-05 跑的那次（#1607）：7 个全在动态注册那一步拒了 edge 的回调地址——厂商只放白名单里的域名
+    （Dropbox 只放「预先登记的伙伴」）。电脑上走回环回调不受影响，所以一律指去电脑上接。
+    厂商哪天把我们加进白名单，删掉对应一行即可；要不靠厂商就让手机接上，见 #1594 */
+const CLOUD_CALLBACK_REFUSED = "它不接受从云端回来的登录，去电脑上接";
+export const MOBILE_OAUTH_BLOCKED: Readonly<Record<string, string>> = {
+  vercel: CLOUD_CALLBACK_REFUSED,
+  monday: CLOUD_CALLBACK_REFUSED,
+  shortcut: CLOUD_CALLBACK_REFUSED,
+  dropbox: CLOUD_CALLBACK_REFUSED,
+  cal: CLOUD_CALLBACK_REFUSED,
+  intercom: CLOUD_CALLBACK_REFUSED,
+  square: CLOUD_CALLBACK_REFUSED,
+};
 
 export type ConnectKind = "browser" | "form" | "direct";
 
