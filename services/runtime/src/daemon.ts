@@ -88,6 +88,8 @@ import {
 import { createWsTransport } from "../../../src/shared/remote/wsTransport.js";
 import { ADMIN_AGENT_ID, normalizeSandboxApproval, type SandboxApproval } from "../../../src/shared/workspaceAgents.js";
 import { isAgentDomain } from "../../../src/shared/agentDomain.js";
+import { APP_BUCKET } from "../../../src/shared/apps.js";
+import { createSupabaseAppStore } from "./appStore.js";
 import { isAgentTier, type AgentTier } from "../../../src/shared/agentTier.js";
 import { findModel } from "../../../src/shared/modelCatalog.js";
 import type { RemoteTransport } from "../../../src/shared/remote/transport.js";
@@ -310,6 +312,7 @@ async function main(): Promise<void> {
       人自己 @ 的那一轮仍然是现读的 */
   const agentsCache = createTtlCache(queryAgents, { ttlMs: 60_000 });
   const rawAgentWriter = createSupabaseAgentWriter(supabase);
+  const appStore = createSupabaseAppStore(supabase);
   const agentWriter: WorkspaceAgentWriter = {
     async create(workspaceId, draft, createdBy) {
       const r = await rawAgentWriter.create(workspaceId, draft, createdBy);
@@ -1152,6 +1155,14 @@ async function main(): Promise<void> {
       // 但只有工具真被调用那一刻才会碰到它
       laneBridge: { send: (o) => laneBridge.send(o) },
       // 好友档位（#1578）：主人给这位朋友的那一档，两边取小；查不到回 null（sessionService 按「仅聊天」写）
+      // Otto 应用（#1591）：两张表 + 往桶里传文件，都是 service role
+      apps: {
+        store: appStore,
+        upload: async (path, bytes, contentType) => {
+          const { error } = await supabase.storage.from(APP_BUCKET).upload(path, bytes, { contentType, upsert: true });
+          if (error) throw new Error(`上传失败 ${path}: ${error.message}`);
+        },
+      },
       peerTier: async (peerUid) => {
         try {
           const rows = await acceptedFriendRows(ownerUid, [peerUid]);

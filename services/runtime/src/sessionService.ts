@@ -236,6 +236,9 @@ import { ADMIN_AGENT_ID, type SandboxApproval } from "../../../src/shared/worksp
 import { connectorsAllowed, dispatchDenied, scopedTools, tierOf, type AgentTier } from "../../../src/shared/agentTier.js";
 import { tierPrompt } from "../../../src/shared/tierPrompt.js";
 import { createRosterTools } from "./rosterTools.js";
+import { createBuildAppTool } from "./buildAppTool.js";
+import type { AppStore } from "./appStore.js";
+import { domainOf } from "../../../src/shared/agentTier.js";
 import { createTaskTools } from "./taskTools.js";
 import { foldTask, isTaskEvent, taskFoldOf } from "../../../src/shared/tasks.js";
 import { guestTargetsInLane } from "../../../src/shared/delegation.js";
@@ -540,6 +543,8 @@ export interface CloudSessionOpts {
   /** 主人给这位朋友的好友档位（两边取小，#1578）：管理员在公开车道里对对方能说多少、做多少，按它写进 brief。
       null = 查不到（按最严的「仅聊天」写）。可选：团队会话 / 没接的装配不带 */
   peerTier?: (peerUid: string) => Promise<FriendTier | null>;
+  /** Otto 应用（#1591）：build_app 要的两样——两张表与往 otto-apps 桶传文件。可选：没接的装配不挂这把刀 */
+  apps?: { store: AppStore; upload: (path: string, bytes: Uint8Array, contentType: string) => Promise<void> } | null;
   /** message_friend（#1549）：派智能体给主人的好友发一条私聊——解析好友 / 档位 / 落库都在 daemon 的 outreachHub.message。
       可选（同 laneBridge 的理由：几十份夹具不该为一把只在主场亮的刀都改一遍）：缺席 / null = 刀不挂。daemon 是唯一的真装配者，它总会给 */
   friendMessage?: {
@@ -1596,6 +1601,17 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 语音通话里把人拉进来那把刀（#1163），每只都挂：通话进行中只有通话成员参与，任何一只
     // 都可能撞上「这件事该由通话外的人做」。不过审批门（口头同意就行，纪律在提示词里）；
     // byUid 是点火的那个人（同 create_agent 的 created_by），byAgentId 是这只自己
+    // build_app（#1591）：主场里、apps 域的专员或管理员；走 git 那条 execInWorkspace（拿工作区锁）
+    const buildAppTool = opts.apps === null || opts.apps === undefined || !opts.approveAll || git === undefined ? null : createBuildAppTool({
+      agentId: spec.agentId, workspaceId: opts.workspaceId, ownerUid: opts.ownerUid,
+      exec: async (script) => { await gateContainer(); return git.execInWorkspace(script); },
+      upload: opts.apps.upload,
+      store: opts.apps.store,
+      card: (e) => {
+        if (archived) return;
+        notify(store.append({ sessionId, ts: Date.now(), type: "app_card", ...e, byAgentId: spec.agentId, ignorable: true }));
+      },
+    });
     // 任务那三把刀（#1571 第 3 步）：主场里才有；落的是事件，byAgentId = 这只自己
     const taskTools = !opts.approveAll ? [] : createTaskTools({
       agentId: spec.agentId,
@@ -1747,6 +1763,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           ...(isAdmin && opts.approveAll ? [rosterTools.bring, rosterTools.dismiss] : []),
           ...routineTools,
           ...taskTools,
+          ...(buildAppTool !== null && (isAdmin || (me !== null && domainOf(me) === "apps")) ? [buildAppTool] : []),
           ...px,
         ];
         // 汇报轮同理（#1441）：supervisedTurn = 客人那一轮 或 汇报轮
