@@ -43,7 +43,7 @@ describe("laneTasksOf", () => {
     expect(laneTaskStatus(tasks[1]!, false)).toBe("waiting");
   });
 
-  it("同一个人半小时内接着说的归到他上一条；换人或隔久了才开新的（真机 2026-10-05 三条卡）", () => {
+  it("同一个人三分钟内接着说的归到他上一条；换人或隔久了才开新的（真机 2026-10-05 三条卡；#1626 窗口从半小时缩到三分钟）", () => {
     reset();
     const tasks = laneTasksOf([
       ev({ type: "user_message", content: "@我的管理员 你带上 Stan 的管理员去看营业额", fromUid: ME }),
@@ -52,7 +52,7 @@ describe("laneTasksOf", () => {
       ev({ type: "assistant_message", agentId: "admin", content: "好" }),
       ev({ type: "user_message", content: "你可以给他打电话的", fromUid: ME }),
       ev({ type: "user_message", content: "我来说一句", fromUid: FRIEND }),
-      ev({ type: "user_message", content: "隔了很久", fromUid: FRIEND, ts: 1000 + seq + 31 * 60_000 }),
+      ev({ type: "user_message", content: "隔了很久", fromUid: FRIEND, ts: 1000 + seq + 4 * 60_000 }),
     ], ME, nameOf);
     expect(tasks.map((t) => [t.startedBy, t.items.filter((i) => i.who !== "agent").length])).toEqual([["me", 3], ["friend", 1], ["friend", 1]]);
     expect(tasks[0]!.title).toBe("@我的管理员 你带上 Stan 的管理员去看营业额");
@@ -170,5 +170,21 @@ describe("主页上是气泡还是卡（#1620）", () => {
     expect(laneTaskShape(task([me("u", "查营业额"), ag("a", "admin", "@店铺管家 取一下"), hand("r", "admin", "a2")]))).toBe("task");
     expect(laneTaskShape(task([me("u", "查"), ag("a", "admin", "好"), ag("b", "a2", "来了")]))).toBe("task");
     expect(laneTaskShape(task([ag("a", "admin", "通话结束")], { kind: "call" }))).toBe("task");
+  });
+});
+
+describe("隔了几分钟再 @ = 新的一条（#1626）", () => {
+  it("上一条是派过活的卡、已回复；5 分钟后主人再 @ → 另开一条（不藏进旧卡）", () => {
+    reset();
+    const tasks = laneTasksOf([
+      ev({ type: "user_message", content: "看看数正不正常", fromUid: ME }),
+      ev({ type: "assistant_message", agentId: "admin", content: "@店铺管家 取一下" }),
+      ev({ type: "user_message", content: "[系统] 接力", fromUid: ME, mentions: ["a2"], relay: { fromAgentId: "admin", depth: 1 } }),
+      ev({ type: "assistant_message", agentId: "a2", content: "数正常" }),
+      ev({ type: "user_message", content: "@雨姐", fromUid: ME, ts: 1000 + seq + 5 * 60_000 }),
+      ev({ type: "assistant_message", agentId: "admin", content: "在。说吧。", ts: 1000 + seq + 5 * 60_000 + 4000 }),
+    ], ME, nameOf);
+    expect(tasks).toHaveLength(2);
+    expect(tasks[1]!.items.map((i) => i.text)).toEqual(["@雨姐", "在。说吧。"]);
   });
 });
