@@ -13,10 +13,12 @@ import { AppTile } from "../machine/AppTile.js";
 import { usePalette } from "../theme.js";
 import { Button } from "../ui.js";
 
-export function AppConnectPrompt({ row, action, visible, onPrimary, onLater, onExited }: {
+export function AppConnectPrompt({ row, action, visible, onShown, onPrimary, onLater, onExited }: {
   row: Extract<ChatRow, { kind: "app_connect" }>;
   action: AppConnectAction;
   visible: boolean;
+  /** Modal 真的摊开之后调一次 */
+  onShown: () => void;
   onPrimary: () => void;
   onLater: () => void;
   /** 退场放完、Modal 收起之后调一次：调用方在这里才卸掉它 / 才去做主按钮的动作 */
@@ -24,7 +26,7 @@ export function AppConnectPrompt({ row, action, visible, onPrimary, onLater, onE
 }) {
   const { c } = usePalette();
   return (
-    <Dialog visible={visible} onExited={onExited}>
+    <Dialog visible={visible} onShown={onShown} onExited={onExited}>
       <View style={{ alignItems: "center", paddingHorizontal: 20, gap: 10 }}>
         <AppTile name={row.appName} icon={catalogIcon(row.catalogId)} size={56} />
         <Text style={{ fontSize: 12, lineHeight: 16, color: c.faint }}>{row.name}</Text>

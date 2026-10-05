@@ -23,7 +23,7 @@ import { AppState, FlatList, Pressable, StyleSheet, Text, View } from "react-nat
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { activityFoldOf } from "../../../src/shared/agentActivity.js";
 import { appConnectAction } from "../../../src/shared/appConnect.js";
-import { popupCandidate } from "../../../src/shared/appConnectPopup.js";
+import { nextBaseline, popupCandidate, type PopupBaseline } from "../../../src/shared/appConnectPopup.js";
 import { MCP_CATALOG, type CuratedEntry } from "../../../src/shared/mcpCatalog.js";
 import { lendToTeam } from "../machine/connectApp.js";
 import { ConnectAppDialog } from "../machine/ConnectAppDialog.js";
@@ -787,35 +787,82 @@ export function ChatScreen({ route, navigation }: Props) {
   const focused = useIsFocused();
   const [pasted, setPasted] = useState<{ key: number; visible: boolean; images: PastedImage[] } | null>(null);
   usePastedImages(focused && canMedia && !callOnly, (images) => setPasted({ key: Date.now(), visible: true, images }));
-  // 连接卡自动弹窗（#1666，spec §4.2）：这一页看着的时候新来的卡弹一次，翻历史不弹。判据在 appConnectPopup.ts；
-  // 这里管三样界面状态——app 在不在前台、基线 seq、弹没弹过。
-  // 基线 = 这一页第一次拿到完整日志（第一次 ready：服务器那一轮历史已全部进来，缓存不算，chatStore.onStatus）时的最大 seq；
-  // 之后 seq 更大的卡才是「看着的时候新来的」。切会话（sessionId 变）重置，弹没弹过的记录一并清掉
+  // 连接卡自动弹窗（#1666，spec §4.2）：只弹主人正看着这一页的时候新来的卡，翻历史、走开期间来的都不弹。
+  // 判据与基线规则在 appConnectPopup.ts（popupCandidate / nextBaseline）；这里管界面状态：
+  // app 在不在前台、基线 / 弹过的记录、别的 Modal 在不在（含正在退场的）、弹窗有没有真的出来
   const [appActive, setAppActive] = useState(AppState.currentState === "active");
   useEffect(() => {
     const sub = AppState.addEventListener("change", (s) => setAppActive(s === "active"));
     return () => sub.remove();
   }, []);
-  const popupBaseline = useRef<{ sessionId: string; seq: number } | null>(null);
+  const popupBaseline = useRef<PopupBaseline>(null);
+  const popupSession = useRef<string | null>(null);
   const popped = useRef(new Set<string>());
-  const [prompt, setPrompt] = useState<{ row: Extract<ChatRow, { kind: "app_connect" }>; visible: boolean; then: "primary" | null } | null>(null);
+  const [prompt, setPrompt] = useState<{
+    row: Extract<ChatRow, { kind: "app_connect" }>; seen: string[]; shown: boolean; visible: boolean; then: "primary" | null;
+  } | null>(null);
+  // 还在退场的 Modal 别叠上去（iOS 会把新的这一层静默丢掉）：@ 抽屉的 mentioning 在开始关的那一刻就变假，
+  // 退完了才由 onExited 把 mentionLive 放掉；通话页是 RN 原生 Modal（slide 退场没有回调），关了之后留 600ms 当它退完。
+  // 通话卡抽屉靠 openCallSeq（onExited 才清）
+  const [mentionLive, setMentionLive] = useState(false);
   useEffect(() => {
-    if (session === null || session.provisional || session.state !== "ready") return;
-    if (popupBaseline.current?.sessionId !== session.sessionId) {
-      popupBaseline.current = { sessionId: session.sessionId, seq: events.reduce((m, e) => Math.max(m, e.seq), -1) };
-      popped.current = new Set();
-      setPrompt(null);
+    if (mentioning) setMentionLive(true);
+  }, [mentioning]);
+  const overlayOpen = callOpen || callOnly;
+  const [overlaySettling, setOverlaySettling] = useState(false);
+  const overlayWas = useRef(false);
+  useEffect(() => {
+    if (overlayOpen) {
+      overlayWas.current = true;
+      setOverlaySettling(false);
       return;
     }
-    // 一次只一张：别的弹窗 / 接入弹窗 / 正在发回执 / 通话页开着时不弹（两层 Modal 叠着 iOS 上什么都不发生），
+    if (!overlayWas.current) return;
+    overlayWas.current = false;
+    setOverlaySettling(true);
+    const t = setTimeout(() => setOverlaySettling(false), 600);
+    return () => clearTimeout(t);
+  }, [overlayOpen]);
+  useEffect(() => {
+    const sid = session?.sessionId ?? null;
+    if (popupSession.current !== sid) {
+      popupSession.current = sid;
+      popped.current = new Set();
+      popupBaseline.current = null;
+      setPrompt(null);
+    }
+    const watching = focused && appActive;
+    popupBaseline.current = nextBaseline(popupBaseline.current, {
+      sessionId: sid,
+      ready: session !== null && session.state === "ready" && !session.provisional,
+      watching,
+      maxSeq: () => events.reduce((m, e) => Math.max(m, e.seq), -1),
+    });
+    const base = popupBaseline.current;
+    if (base === null || !watching) return;
+    // 一次只一张：别的弹窗 / 接入弹窗 / 正在发回执 / 按住说话 / 通话页开着（或刚收起、还在退场）时不弹，
     // 等它们收了这个 effect 会再跑一遍
-    if (prompt !== null || connectEntry !== null || connecting !== null) return;
-    if (dispatching !== null || picker !== null || pasted !== null || mentioning || callSheetOpen || callOpen || callOnly) return;
-    const cand = popupCandidate(rows, { baselineSeq: popupBaseline.current.seq, popped: popped.current, focused: focused && appActive });
+    if (prompt !== null || connectEntry !== null || connecting !== null || holdState.phase !== "idle") return;
+    if (dispatching !== null || picker !== null || pasted !== null || mentioning || mentionLive || callSheetOpen || openCallSeq !== null) return;
+    if (overlayOpen || overlaySettling) return;
+    const cand = popupCandidate(rows, { baselineSeq: base.seq, popped: popped.current, focused: watching });
     if (cand === null) return;
-    popped.current.add(cand.connectId);
-    setPrompt({ row: cand, visible: true, then: null });
-  }, [session, events, rows, focused, appActive, prompt, connectEntry, connecting, dispatching, picker, pasted, mentioning, callSheetOpen, callOpen, callOnly]);
+    // 记「弹过」要等弹窗真的摊开（onShown）才记：没出来的话下一轮还能再弹，不是白白丢掉一次
+    setPrompt({ row: cand.row, seen: cand.seen, shown: false, visible: true, then: null });
+  }, [session, events, rows, focused, appActive, prompt, connectEntry, connecting, holdState.phase, dispatching, picker, pasted, mentioning, mentionLive, callSheetOpen, openCallSeq, overlayOpen, overlaySettling]);
+  // 兜底：弹窗等了 2.5 秒还没摊开（被别的原生层挡了 / 平台丢了），不让 prompt 永远卡在那里挡住后面的卡：
+  // 放弃这一次，把这几张记成弹过——它们仍在会话里当卡，主人照样点得到
+  const promptId = prompt === null ? null : prompt.row.connectId;
+  const promptShown = prompt !== null && prompt.shown;
+  const promptSeen = prompt === null ? null : prompt.seen;
+  useEffect(() => {
+    if (promptId === null || promptShown) return;
+    const t = setTimeout(() => {
+      for (const id of promptSeen ?? []) popped.current.add(id);
+      setPrompt((p) => (p !== null && !p.shown ? null : p));
+    }, 2500);
+    return () => clearTimeout(t);
+  }, [promptId, promptShown, promptSeen]);
   if (offerPhone) plus.push({ key: "call", icon: "phone", label: "语音通话", onPress: () => void onStartCall() });
   const openPicker = (kind: "group" | "add" | "invite"): void => {
     setPickError(null);
@@ -1063,6 +1110,10 @@ export function ChatScreen({ route, navigation }: Props) {
           row={prompt.row}
           action={appConnectActionOf(prompt.row.catalogId)}
           visible={prompt.visible}
+          onShown={() => {
+            for (const id of prompt.seen) popped.current.add(id);
+            setPrompt((p) => (p === null ? p : { ...p, shown: true }));
+          }}
           // 主按钮只收起并记一笔「收完要去做」；真正的动作在 onExited（弹窗完全退场）之后——
           // 接入弹窗要升系统登录页，不能叠在一张正在退场的 Modal 上。「稍后」只收起，卡还在会话里；
           // 退场途中的第二下点击不改已经记下的那一笔
@@ -1111,6 +1162,7 @@ export function ChatScreen({ route, navigation }: Props) {
             pendingMention.current = null;
             // 抽屉的 Modal 要等这一拍提交之后才真的收起：等一帧再插，不然输入框拿不到焦点
             if (name !== null) requestAnimationFrame(() => composer.current?.mention(name));
+            setMentionLive(false);
           }}
         />
       ) : null}
