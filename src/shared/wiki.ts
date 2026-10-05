@@ -602,6 +602,10 @@ export const WIKI_PROMPT_INTRO =
   `怎么查：涉及客户、口径、分工、历史决定时先看下面的索引，有对应页就 wiki_read 读了再答。` +
   `\n机制（被问到时照实说，别脑补）：每次轮到你发言前注入索引 + 常驻页 + 你自己那页，其余页要你自己读，没有按相关性检索；你或别人写的下一次轮到你时可见；成员可在团队设置页「记忆」看和改。\n`;
 
+/** 外联里的只读版（#1655）：那条线上没有 wiki_read / wiki 两把刀，引言不能提它们（#1206） */
+export const WIKI_PROMPT_INTRO_READONLY =
+  `\n下面是主人团队 wiki 的一部分（只读：索引 + 常驻页 + 你自己那页）。答朋友的问题时以它为准；这里看不到的页你读不到，别编。\n`;
+
 export function truncateIndexForPrompt(index: string, limit = WIKI_INDEX_INJECT_LIMIT): string {
   if (index.length <= limit) return index;
   const lines = index.split("\n");
@@ -616,13 +620,17 @@ export function truncateIndexForPrompt(index: string, limit = WIKI_INDEX_INJECT_
   return `${kept.join("\n")}\n…（索引还有 ${left} 行，用 wiki_read 搜索或读 index.md 看全部）`;
 }
 
-export function renderWikiPrompt(s: WikiSnapshotForPrompt): string {
+export function renderWikiPrompt(s: WikiSnapshotForPrompt, o: { readOnly?: boolean } = {}): string {
   const self = agentPagePath(s.agentId);
-  let out = WIKI_PROMPT_INTRO;
+  let out = o.readOnly === true ? WIKI_PROMPT_INTRO_READONLY : WIKI_PROMPT_INTRO;
   out += `\n[索引]\n${truncateIndexForPrompt(s.index)}\n`;
   if (s.pinned.length > 0) {
     out += `\n[常驻页]\n`;
     for (const p of s.pinned) out += `### ${promptSafe(p.title)}（${p.path}）\n${p.body}\n`;
+  }
+  if (o.readOnly === true) {
+    if (s.own !== null) out += `\n[你的页 ${linkTarget(self)}]\n${s.own}\n`;
+    return out;
   }
   out += `\n[你的页 ${linkTarget(self)}]\n`;
   out += s.own === null ? `你还没有自己那页，用 wiki write ${self} 建（只注入给「${promptSafe(s.agentName)}」）。\n` : `${s.own}\n`;

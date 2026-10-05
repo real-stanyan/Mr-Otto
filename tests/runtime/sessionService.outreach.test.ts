@@ -121,7 +121,7 @@ describe("外联会话（#1441）", () => {
     const env = lastEnvelope(store);
     expect(env.tools).toEqual([]);
     // 提示词与工具表说同一句话：外联那一支在，工具点名一个不在
-    expect(env.system).toContain("什么工具都没有");
+    expect(env.system).toContain("不能读写文件");
     for (const w of ["read_file", "write_file", "bash", "call_user", "invite_to_call", "git_push"]) expect(env.system, w).not.toContain(w);
     store.close();
   });
