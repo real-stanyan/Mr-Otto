@@ -1,5 +1,5 @@
 // 代办的任务投影（#1565，ADR-0364）：一次请求 = 一条任务；回话、下发、下一棒归到它名下；电话开一条；状态与卡上的字。
-import { laneItemPreview, laneTaskDigest, laneTaskResult, type LaneTask, type LaneTaskItem } from "../../src/shared/laneTasks.js";
+import { laneItemPreview, laneTaskDigest, laneTaskResult, laneTaskShape, type LaneTask, type LaneTaskItem } from "../../src/shared/laneTasks.js";
 import { describe, expect, it } from "vitest";
 import type { SessionEvent } from "../../src/session/events.js";
 import { LANE_TASK_TITLE_MAX, laneBusy, laneTaskStatus, laneTaskSubtitle, laneTasksOf } from "../../src/shared/laneTasks.js";
@@ -152,5 +152,23 @@ describe("车道气泡剥情绪记号（#1614）", () => {
       ev({ type: "assistant_message", agentId: "admin", content: "（平）在。\n\n（笑）你说（真的）。" }),
     ], ME, nameOf);
     expect(tasks[0]!.items.at(-1)!.text).toBe("在。\n\n你说（真的）。");
+  });
+});
+
+describe("主页上是气泡还是卡（#1620）", () => {
+  const me = (key: string, text: string): LaneTaskItem => ({ key, ts: 1, who: "me", text });
+  const ag = (key: string, agentId: string, text: string): LaneTaskItem => ({ key, ts: 1, who: "agent", agentId, text });
+  const hand = (key: string, from: string, to: string): LaneTaskItem => ({ key, ts: 1, who: "agent", agentId: from, text: "[系统]", handoff: { toAgentIds: [to] } });
+  const task = (items: LaneTaskItem[], over: Partial<LaneTask> = {}): LaneTask =>
+    ({ key: "t", ts: 1, startedBy: "me", kind: "message", title: "x", items, agentIds: [...new Set(items.map((i) => i.agentId).filter((a): a is string => a !== undefined))], lastTs: 1, ...over });
+  it("一只答、没派活 = 聊天；还没答的也按聊天（答了就是气泡，别先出卡再变）", () => {
+    expect(laneTaskShape(task([me("u", "@雨姐 你说对吗"), ag("a", "admin", "对，gmail 不难。")]))).toBe("chat");
+    expect(laneTaskShape(task([me("u", "@雨姐 你说对吗"), ag("a", "admin", "对"), me("u2", "那呢"), ag("a2", "admin", "也对")]))).toBe("chat");
+    expect(laneTaskShape(task([me("u", "@雨姐 你说对吗")]))).toBe("chat");
+  });
+  it("派了活 / 多只 / 电话 = 代办卡", () => {
+    expect(laneTaskShape(task([me("u", "查营业额"), ag("a", "admin", "@店铺管家 取一下"), hand("r", "admin", "a2")]))).toBe("task");
+    expect(laneTaskShape(task([me("u", "查"), ag("a", "admin", "好"), ag("b", "a2", "来了")]))).toBe("task");
+    expect(laneTaskShape(task([ag("a", "admin", "通话结束")], { kind: "call" }))).toBe("task");
   });
 });

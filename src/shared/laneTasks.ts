@@ -140,6 +140,17 @@ export function laneBusy(events: readonly SessionEvent[]): boolean {
   return openTurns(events).length > 0;
 }
 
+/** 主页上这条任务长什么样（#1620，真机 2026-10-05：「@雨姐 你说对吗」出了一张代办卡）：
+    一只智能体答、没有下发（没派活）、不是电话 = **聊天**，主页按气泡铺开，像群里的一个人插话；
+    派了活 / 牵涉多只 / 电话 = **代办**，主页一张卡、过程在抽屉。纯投影，日志不动 */
+export type LaneTaskShape = "chat" | "task";
+export function laneTaskShape(task: LaneTask): LaneTaskShape {
+  if (task.kind !== "message") return "task";
+  if (task.agentIds.length > 1) return "task";
+  if (task.items.some((i) => i.handoff !== undefined)) return "task";
+  return "chat";
+}
+
 export type LaneTaskStatus = "working" | "replied" | "waiting";
 
 /** 卡上的状态：还在答 = 代办中；最后一句是智能体说的 = 已回复；最后一句是人说的、没人在答 = 等回复 */
