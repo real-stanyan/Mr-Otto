@@ -130,7 +130,7 @@ export const PRESET_ON_PHONE = "这个应用在手机上接：Mr Otto 手机 App
     GA 前让外部用户用上预览功能，所以这张表要与 Google Cloud 项目 Mr Otto 的 OAuth「测试用户」是同一批人——
     加人两边都加（那边上限 100）。常量而不是 DB 标记，同 onboardingTestAccount.ts（#332）的理由：手机目录打在包里，
     edge 也要认同一份 */
-const PREVIEW_TESTERS = ["stanhavenoidea@gmail.com", "stan@mrotto.agency"];
+const PREVIEW_TESTERS = ["stanhavenoidea@gmail.com", "stan@mrotto.agency", "rickzhang98@gmail.com"];
 
 /** 邮箱不区分大小写；空串 / 未登录永远不命中 */
 export function isPreviewTester(email: string | null | undefined): boolean {

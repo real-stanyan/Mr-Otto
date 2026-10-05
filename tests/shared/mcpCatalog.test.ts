@@ -157,6 +157,7 @@ describe("预览期只对内测账号开放（#1636）", () => {
   it("isPreviewTester：不分大小写、去空白；空串 / null 永远不命中", () => {
     expect(isPreviewTester("stanhavenoidea@gmail.com")).toBe(true);
     expect(isPreviewTester("  Stan@MrOtto.Agency ")).toBe(true);
+    expect(isPreviewTester("rickzhang98@gmail.com")).toBe(true);
     expect(isPreviewTester("someone@example.com")).toBe(false);
     expect(isPreviewTester("")).toBe(false);
     expect(isPreviewTester(null)).toBe(false);
