@@ -90,6 +90,7 @@ import { ADMIN_AGENT_ID, normalizeSandboxApproval, type SandboxApproval } from "
 import { isAgentDomain } from "../../../src/shared/agentDomain.js";
 import { APP_BUCKET } from "../../../src/shared/apps.js";
 import { createSupabaseAppStore } from "./appStore.js";
+import { createSupabaseOwnerSettings } from "./ownerSettingsStore.js";
 import { isAgentTier, type AgentTier } from "../../../src/shared/agentTier.js";
 import { findModel } from "../../../src/shared/modelCatalog.js";
 import type { RemoteTransport } from "../../../src/shared/remote/transport.js";
@@ -757,6 +758,31 @@ async function main(): Promise<void> {
           },
         });
 
+  // 管理员改 Otto 设置（#1621）：落库的那一半。好友名单同外联那条路（只认 accepted，名字现取）；名册走 agentsCache；
+  // 车道朝向走 updateChat（查友谊、公开时补管理员、落 chat_roster_changed）——房没开就按原聊天那条路现开
+  const ownerSettings = createSupabaseOwnerSettings({
+    client: supabase,
+    friendsOf: async (uid) => {
+      const res = await supabase.from("friendships").select("requester,addressee").eq("status", "accepted").or(`requester.eq.${uid},addressee.eq.${uid}`);
+      if (res.error) throw new Error(res.error.message);
+      const uids = [...friendSetOf(uid, (res.data ?? []) as unknown as FriendTierRow[])];
+      return Promise.all(uids.map(async (u) => ({ uid: u, name: await labelOf(u) })));
+    },
+    agentsOf: async (ws) => (await agentsCache.get(ws)).map((a) => ({ agentId: a.agentId, name: a.name })),
+    invalidateAgents: (ws) => agentsCache.invalidate(ws),
+    setLaneFacing: async (home, uid, friendUid, facing) => {
+      const sessionId = await findPairSession(home, friendUid);
+      if (sessionId === null) return "还没有和 TA 的私聊车道——让主人先在和 TA 的私聊里把智能体带进来，再说公开不公开";
+      const room = await openOriginRoom<CloudSession>(
+        { active: (id) => activeSessions.get(id)?.session ?? null, row: sessionRowOf, open: (w, id, publisherUid) => openExistingRoom(w, id, publisherUid), discard: discardRoom },
+        home, sessionId,
+      );
+      if (room === null) return "这条车道这会儿开不起来，稍后再试";
+      const r = await frameHandlerDeps.sessions.updateChat(home, sessionId, uid, { facing });
+      return r.ok ? null : r.message;
+    },
+  });
+
   /** 开一条会话房：起 transport、装配 CloudSession、接好扇出与 cid 清理。
       调用时机两处——create 流程（新会话）与启动时把存量 kind='cloud' 会话
       的房间重新接上（不然重启后没人监听那个 channel，desktop 的 join 会
@@ -1130,6 +1156,8 @@ async function main(): Promise<void> {
       diskUsage: () => sandbox.diskUsage(workspaceId),
       // 定时任务（#1283）：同一个 store 递给每一间房；挂不挂刀由 sessionService 按 approveAll + chatKind 判
       routines: routineStore,
+      // 管理员改设置（#1621）：同 routines，挂不挂由 sessionService 按 approveAll + chatKind + L0 判
+      settings: ownerSettings,
       // 回电（#1411）：推送关着 = null（刀不出现）。isWatching = 这个房间里有没有他的连接——手机切后台会
       // 主动断开会话房（mobile/src/cloud/cloudClient.ts），所以「连着」就是「开着这条聊天」
       // 外联（#1441）：收尾时把结果汇报回原聊天、call_friend 那把刀的出口。推送关着 = 没有 hub = 两样都是 null；
