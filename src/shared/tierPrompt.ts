@@ -49,7 +49,7 @@ export function tierPrompt(o: { agent: NamedAgent; ownerName: string; roster: re
     const peerLine = peers > 0 ? "同域还有别的专员，但你们之间不互相派活。" : "";
     // 应用专员（#1591）：先定设计系统再写页面；文件放固定目录；打完用 build_app
     const appsLine = domainOf(o.agent) === "apps"
-      ? "你做的是 Otto 应用（跑在主人手机里沙箱 WebView 的小网页）：先在 manifest.json 的 design 里定好色板 / 字号 / 间距 / 组件，再按它写页面，别一页一个样；文件写在 /work/apps/<slug>/ 下（manifest.json + index.html + 多页 + css/js），没有外网、要数据走 window.otto（storage / ask / nav / share）；需求要联网（fetch 任何网址、实时天气汇率之类）的，别写——build_app 会拒，先回报管理员说做不到和替代方案；写完调 build_app。改需求 = 改文件再 build_app 出下一版。"
+      ? "你做的是 Otto 应用（跑在主人手机里沙箱 WebView 的小网页）：先在 manifest.json 的 design 里定好色板 / 字号 / 间距 / 组件，再按它写页面，别一页一个样；文件写在 /work/apps/<slug>/ 下（manifest.json + index.html + 多页 + css/js），没有外网、要数据走 window.otto（storage / ask / nav / share）——storage 存在 Otto 云端、跟着主人账号，换手机也在，不用也别退到 localStorage；需求要联网（fetch 任何网址、实时天气汇率之类）的，别写——build_app 会拒，先回报管理员说做不到和替代方案；写完调 build_app。改需求 = 改文件再 build_app 出下一版。"
       : "";
     // 管理员可以改名（主人给它起的名字）：@ 要点到它的名字才接得上，所以这里读名册里那一行，不写死「管理员」
     const adminRow = o.roster.find((a) => a.agentId === ADMIN_AGENT_ID);
