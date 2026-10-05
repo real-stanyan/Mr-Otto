@@ -237,6 +237,7 @@ import { connectorsAllowed, dispatchDenied, scopedTools, tierOf, type AgentTier 
 import { tierPrompt } from "../../../src/shared/tierPrompt.js";
 import { createRosterTools } from "./rosterTools.js";
 import { createBuildAppTool } from "./buildAppTool.js";
+import { pickCallAck } from "../../../src/shared/callAck.js";
 import type { AppStore } from "./appStore.js";
 import { domainOf } from "../../../src/shared/agentTier.js";
 import { createTaskTools } from "./taskTools.js";
@@ -859,6 +860,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       照样是六小时前的那一份。`turn_ended` 带 agentId（ADR-0219），缺席的（本机日志 /
       存量）不进表 —— 那是「读不到」，查询回 null，闲置压缩不触发 */
   const lastTurnEndedTs = new Map<string, number>();
+  /** 通话里的应承（#1623）：上一句记着，下一句换个说法 */
+  let lastCallAck: string | null = null;
   for (const e of seed) {
     if (e.type === "turn_ended" && e.agentId) lastTurnEndedTs.set(e.agentId, e.ts);
   }
@@ -1352,6 +1355,17 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // agentId = 旧日志/本机会话的事件，本来也没有碎片可清
     if ((e.type === "assistant_message" || e.type === "turn_ended") && e.agentId) {
       deltas.clearAgent(e.agentId);
+    }
+    // 通话里主人说完一句（#1623）：被点名、在通话里的那几只**想之前**先应一句——人话一落盘就落一条
+    // assistant_message（ack: true），手机的 voiceFeed 照常念，模型不读（deriveMessages 跳过；它那一轮照常起，
+    // 只认 user_message 的 unseenUserTail 不受影响）。接力 / 开场白不算人话；外联会话里对面是客人，也应
+    if (e.type === "user_message" && e.voice === true && e.relay === undefined && e.greeting === undefined && voiceCall !== null && !archived) {
+      const inCall = (e.mentions ?? []).filter((id) => voiceCall!.participants.some((p) => p.agentId === id));
+      for (const agentId of inCall) {
+        const text = pickCallAck(lastCallAck);
+        lastCallAck = text;
+        notify(store.append({ sessionId, ts: Date.now(), type: "assistant_message", agentId, content: text, model: callerModelOf(store.load(sessionId), agentId), ack: true }));
+      }
     }
   }
 
