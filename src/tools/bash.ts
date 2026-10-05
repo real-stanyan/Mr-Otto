@@ -108,7 +108,11 @@ export function createBashTool(
     requiresApproval: true,
 
     async run(args, world) {
-      const { cmd, run_in_background } = args as { cmd: string; run_in_background?: boolean };
+      // 参数名别名（#1659）：模型（线上 deepseek-flash）隔三岔五把 cmd 写成 command——意思无歧义，
+      // 报错只会白烧一轮再重来一遍同样的命令。表上仍只宣称 cmd，这里只是收下
+      const a = (args ?? {}) as { cmd?: unknown; command?: unknown; run_in_background?: boolean };
+      const cmd = typeof a.cmd === "string" && a.cmd.trim() !== "" ? a.cmd : a.command;
+      const run_in_background = a.run_in_background;
       if (typeof cmd !== "string" || cmd.trim().length === 0) {
         throw new Error("bash: 参数 cmd 必须是非空字符串");
       }

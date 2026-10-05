@@ -6,7 +6,10 @@
 export type RoutineSchedule =
   | { kind: "once"; at: string }
   | { kind: "daily"; time: string }
-  | { kind: "weekly"; days: number[]; time: string };
+  | { kind: "weekly"; days: number[]; time: string }
+  /** 时段内每隔 N 分钟（#1659 第二轮）：from 那一刻起、每 minutes 一次、不晚于 to；days 缺席 = 每天。
+      不跨夜（from < to）。盯盘这类「营业时间里每 10 分钟看一眼」原来要拆成十几条 daily，一条就够 */
+  | { kind: "every"; minutes: number; from: string; to: string; days?: number[] };
 
 export type RoutineStatus = "done" | "skipped_quota" | "missed" | "failed";
 
@@ -30,8 +33,11 @@ export interface RoutineRow {
 
 export const ROUTINE_TITLE_MAX = 40;
 export const ROUTINE_INSTRUCTION_MAX = 2000;
-/** 每只**启用中**的任务上限（spec §2.1）。表单与工具两处都查，库里不加触发器 */
-export const ROUTINES_ENABLED_MAX = 20;
+/** 每只**启用中**的任务上限（spec §2.1）。表单与工具两处都查，库里触发器兜底（0066 起 50；原 20，店铺管家顶满过，#1659） */
+export const ROUTINES_ENABLED_MAX = 50;
+/** every 的间隔：最短 5 分钟（每一次都是一整轮模型调用，额度门另管），最长 12 小时 */
+export const ROUTINE_EVERY_MIN_MINUTES = 5;
+export const ROUTINE_EVERY_MAX_MINUTES = 720;
 /** 漏跑宽限（spec §3.4）：daemon 停机期间错过的，一次性任务晚这么久以内照跑，重复任务晚这么久以内照跑 */
 export const ROUTINE_ONCE_GRACE_MS = 2 * 3_600_000;
 export const ROUTINE_RECURRING_GRACE_MS = 10 * 60_000;
@@ -86,7 +92,20 @@ export function parseRoutineSchedule(v: unknown): RoutineSchedule {
     if (days.some((d) => !(d >= 1 && d <= 7))) throw new Error("days 里只能是 1..7（1 = 周一 … 7 = 周日）");
     return { kind: "weekly", days, time: o.time };
   }
-  throw new Error("kind 只能是 once / daily / weekly");
+  if (o.kind === "every") {
+    if (typeof o.minutes !== "number" || !Number.isInteger(o.minutes) || o.minutes < ROUTINE_EVERY_MIN_MINUTES || o.minutes > ROUTINE_EVERY_MAX_MINUTES) {
+      throw new Error(`every 的 minutes 要是 ${ROUTINE_EVERY_MIN_MINUTES}..${ROUTINE_EVERY_MAX_MINUTES} 的整数（分钟）`);
+    }
+    if (typeof o.from !== "string" || !TIME_RE.test(o.from) || typeof o.to !== "string" || !TIME_RE.test(o.to)) throw new Error("every 的 from / to 要写成 HH:mm（两位小时，24 小时制）");
+    if (o.from >= o.to) throw new Error("every 的 from 要早于 to（不跨夜；跨夜就拆成两条）");
+    if (o.days === undefined) return { kind: "every", minutes: o.minutes, from: o.from, to: o.to };
+    if (!Array.isArray(o.days)) throw new Error("every 的 days 要是数组（1 = 周一 … 7 = 周日），每天就不传");
+    const days = [...new Set(o.days.map((d) => (typeof d === "number" && Number.isInteger(d) ? d : NaN)))].sort((a, b) => a - b);
+    if (days.length === 0) throw new Error("every 的 days 至少选一天；每天就不传");
+    if (days.some((d) => !(d >= 1 && d <= 7))) throw new Error("days 里只能是 1..7（1 = 周一 … 7 = 周日）");
+    return days.length === 7 ? { kind: "every", minutes: o.minutes, from: o.from, to: o.to } : { kind: "every", minutes: o.minutes, from: o.from, to: o.to, days };
+  }
+  throw new Error("kind 只能是 once / daily / weekly / every");
 }
 
 /** 表单 / 工具共用的整条校验：第一条毛病先说；都好回 null */
@@ -176,6 +195,7 @@ export function nextRunAt(schedule: RoutineSchedule, tz: string, afterMs: number
     const at = wallClockToUtc({ y: Number(m[1]), m: Number(m[2]), d: Number(m[3]), hh: Number(m[4]), mm: Number(m[5]) }, tz);
     return at > afterMs ? at : null;
   }
+  if (schedule.kind === "every") return nextEveryRunAt(schedule, tz, afterMs);
   const { hh, mm } = parseTime(schedule.time);
   const today = zonedParts(afterMs, tz);
   for (let i = 0; i <= 8; i++) {
@@ -183,6 +203,28 @@ export function nextRunAt(schedule: RoutineSchedule, tz: string, afterMs: number
     if (schedule.kind === "weekly" && !schedule.days.includes(day.weekday)) continue;
     const cand = wallClockToUtc({ y: day.y, m: day.m, d: day.d, hh, mm }, tz);
     if (cand > afterMs) return cand;
+  }
+  return null;
+}
+
+/** every 的下一跳：逐天看，当天的槽是 from、from+N、…（≤ to）。当天先跳到「现在」附近再往后看，不从 from 一格格数 */
+function nextEveryRunAt(s: Extract<RoutineSchedule, { kind: "every" }>, tz: string, afterMs: number): number | null {
+  const from = parseTime(s.from);
+  const to = parseTime(s.to);
+  const fromMin = from.hh * 60 + from.mm;
+  const toMin = to.hh * 60 + to.mm;
+  const today = zonedParts(afterMs, tz);
+  const nowMin = today.hh * 60 + today.mm;
+  for (let i = 0; i <= 8; i++) {
+    const day = addDays(today, i);
+    if (s.days !== undefined && !s.days.includes(day.weekday)) continue;
+    // 当天：从「现在所在的那一格」的前一格起看（夏令时那天墙上时间与真实时刻不一一对应，多看一格不亏）
+    let k = i === 0 ? Math.max(0, Math.floor((nowMin - fromMin) / s.minutes) - 1) : 0;
+    for (; fromMin + k * s.minutes <= toMin; k++) {
+      const m = fromMin + k * s.minutes;
+      const cand = wallClockToUtc({ y: day.y, m: day.m, d: day.d, hh: Math.floor(m / 60), mm: m % 60 }, tz);
+      if (cand > afterMs) return cand;
+    }
   }
   return null;
 }
@@ -199,6 +241,11 @@ export function formatInTz(ts: number, tz: string): string {
 export function scheduleText(schedule: RoutineSchedule, tz: string): string {
   if (schedule.kind === "daily") return `每天 ${schedule.time} · ${tz}`;
   if (schedule.kind === "weekly") return `每周${schedule.days.map((d) => WEEKDAY_CN[d] ?? "?").join("、")} ${schedule.time} · ${tz}`;
+  if (schedule.kind === "every") {
+    const when = schedule.days === undefined ? "每天" : `每周${schedule.days.map((d) => WEEKDAY_CN[d] ?? "?").join("、")}`;
+    const step = schedule.minutes % 60 === 0 ? `${schedule.minutes / 60} 小时` : `${schedule.minutes} 分钟`;
+    return `${when} ${schedule.from}–${schedule.to} 每 ${step} · ${tz}`;
+  }
   return `${schedule.at.replace("T", " ")} · ${tz}`;
 }
 
