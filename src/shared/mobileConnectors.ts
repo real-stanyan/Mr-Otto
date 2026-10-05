@@ -196,7 +196,7 @@ export function lendRows(teams: readonly { id: string; name: string }[], item: C
   return teams.map((t) => ({ workspaceId: t.id, name: t.name, on: item.grants.includes(t.id) }));
 }
 
-export const PHONE_APPS_FOOTER = "凭据存在云端，不在这台手机上。你的智能体随时能用，手机关机也行。";
+export const PHONE_APPS_FOOTER = "接好的应用凭据存在云端，手机关机也能用；Apple 健康只在 Otto 开着时读这台手机。";
 export const DESKTOP_APPS_FOOTER = "在电脑上的 Mr Otto 里接的，要在电脑上管。";
 export const LEND_FOOTER = "借给团队后，团队里的智能体会以你的身份用它。随时能关。";
 export const PHONE_APPS_EMPTY = "手机上还没接应用。\n接好之后，你的智能体会以你的身份用它。";

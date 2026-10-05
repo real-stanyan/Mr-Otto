@@ -60,9 +60,33 @@ describe("手机 JS 接线", () => {
     expect(client).toMatch(/onHealthQuery: \(q\) => answerHealthQuery\(q, \{ enabled: healthEnabled, read: readHealth \}\),/);
     expect(client).toMatch(/onHealthPrefChange\(\(\) => cloudClient\.refreshCaps\(\)\);/);
   });
-  it("设置页有 Apple 健康这一组", () => {
-    expect(settings).toMatch(/header="Apple 健康"/);
-    expect(settings).toMatch(/setHealthEnabled\(/);
+  // #1671：入口从设置页搬进「应用」（维护者选 demo 方向 B），设置页不再有开关——两处都管同一件事会让人不知道该去哪关
+  it("设置页不再有 Apple 健康", () => {
+    expect(settings).not.toMatch(/Apple 健康/);
+    expect(settings).not.toMatch(/healthPrefs/);
+  });
+  it("「应用」页：健康是「手机上接的」第一行，连接走弹窗、连上进详情", () => {
+    const apps = read("mobile/src/machine/AppsScreen.tsx");
+    const group = apps.indexOf('<Group header="手机上接的"');
+    expect(group).toBeGreaterThan(-1);
+    // 第一行是健康：在云端清单那一串 map 之前
+    expect(apps.indexOf("label={HEALTH_APP_NAME}", group)).toBeLessThan(apps.indexOf("(phone ?? []).map(", group));
+    expect(apps).toMatch(/<HealthConnectDialog/);
+    expect(apps).toMatch(/navigation\.navigate\("HealthDetail"\)/);
+    expect(apps).toMatch(/showPhoneAppsEmpty\(\{ healthAvailable: health !== "unavailable", cloudApps: phone\.length \}\)/);
+  });
+  it("「接入」目录：「这台手机」一类排最上，已接的进详情", () => {
+    const catalog = read("mobile/src/machine/ConnectAppScreen.tsx");
+    expect(catalog.indexOf("header={HEALTH_CATALOG_CATEGORY}")).toBeLessThan(catalog.indexOf("groups.map("));
+    expect(catalog).toMatch(/healthCatalogMatches\(q\)/);
+    expect(catalog).toMatch(/navigation\.navigate\("HealthDetail"\)/);
+  });
+  it("连接弹窗走 setHealthEnabled(true)；详情页断开走 setHealthEnabled(false)，等确认弹窗退场再断", () => {
+    expect(read("mobile/src/health/HealthConnectDialog.tsx")).toMatch(/await setHealthEnabled\(true\)/);
+    const detail = read("mobile/src/health/HealthDetailScreen.tsx");
+    expect(detail).toMatch(/onExited=\{\(\) => \{\s*if \(!armed\) return;/);
+    expect(detail).toMatch(/setHealthEnabled\(false\)/);
+    expect(read("mobile/src/nav/RootNavigator.tsx")).toMatch(/<Root\.Screen name="HealthDetail" component=\{HealthDetailScreen\}/);
   });
   it("冷启动读开关", () => {
     expect(read("mobile/App.tsx")).toMatch(/void loadHealthPref\(\);/);

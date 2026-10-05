@@ -12,7 +12,6 @@ import { ACCOUNT_FOOTER, THEME_PREFS } from "../../../src/shared/mobileAccount.j
 import { Dialog, DialogFooter, DialogLead, DialogTitle } from "../dialog.js";
 import { NoticeLine } from "../gate/NoticeLine.js";
 import { goOffline } from "../friends/presenceStore.js";
-import { healthAvailable, setHealthEnabled, useHealthEnabled } from "../health/healthPrefs.js";
 import { loadNotify, setPref, useNotify } from "../push/notifyStore.js";
 import { unregisterPush } from "../push/pushRegistration.js";
 import { RELAY_BASE } from "../relay.js";
@@ -29,12 +28,6 @@ export function SettingsScreen() {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<AuthNotice | null>(null);
   const notify = useNotify();
-  const healthOn = useHealthEnabled();
-  const [healthError, setHealthError] = useState<string | null>(null);
-  const toggleHealth = (v: boolean): void => {
-    setHealthError(null);
-    void setHealthEnabled(v).catch((e: unknown) => setHealthError(e instanceof Error ? e.message : String(e)));
-  };
   /** 系统层面允没允许通知。null = 还没问到 */
   const [allowed, setAllowed] = useState<boolean | null>(null);
   useFocusEffect(
@@ -97,17 +90,6 @@ export function SettingsScreen() {
         </Group>
       ) : null}
       {notify.error !== null ? <Inset><Note tone="error">{notify.error}</Note></Inset> : null}
-      <Group
-        header="Apple 健康"
-        footer={
-          healthAvailable()
-            ? "打开后，你问智能体健康相关的问题时，它会从这台手机读取步数、睡眠、心率、体重和体能训练（按天汇总）。只在 Otto 开着时能读。哪几类能读，在 iOS「健康」App → 共享 → App → Otto 里改。"
-            : "这台设备读不了健康数据。"
-        }
-      >
-        {healthAvailable() ? toggle("允许智能体读取", healthOn, toggleHealth) : null}
-      </Group>
-      {healthError !== null ? <Inset><Note tone="error">{healthError}</Note></Inset> : null}
       <Group header="外观" footer="只改这台手机。跟随系统时，系统切深浅色它也跟着切。">
         {THEME_PREFS.map((p) => (
           <Row key={p.key} label={p.label} checked={pref === p.key} onPress={() => void setThemePref(p.key)} />

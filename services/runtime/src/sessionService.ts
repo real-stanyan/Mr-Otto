@@ -192,6 +192,7 @@ import { createCallUserTool } from "./callUserTool.js";
 import { createCallFriendTool } from "./callFriendTool.js";
 import { createMessageFriendTool } from "./messageFriendTool.js";
 import { createRelayToOwnerTool } from "./relayToOwnerTool.js";
+import { createOutreachFollowup } from "./outreachFollowup.js";
 import { createReplyToFriendTool } from "./replyToFriendTool.js";
 import { createRequestAppConnectTool } from "./requestAppConnectTool.js";
 import { APP_CONNECT_PER_HOUR_MAX, appConnectStatus, appConnectedOpening, appDeclinedOpening, appConnectFoldOf, appConnectToolText, applyAppConnect, catalogIdOfServer, cloudServerIdOf, resolveConnectApp, openCardFor, type AppConnectFold } from "../../../src/shared/appConnect.js";
@@ -911,6 +912,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   // 这条线上的外联折叠（#1441）：从 seed 播种、notify 里逐条推进（同 voiceCall）。「通话此刻进行中吗、
   // 打给的是谁」只从这一份读——say 的闸、chat() 的 active 共用，两处各折一遍迟早分家
   const outreachFold: OutreachFold = outreachFoldOf(seed);
+  /** 外联挂断后那段打字的兜底（#1673）：外联会话里第一次装工具时建（要 outreachRelay 与种子里的朋友） */
+  let outreachFollowup: ReturnType<typeof createOutreachFollowup> | null = null;
   /** 外联这条线的那位朋友（#1655）：不在通话里也认得出——种子里 session_created.cloud.outreach 就写着 */
   const outreachPeerUid: string | null = isOutreach ? (createdCloud?.outreach?.peerUid ?? null) : null;
   /** 朋友在外联里打字的滑动窗（#1655）：进程内，重启清零（同 laneBridge） */
@@ -1292,6 +1295,21 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   // agentId → 此刻的名字，runJob 每次刷新；memory 工具拼共享档前缀时现取
   // （#949）：改名之后下一 turn 的前缀就是新名字，不用重开会话
   const specNames = new Map<string, string>();
+  // 挂断后那段打字的兜底（#1673）：外联会话一建好就挂上——对面挂断后的第一句话就要算进去，等不到装工具那一刻。
+  // 安静下来、这段里又没调 relay_to_owner，就把原话自动带回主人（outreachRelay.toOwner，同那把刀）
+  if (isOutreach && (opts.outreachRelay ?? null) !== null && createdCloud?.outreach !== undefined) {
+    const facts = createdCloud.outreach;
+    const relay = opts.outreachRelay!;
+    const name = (): string => specNames.get(ADMIN_AGENT_ID) ?? "管理员";
+    outreachFollowup = createOutreachFollowup({
+      peerUid: facts.peerUid, peerName: facts.peerName, agentName: name,
+      send: (text) => relay.toOwner({ agentName: name(), peerUid: facts.peerUid, peerName: facts.peerName, text }),
+      archived: () => archived,
+      setTimer: (fn, ms) => { const t = setTimeout(fn, ms); t.unref?.(); return t; },
+      clearTimer: (t) => clearTimeout(t as ReturnType<typeof setTimeout>),
+      log: (m) => console.warn(`[otto-runtime] ${m}（session=${sessionId}）`),
+    });
+  }
 
   /** 回电（#1411）：推送开着才有。它自己从 seed 播种、之后只有它落 call_ring，所以状态它自己推进就是权威 */
   const callback = opts.callback;
@@ -1409,6 +1427,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // append 里没有这一种，这条事件只从 logVoiceCall 出门
     if (e.type === "voice_call_changed") voiceCall = applyVoiceCallEvent(voiceCall, e);
     applyOutreach(outreachFold, e);
+    outreachFollowup?.observe(e, activeOutreach(outreachFold) !== null);
     applyFriendPick(friendPickFold, e);
     applyAppConnect(appConnectFold, e);
     // 外联的生命周期跟着走（#1441）：它收尾时自己 append → 回到这里 → observe 只认 call_ring /
@@ -1764,6 +1783,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       const out = await session.updateChatRoster("", { agentIds }, turnRoster.find((a) => a.agentId === ADMIN_AGENT_ID)?.name ?? "管理员");
       if (out.kind !== "ok") return out.message;
       if (out.changed && opts.onRosterChanged !== undefined) await opts.onRosterChanged(out.agentIds).catch(() => undefined);
+      // 这一轮的名单跟着换（#1661 真机）：turnRoster 是起跑时的快照，不换的话同一轮里紧接着的 assign_task
+      // 读不到刚拉进来的专员，派活落不了账（模型只好跳过 assign 直接 @，任务永远停在「未派」）
+      if (out.changed) turnRoster = await rosterNow({ fresh: true });
       return null;
     },
   });
