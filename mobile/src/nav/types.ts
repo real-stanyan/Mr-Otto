@@ -72,6 +72,8 @@ export type RootStackParams = {
   ConnectApp: undefined;
   /** 手机上接的一台（#1430）：工具 / 借给团队 / 重新登录 / 断开。serverId = 云端视图里的那一格 */
   AppDetail: { serverId: string };
+  /** Apple 健康接好之后那一页（#1671）：能读的 / 怎么问 / 去「健康」App 改 / 断开 */
+  HealthDetail: undefined;
   /** 设置：外观 / 连接诊断 / 版本 / 退出登录 */
   Settings: undefined;
   /** 免打扰时段 + 管理员定时汇报（#1569） */
