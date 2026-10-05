@@ -5,7 +5,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { RoutineRow, RoutineStatus } from "../../../src/shared/routines.js";
 import { ROUTINE_COLUMNS, routineRowOf } from "../../../src/shared/supabaseRoutinesApi.js";
 
-export type RoutineInsert = Pick<RoutineRow, "workspaceId" | "agentId" | "ownerUid" | "title" | "instruction" | "schedule" | "tz" | "createdBy"> & { nextRunAt: number | null };
+export type RoutineInsert = Pick<RoutineRow, "workspaceId" | "agentId" | "ownerUid" | "title" | "instruction" | "schedule" | "tz" | "createdBy"> & { nextRunAt: number | null; sessionId?: string };
 export type RoutinePatch = Partial<Pick<RoutineRow, "title" | "instruction" | "schedule" | "tz" | "enabled" | "nextRunAt">>;
 
 export interface RoutineStore {
@@ -56,30 +56,37 @@ export function splitDueRows(raw: Record<string, unknown>[]): { rows: RoutineRow
 
 export function createSupabaseRoutineStore(supabase: SupabaseClient, opts: { log?: (m: string) => void } = {}): RoutineStore {
   const log = opts.log ?? (() => {});
+  // session_id（0068，#1682）：读的时候多带这一列；0068 没跑（42703）就退回老列表，群座位里定的提醒照旧回私聊
+  let withSession = true;
+  const cols = (): string => (withSession ? `${ROUTINE_COLUMNS},session_id` : ROUTINE_COLUMNS);
+  const missingCol = (e: { code?: string } | null): boolean => withSession && e?.code === "42703" && ((withSession = false), true);
   const fail = (what: string, e: { message: string } | null): never => { throw new Error(`${what}：${e?.message ?? "no data"}`); };
   return {
     async list(workspaceId, agentId) {
-      const r = await supabase.from("agent_routines").select(ROUTINE_COLUMNS).eq("workspace_id", workspaceId).eq("agent_id", agentId).order("created_at", { ascending: true });
+      const r = await supabase.from("agent_routines").select(cols()).eq("workspace_id", workspaceId).eq("agent_id", agentId).order("created_at", { ascending: true });
+      if (missingCol(r.error)) return this.list(workspaceId, agentId);
       if (r.error) fail("定时任务读取失败", r.error);
-      return ((r.data ?? []) as Record<string, unknown>[]).map(routineRowOf);
+      return ((r.data ?? []) as unknown as Record<string, unknown>[]).map(routineRowOf);
     },
     async get(id) {
-      const r = await supabase.from("agent_routines").select(ROUTINE_COLUMNS).eq("id", id).maybeSingle();
+      const r = await supabase.from("agent_routines").select(cols()).eq("id", id).maybeSingle();
+      if (missingCol(r.error)) return this.get(id);
       if (r.error) fail("定时任务读取失败", r.error);
-      return r.data ? routineRowOf(r.data as Record<string, unknown>) : null;
+      return r.data ? routineRowOf(r.data as unknown as Record<string, unknown>) : null;
     },
     async insert(row) {
       const r = await supabase.from("agent_routines").insert({
         workspace_id: row.workspaceId, agent_id: row.agentId, owner_uid: row.ownerUid, title: row.title, instruction: row.instruction,
         schedule: row.schedule, tz: row.tz, next_run_at: iso(row.nextRunAt), created_by: row.createdBy,
-      }).select(ROUTINE_COLUMNS).single();
+        ...(row.sessionId !== undefined && withSession ? { session_id: row.sessionId } : {}),
+      }).select(cols()).single();
       if (r.error || !r.data) fail("定时任务写入失败", r.error);
-      return routineRowOf(r.data as Record<string, unknown>);
+      return routineRowOf(r.data as unknown as Record<string, unknown>);
     },
     async update(id, ownerUid, patch) {
-      const r = await supabase.from("agent_routines").update(columnsOf(patch)).eq("id", id).eq("owner_uid", ownerUid).select(ROUTINE_COLUMNS).maybeSingle();
+      const r = await supabase.from("agent_routines").update(columnsOf(patch)).eq("id", id).eq("owner_uid", ownerUid).select(cols()).maybeSingle();
       if (r.error) fail("定时任务更新失败", r.error);
-      return r.data ? routineRowOf(r.data as Record<string, unknown>) : null;
+      return r.data ? routineRowOf(r.data as unknown as Record<string, unknown>) : null;
     },
     async remove(id, ownerUid) {
       const r = await supabase.from("agent_routines").delete().eq("id", id).eq("owner_uid", ownerUid).select("id");
@@ -88,10 +95,11 @@ export function createSupabaseRoutineStore(supabase: SupabaseClient, opts: { log
     },
     async due(nowMs, limit) {
       // enabled = true 是第二道闸：停用的行即使 next_run_at 没清干净（客户端只改了 enabled）也不会响
-      const r = await supabase.from("agent_routines").select(ROUTINE_COLUMNS).eq("enabled", true).not("next_run_at", "is", null).lte("next_run_at", new Date(nowMs).toISOString())
+      const r = await supabase.from("agent_routines").select(cols()).eq("enabled", true).not("next_run_at", "is", null).lte("next_run_at", new Date(nowMs).toISOString())
         .order("next_run_at", { ascending: true }).limit(limit);
+      if (missingCol(r.error)) return this.due(nowMs, limit);
       if (r.error) fail("到点任务读取失败", r.error);
-      const { rows, bad } = splitDueRows((r.data ?? []) as Record<string, unknown>[]);
+      const { rows, bad } = splitDueRows((r.data ?? []) as unknown as Record<string, unknown>[]);
       for (const b of bad) {
         // 隔离：停用 + next_run_at 清空 + failed，从此不在 due 里。隔离那一笔写失败也只记日志——下一拍再隔离一次
         log(`定时任务行读不懂，隔离（id=${b.id}）：${b.error}`);

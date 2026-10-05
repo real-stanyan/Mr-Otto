@@ -25,3 +25,6 @@ alter table public.workspace_sessions add constraint ws_sessions_chat_shape chec
 create unique index if not exists ws_sessions_one_seat_per_group
   on public.workspace_sessions (workspace_id, group_session_id)
   where chat_kind = 'seat';
+
+-- 群座位里定的提醒到点回那个座位跑（管理员的话经桥回到群里），不回私聊。缺席 = 那只的私聊（改动前的口径）
+alter table public.agent_routines add column if not exists session_id uuid;

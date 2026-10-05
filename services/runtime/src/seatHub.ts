@@ -23,6 +23,8 @@ export interface SeatOpening {
   policy: SeatPolicy;
   /** 叫醒它的那一句在群日志里的 seq：座位按它把镜像与开场白排对顺序，这一句不再重复镜像 */
   groupSeq: number;
+  /** 说话人设备的时区（#1283 那一格）：座位里的开场白带上它，模型才算得出「十分钟后」是几点。缺席 = 不知道 */
+  tz?: string;
 }
 
 export interface SeatHub {

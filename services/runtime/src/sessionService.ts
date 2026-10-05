@@ -1614,6 +1614,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   const seatAgentName = (): string => specNames.get(ADMIN_AGENT_ID) ?? "管理员";
   /** 授权开场白 seq → 当初提要求的那个人（推送给他，不推给点头的主人）。进程内：重启后那一轮的回话推给主人，不推也不错 */
   const grantRequesters = new Map<number, string>();
+  /** 点头卡 → 提要求那句话的时区（进程内）：点了头起的那一轮带上它，「十分钟后」才算得对 */
+  const requestTz = new Map<string, string>();
   /** 座位里管理员说的一句送回群。深度 = 叫醒这一轮的那句的深度（群那边 @ 别家时 +1） */
   function bridgeSeatReply(text: string, model: string): void {
     const hub = opts.seatHub ?? null;
@@ -1628,11 +1630,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     notify(store.append({ sessionId, ts: Date.now(), type: "assistant_message", agentId: ADMIN_AGENT_ID, content: text, model: callerModelOf(store.load(sessionId), ADMIN_AGENT_ID) }));
   }
   /** 授权开场白：主人点了头 / 设了全部放行。主人的规矩，但带 greeting = 不算主人亲口 */
-  function seatGrant(o: { fromUid: string; fromName: string; ask: string; via: "card" | "policy"; groupSeq?: number }): void {
+  function seatGrant(o: { fromUid: string; fromName: string; ask: string; via: "card" | "policy"; groupSeq?: number; tz?: string }): void {
     if (archived) return;
     const opening = store.append({
       sessionId, ts: Date.now(), type: "user_message", fromUid: opts.ownerUid, mentions: [ADMIN_AGENT_ID], greeting: "seat_grant",
       ...(o.groupSeq !== undefined ? { mirror: { seq: o.groupSeq } } : {}),
+      ...(o.tz !== undefined ? { tz: o.tz } : {}),
       content: seatGrantText({ ownerName: seatOwnerName(), fromName: o.fromName, ask: o.ask, via: o.via }),
     }) as UserMessageEvent;
     grantRequesters.set(opening.seq, o.fromUid);
@@ -1676,6 +1679,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       expiresTs: (opts.now?.() ?? Date.now()) + SEAT_REQUEST_EXPIRE_MS, ignorable: true,
     }) as SeatRequestEvent;
     notify(event);
+    const opening = store.load(sessionId, { afterSeq: currentJob.openingSeq - 1 })[0];
+    if (opening?.type === "user_message" && opening.tz !== undefined) requestTz.set(event.requestId, opening.tz);
     if (hub !== null) {
       await hub.request({ group: seatGroup, event }).catch((err: unknown) => console.warn(`[otto-runtime] 点头卡送不到群（session=${sessionId}）：${err instanceof Error ? err.message : String(err)}`));
     }
@@ -2121,6 +2126,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         ? []
         : createRoutineTools({
             workspaceId: opts.workspaceId, agentId: spec.agentId, ownerUid: opts.ownerUid, store: opts.routines,
+            // 群座位里定的提醒到点回这个座位（#1682）：管理员到点说的话经桥回到群里，而不是跑去主人的私聊
+            ...(isSeat ? { sessionId } : {}),
             now: () => opts.now?.() ?? Date.now(),
             available: () => (ownerSpoke || escalationTurn) && !supervisedTurn(),
           });
@@ -3600,7 +3607,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       @ 了人照旧提醒，@ 了谁的管理员就经 seatHub 送进那个人的座位 */
   async function saySeated(
     fromUid: string, label: string, text: string, mentions: string[] | undefined, budget: ((n: number) => string | null) | undefined,
-    memberMentions: string[] | undefined, voice: true | undefined, media: readonly ChatMediaRef[] | undefined,
+    memberMentions: string[] | undefined, voice: true | undefined, media: readonly ChatMediaRef[] | undefined, tz: string | undefined,
   ): Promise<void> {
     const seats = groupSeats ?? [];
     if (!seats.some((s) => s.uid === fromUid)) throw new SayRejectedError("你已经不在这个群里了。");
@@ -3629,10 +3636,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       }
       await opts.mentionInbox.record(rows).catch((err: unknown) => console.error(`[otto-runtime] 点名提醒写入失败（session=${sessionId}）`, err));
     }
-    for (const seatUid of targets) deliverToSeat(seatUid, { fromUid, fromName: label, text, depth: 0, groupSeq: logged.seq });
+    for (const seatUid of targets) deliverToSeat(seatUid, { fromUid, fromName: label, text, depth: 0, groupSeq: logged.seq, ...(tz !== undefined ? { tz } : {}) });
   }
   /** 送进一个座位（人 @ 的 depth 0；管理员之间 @ 的 depth ≥ 1）。没送到就在群里说一句——不出声的话 @ 了等于没 @ */
-  function deliverToSeat(seatUid: string, o: { fromUid: string; fromName: string; text: string; depth: number; groupSeq: number }): void {
+  function deliverToSeat(seatUid: string, o: { fromUid: string; fromName: string; text: string; depth: number; groupSeq: number; tz?: string }): void {
     const seat = (groupSeats ?? []).find((s) => s.uid === seatUid);
     if (seat === undefined) return;
     const hub = opts.seatHub ?? null;
@@ -3695,7 +3702,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       if (isSeat) throw new SayRejectedError("这是群座位，去群里说话。");
       // 座位制的群（#1682，ADR-0376）：群里不起 turn，@ 到的管理员各在自己主场的座位里接
       if (groupSeats !== null) {
-        await saySeated(fromUid, label, text, mentions, budget, memberMentions, voice, media);
+        await saySeated(fromUid, label, text, mentions, budget, memberMentions, voice, media, tz);
         return;
       }
       // 人刚开口 → 要此刻的名单（#979 第 5 条）：他在设置页刚建/改的那只要能立刻 @ 到
@@ -4257,7 +4264,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       const label = safeSpeakerLabel(opening.fromName, opening.fromUid);
       // ② 别人使唤、这个座位设了全部放行：直接授权，不弹卡
       if (opening.fromUid !== opts.ownerUid && opening.policy === "open") {
-        seatGrant({ fromUid: opening.fromUid, fromName: label, ask: opening.text, via: "policy", groupSeq: opening.groupSeq });
+        seatGrant({ fromUid: opening.fromUid, fromName: label, ask: opening.text, via: "policy", groupSeq: opening.groupSeq, ...(opening.tz !== undefined ? { tz: opening.tz } : {}) });
         for (const l of after) mirrorLine(l);
         return null;
       }
@@ -4265,6 +4272,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       const msg = store.append({
         sessionId, ts: Date.now(), type: "user_message", content: `[${label}]: ${opening.text}`, fromUid: opening.fromUid, mentions: [ADMIN_AGENT_ID],
         mirror: { seq: opening.groupSeq },
+        ...(opening.tz !== undefined ? { tz: opening.tz } : {}),
         ...(opening.depth > 0 ? { relay: { fromAgentId: seatAgentId(opening.fromUid), depth: opening.depth } } : {}),
       }) as UserMessageEvent;
       notify(msg);
@@ -4280,7 +4288,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       if (r.decision !== null) return r.decision === "expired" ? "这张卡已经过期了" : "已经答过了";
       if (archived) return "这个座位已经收了";
       seatDecision(requestId, decision, byUid);
-      if (decision === "accepted") seatGrant({ fromUid: r.event.fromUid, fromName: r.event.fromName, ask: r.event.ask, via: "card" });
+      const tz = requestTz.get(requestId);
+      if (decision === "accepted") seatGrant({ fromUid: r.event.fromUid, fromName: r.event.fromName, ask: r.event.ask, via: "card", ...(tz !== undefined ? { tz } : {}) });
       else seatSays(seatDeclinedText(seatOwnerName()));
       return null;
     },

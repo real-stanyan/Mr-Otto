@@ -18,6 +18,7 @@ export function routineRowOf(raw: Record<string, unknown>): RoutineRow {
     enabled: raw.enabled === true, nextRunAt: ms(raw.next_run_at), lastRunAt: ms(raw.last_run_at),
     lastStatus: (raw.last_status as RoutineStatus | null) ?? null, createdBy: raw.created_by === "user" ? "user" : "agent",
     createdAt: ms(raw.created_at) ?? 0, updatedAt: ms(raw.updated_at) ?? 0,
+    ...(typeof raw.session_id === "string" ? { sessionId: raw.session_id } : {}),
   };
 }
 

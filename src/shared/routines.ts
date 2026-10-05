@@ -29,6 +29,8 @@ export interface RoutineRow {
   createdBy: "user" | "agent";
   createdAt: number;
   updatedAt: number;
+  /** 到点在哪条会话里跑（#1682）：群座位里定的提醒回那个座位（管理员的话因此回到群里）。缺席 / null = 那只的私聊（改动前的口径） */
+  sessionId?: string | null;
 }
 
 export const ROUTINE_TITLE_MAX = 40;

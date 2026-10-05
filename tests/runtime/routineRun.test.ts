@@ -25,6 +25,16 @@ describe("runRoutineInRoom", () => {
     expect(r).toBe("started");
     expect(calls[0]).toEqual({ routineId: "r1", title: "早报", instruction: "看报表", tz: "Asia/Shanghai", firedAt: 123, agentId: "ops" });
   });
+  it("群座位里定的（带 sessionId，#1682）：回那个座位跑，不去找私聊", async () => {
+    const { s, calls } = room();
+    const opened: string[] = [];
+    let dmLooked = false;
+    const r = await runRoutineInRoom(deps({ s, findDm: async () => ((dmLooked = true), "sid"), room: async (_w, sid) => (opened.push(sid), s) }), { ...R, sessionId: "seat-1" }, 1);
+    expect(r).toBe("started");
+    expect(opened).toEqual(["seat-1"]);
+    expect(dmLooked).toBe(false);
+    expect(calls).toHaveLength(1);
+  });
   it("没有私聊 → no_chat；房开不出来（归档）→ archived；那只没了 → no_agent", async () => {
     expect(await runRoutineInRoom(deps({ findDm: async () => null }), R, 1)).toBe("no_chat");
     expect(await runRoutineInRoom(deps({ room: async () => null }), R, 1)).toBe("archived");

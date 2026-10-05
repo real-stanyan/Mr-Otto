@@ -20,6 +20,8 @@ export interface RoutineToolDeps {
   now: () => number;
   /** 此刻亮不亮（sessionService 给：主人亲口的轮 && 不受监督） */
   available: () => boolean;
+  /** 群座位里定的（#1682）：到点回这条会话跑，不回私聊。缺席 = 私聊 */
+  sessionId?: string;
 }
 
 const SCHEDULE_SCHEMA = {
@@ -100,7 +102,7 @@ export function createRoutineTools(deps: RoutineToolDeps): Tool[] {
       if (next === null) throw new Error("这个时刻已经过了，换一个将来的时间");
       const enabled = (await deps.store.list(deps.workspaceId, deps.agentId)).filter((r) => r.enabled).length;
       if (enabled >= ROUTINES_ENABLED_MAX) throw new Error(`启用中的定时任务已经有 ${ROUTINES_ENABLED_MAX} 条了，先停掉或删掉几条`);
-      const row = await deps.store.insert({ workspaceId: deps.workspaceId, agentId: deps.agentId, ownerUid: deps.ownerUid, title, instruction, schedule: sched, tz, createdBy: "agent", nextRunAt: next });
+      const row = await deps.store.insert({ workspaceId: deps.workspaceId, agentId: deps.agentId, ownerUid: deps.ownerUid, title, instruction, schedule: sched, tz, createdBy: "agent", nextRunAt: next, ...(deps.sessionId !== undefined ? { sessionId: deps.sessionId } : {}) });
       return `已记下「${row.title}」（id ${row.id}）：${scheduleText(row.schedule, row.tz)}。${nextText(row)}。请用人话复述给用户确认。`;
     },
   };

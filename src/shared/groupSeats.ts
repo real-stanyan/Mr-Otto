@@ -139,7 +139,7 @@ export function seatGrantText(o: { ownerName: string; fromName: string; ask: str
   const head = o.via === "card" ? `${who} 点了头` : `${who} 设了这个群里别人使唤你都放行`;
   return (
     `[系统] ${head}：${from} 在群里让你——「${promptSafe(o.ask)}」。这件事按 ${who} 的规矩去办，办完在群里回 ${from}。` +
-    `只办这一件：要替 ${who} 联系别人、花钱、删东西、推代码，或者超出这件事的，先调 ask_owner 再问一次。`
+    `只办这一件：要替 ${who} 联系别人、花钱、删东西、推代码，或者超出这件事的，别做——在群里说清楚，等 ${who} 本人来 @ 你。`
   );
 }
 export function seatDeclinedText(ownerName: string): string {
