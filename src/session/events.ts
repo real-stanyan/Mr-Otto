@@ -801,6 +801,8 @@ export interface OutreachEvent extends SessionEventBase {
   durationMs?: number;
   /** 只在原聊天那份的 ended 上 */
   transcript?: OutreachLine[];
+  /** 只在原聊天那份的 ended 上（#1616）：没接，已把开场白以主人名义留在和对方的私聊里。缺席 = 没留（老日志 / 没开场白 / 发不出去） */
+  leftMessage?: true;
   /** 只在外联会话那份的 ended 上（#1441 终审 M6）：这一通一次铃都没响（推送没送到 / 没设备）。
       原先用来不算进「每只 24 小时 10 通」，那道上限 #1499 已撤，这一格只剩记事实。缺席 = 响过或旧日志 */
   unrung?: true;

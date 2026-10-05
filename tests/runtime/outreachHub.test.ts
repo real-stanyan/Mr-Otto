@@ -43,6 +43,7 @@ const ENDED: OutreachEnded = {
   outreachId: "o-1", originSessionId: "origin-1", agentId: "ops", agentName: "运维", ownerName: "Stan",
   peerUid: "u-hong", peerName: "小红", outcome: "completed", durationMs: 65_000,
   transcript: [{ who: "agent", text: "你好", ts: 1 }, { who: "peer", text: "周五来", ts: 2 }],
+  brief: "问周五来不来", opening: "小红你好，我是运维。周五聚餐你来不来？",
 };
 
 describe("outreachHub.dispatch", () => {
@@ -212,12 +213,42 @@ describe("outreachHub.ended", () => {
     expect(rep.text).toContain("Stan");
   });
 
-  it("没接（无时长、无转写）：事件上不带 durationMs / transcript 两格", async () => {
+  it("没接（无时长、无转写）：事件上不带 durationMs / transcript 两格；留言发不出去 = 不带 leftMessage，照旧汇报「没接」", async () => {
     const r = rig();
     await r.hub.ended("w1", "owner", { ...ENDED, outcome: "missed", durationMs: null, transcript: [] });
     expect(r.logged[0]).not.toHaveProperty("durationMs");
     expect(r.logged[0]).not.toHaveProperty("transcript");
+    expect(r.logged[0]).not.toHaveProperty("leftMessage");
     expect(r.logged[0]).toMatchObject({ outcome: "missed" });
+    expect((r.reported[0] as { text: string }).text).toContain("对方没接");
+    expect(r.logs.join("\n")).toContain("留言失败");
+  });
+
+  it("没接就留言（#1616）：以主人名义把开场白写进私聊（代发前缀）、事件带 leftMessage、汇报说「已留言，不用问下一步」", async () => {
+    const dms: unknown[][] = [];
+    const r = rig({ sendDm: async (...a) => void dms.push(a) });
+    await r.hub.ended("w1", "owner", { ...ENDED, outcome: "missed", durationMs: null, transcript: [] });
+    expect(dms).toEqual([["owner", "u-hong", "[运维 代发] 刚才打你电话没接通，先留个言：小红你好，我是运维。周五聚餐你来不来？"]]);
+    expect(r.logged[0]).toMatchObject({ outcome: "missed", leftMessage: true });
+    const text = (r.reported[0] as { text: string }).text;
+    expect(text).toContain("已经把要说的话以 Stan 的名义留在和 小红 的私聊里");
+    expect(text).toContain("不用问他下一步");
+  });
+
+  it("没接但没有开场白（重启补的收尾）/ 接通过的：不留言", async () => {
+    const dms: unknown[] = [];
+    const r = rig({ sendDm: async (...a) => void dms.push(a) });
+    await r.hub.ended("w1", "owner", { ...ENDED, outcome: "missed", durationMs: null, transcript: [], opening: "" });
+    await r.hub.ended("w1", "owner", ENDED);
+    expect(dms).toEqual([]);
+  });
+
+  it("没接留言也走每小时窗口：到上限不发、记日志", async () => {
+    const dms: unknown[] = [];
+    const r = rig({ sendDm: async (...a) => void dms.push(a) });
+    for (let i = 0; i < 21; i++) await r.hub.ended("w1", "owner", { ...ENDED, outreachId: `o-${i}`, outcome: "missed", durationMs: null, transcript: [] });
+    expect(dms).toHaveLength(20);
+    expect(r.logs.join("\n")).toContain("上限");
   });
 
   it("名字缺席（重启补 ended 时）：现取", async () => {

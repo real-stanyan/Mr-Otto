@@ -1,7 +1,7 @@
 // outreachHub —— 把「原聊天」与「外联会话」两头接起来（#1441）。daemon 一个。只依赖注入的回调：
 // daemon.ts 进不了 vitest，判断住在这儿、接线留在那儿（同 chatCreate / chatHumans 的做法）。
 import { outreachTierProblem, type FriendTier } from "../../../src/shared/friendTier.js";
-import { FRIEND_MESSAGE_PER_HOUR_MAX, agentDmBody, friendMessageSentText, outreachReportText, resolveFriend } from "../../../src/shared/outreach.js";
+import { FRIEND_MESSAGE_PER_HOUR_MAX, agentDmBody, friendMessageSentText, outreachReportText, resolveFriend, missedCallMessageText } from "../../../src/shared/outreach.js";
 import { bridgeWindowAllows, pruneBridgeWindow } from "../../../src/shared/laneBridge.js";
 import type { FriendPickCandidate, OutreachLine, OutreachOutcome } from "../../../src/session/events.js";
 import { friendPickToolText, pickFriend } from "../../../src/shared/friendPick.js";
@@ -34,7 +34,7 @@ export interface OutreachTarget {
 export interface OutreachOrigin {
   logOutreach(e: {
     outreachId: string; phase: "started" | "ended"; fromAgentId: string; peerUid: string; peerName: string;
-    outcome?: OutreachOutcome; durationMs?: number; transcript?: OutreachLine[];
+    outcome?: OutreachOutcome; durationMs?: number; transcript?: OutreachLine[]; leftMessage?: true;
   }): void;
   reportOutreach(r: { agentId: string; text: string; ownerUid: string }): void;
   /** 选人卡（#1520）：offered 由 dispatch 落；picked / dismissed / failed 由点卡那条路落 */
@@ -204,22 +204,45 @@ export function createOutreachHub(d: OutreachHubDeps): OutreachHub {
       return friendMessageSentText(m.name, body);
     },
     async ended(workspaceId, ownerUid, r) {
+      // 落到这里的都是收尾回调；抛了只记日志（同下面那层 try）
+      async function leaveMessage(ws: string, owner: string, e: OutreachEnded, agentName: string): Promise<boolean> {
+        const key = `${ws}/${e.agentId}/${e.peerUid}`;
+        const now = d.now();
+        const sent = pruneBridgeWindow(dmWindow.get(key) ?? [], now);
+        if (!bridgeWindowAllows(sent, now, FRIEND_MESSAGE_PER_HOUR_MAX)) {
+          d.log(`没接但这一小时给 ${e.peerName} 的消息已到上限，没留言（owner=${owner}）`);
+          return false;
+        }
+        try {
+          await d.sendDm(owner, e.peerUid, agentDmBody(agentName, missedCallMessageText(e.opening)));
+        } catch (err) {
+          d.log(`没接留言失败（owner=${owner} → ${e.peerUid}）：${String(err)}`);
+          return false;
+        }
+        dmWindow.set(key, [...sent, now]);
+        return true;
+      }
       try {
         const origin = await d.origin(workspaceId, r.originSessionId);
         if (origin === null) {
           d.log(`外联结束但原会话开不出来（session=${r.originSessionId}）`);
           return;
         }
+        const agentName = r.agentName !== "" ? r.agentName : await d.agentName(workspaceId, r.agentId);
+        const ownerName = r.ownerName !== "" ? r.ownerName : await d.labelOf(ownerUid);
+        // 没接就留言（#1616，真机 2026-10-05：管理员跑回来告诉主人「他没接」= 把球踢回主人）：开场白就是电话里要说的话，
+        // 以主人名义写进和对方的私聊（同 message_friend 那条路：代发前缀 + 每小时窗口；档位在拨号时已验过）。
+        // 发不出去不算失败——照旧汇报「没接」，模型会告诉主人
+        const leftMessage = r.outcome === "missed" && r.opening !== "" ? await leaveMessage(workspaceId, ownerUid, r, agentName) : false;
         origin.logOutreach({
           outreachId: r.outreachId, phase: "ended", fromAgentId: r.agentId, peerUid: r.peerUid, peerName: r.peerName,
           outcome: r.outcome, ...(r.durationMs !== null ? { durationMs: r.durationMs } : {}),
           ...(r.transcript.length > 0 ? { transcript: r.transcript } : {}),
+          ...(leftMessage ? { leftMessage: true as const } : {}),
         });
-        const agentName = r.agentName !== "" ? r.agentName : await d.agentName(workspaceId, r.agentId);
-        const ownerName = r.ownerName !== "" ? r.ownerName : await d.labelOf(ownerUid);
         origin.reportOutreach({
           agentId: r.agentId, ownerUid,
-          text: outreachReportText({ agentName, ownerName, peerName: r.peerName, outcome: r.outcome, durationMs: r.durationMs, transcript: r.transcript }),
+          text: outreachReportText({ agentName, ownerName, peerName: r.peerName, outcome: r.outcome, durationMs: r.durationMs, transcript: r.transcript, leftMessage }),
         });
       } catch (err) {
         d.log(`外联汇报失败（session=${r.originSessionId}）：${String(err)}`);

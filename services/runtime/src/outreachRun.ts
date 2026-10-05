@@ -9,7 +9,9 @@ import type { RingAttempt } from "./callRinger.js";
 export interface OutreachStart { outreachId: string; originSessionId: string; agentId: string; agentName: string;
   ownerName: string; peerUid: string; peerName: string; brief: string; opening: string }
 export interface OutreachEnded { outreachId: string; originSessionId: string; agentId: string; agentName: string;
-  ownerName: string; peerUid: string; peerName: string; outcome: OutreachOutcome; durationMs: number | null; transcript: OutreachLine[] }
+  ownerName: string; peerUid: string; peerName: string; outcome: OutreachOutcome; durationMs: number | null; transcript: OutreachLine[];
+  /** 这一通的交代与开场白（#1616：没接时留言用）。重启补收尾的那通是空串——内存里的早没了 */
+  brief: string; opening: string }
 export type OutreachStartResult = { kind: "ringing" } | { kind: "refused"; message: string };
 export interface OutreachRunDeps {
   sessionId: string; seed: readonly SessionEvent[];
@@ -84,6 +86,7 @@ export function createOutreachRun(d: OutreachRunDeps): OutreachRun {
           outreachId: s.outreachId, originSessionId: s.originSessionId, agentId: s.fromAgentId,
           agentName: meta?.agentName ?? "", ownerName: meta?.ownerName ?? "",
           peerUid: s.peerUid, peerName: s.peerName, outcome, durationMs, transcript,
+          brief: meta?.brief ?? "", opening: meta?.opening ?? "",
         });
       } catch (err) {
         d.log(`[otto-runtime] 外联收尾回调失败（session=${d.sessionId} outreach=${s.outreachId}）：${err instanceof Error ? err.message : String(err)}`);
