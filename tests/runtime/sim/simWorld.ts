@@ -45,6 +45,11 @@ export async function createSimBox(name: string): Promise<SimBox> {
     const r = await run(["exec", "-i", name, "sh", "-c", `mkdir -p "$(dirname ${q(p)})" && cat > ${q(p)}`], content);
     if (r.exitCode !== 0) throw new Error(r.stderr || `写不进 ${p}`);
   };
+  const postJsonWithHeaders = async (url: string, body: unknown, o?: { headers?: Record<string, string>; signal?: AbortSignal }): Promise<{ body: unknown; headers: Record<string, string> }> => {
+    const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json", ...o?.headers }, body: JSON.stringify(body), ...(o?.signal ? { signal: o.signal } : {}) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    return { body: (await res.json()) as unknown, headers: Object.fromEntries(res.headers.entries()) };
+  };
   const world: ExecutionWorld = {
     fs: {
       read: async (path) => {
@@ -58,7 +63,11 @@ export async function createSimBox(name: string): Promise<SimBox> {
       const r = await run(["exec", "-w", "/work", name, "bash", "-lc", cmd]);
       return { stdout: r.stdout.slice(0, 60_000), stderr: r.stderr.slice(0, 20_000), exitCode: r.exitCode };
     },
-    http: { postJson: async () => { throw new Error("沙箱断网"); } },
+    // 同 DockerWorld：http 走主机的 fetch（联网搜索、出图是 runtime 替沙箱外呼，不过容器的 --network none）
+    http: {
+      postJson: async (url, body, o) => (await postJsonWithHeaders(url, body, o)).body,
+      postJsonWithHeaders,
+    },
   };
   return {
     name,

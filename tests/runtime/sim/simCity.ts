@@ -169,7 +169,7 @@ export async function createCity(o: { edgeBase: string; runtimeSecret: string; p
   const nameOf = (uid: string): string => byUid.get(uid)?.p.name ?? uid.slice(0, 8);
 
   for (const p of o.personas) {
-    const box = await createSimBox(`otto-sim-${p.id}`);
+    const box = await createSimBox(`otto-sim-${process.env["OTTO_SIM_TAG"] ?? "x"}-${p.id}`);
     await box.seed(p.files);
     const writer = createInMemoryAgentWriter();
     const ws = `w-${p.id}`;
@@ -580,7 +580,7 @@ export async function createCity(o: { edgeBase: string; runtimeSecret: string; p
               homeOwnerOf: async (w) => [...homes.values()].find((x) => x.ws === w)?.p.uid ?? null,
               findDm: async (w) => { const x = [...homes.values()].find((y) => y.ws === w); return x?.dm !== null && x !== undefined ? DM_SID(x.p.id) : null; },
               room: async (_w, sid) => rooms.get(sid)?.room ?? null,
-            }, r, Date.now());
+            }, r, r.nextRunAt ?? Date.now());
             log.push(`[到点] ${nameOf(r.ownerUid)}「${r.title}」→ ${res}（${r.sessionId ? "座位" : "私聊"}）`);
             await routines.setStatus(r.id, "done", r.schedule.kind === "once" ? false : true);
           }
