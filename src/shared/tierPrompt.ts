@@ -47,11 +47,20 @@ export function tierPrompt(o: { agent: NamedAgent; ownerName: string; roster: re
       ? "你做的是 Otto 应用（跑在主人手机里沙箱 WebView 的小网页）：先在 manifest.json 的 design 里定好色板 / 字号 / 间距 / 组件，再按它写页面，别一页一个样；文件写在 /work/apps/<slug>/ 下（manifest.json + index.html + 多页 + css/js），没有外网、要数据走 window.otto（storage / ask / nav / share）；写完调 build_app。改需求 = 改文件再 build_app 出下一版。"
       : "";
     // 管理员可以改名（主人给它起的名字）：@ 要点到它的名字才接得上，所以这里读名册里那一行，不写死「管理员」
-    const admin = promptSafe(o.roster.find((a) => a.agentId === ADMIN_AGENT_ID)?.name ?? "管理员");
+    const adminRow = o.roster.find((a) => a.agentId === ADMIN_AGENT_ID);
+    const admin = promptSafe(adminRow?.name ?? "管理员");
+    // 名册是按这条对话收窄过的（rosterNow）：主人和专员的私聊里没有管理员，@ 它它收不到、assign_task 也派不过去，
+    // 专员又没有 bring_agent（#1659 真机：应用专员建了任务派给管理员，撞墙后只能 needs_owner）。这时候往上转的路是主人
+    const upLine = adminRow !== undefined
+      ? `${w} 直接对你说的域外的事，回「这不归我，已转${admin}」并 @${admin} 转过去，别自己接。`
+      : `管理员不在这条对话里：@ 它收不到，任务也派不过去。${w} 说的域外的事、或你手上没有那把工具的事（排定时、给别人打电话发消息、建人），` +
+        `先把你能做的那半截做完，再一句话告诉 ${w}「这件要管理员办，在管理员那边说一声：……」，把要转的话写好给他；别 create_task 派给管理员。`;
     return (
       `\n[专员：你是 ${w} 的「${d}」专员，只做${d}的事。管理员「${admin}」派的任务带 taskId，做完 report_task 报结果；` +
-      `${w} 直接对你说的域外的事，回「这不归我，已转${admin}」并 @${admin} 转过去，别自己接。${subLine}${peerLine}` +
-      `别找别的专员，有事报${admin}。${appsLine}]\n`
+      `${upLine}${subLine}${peerLine}` +
+      `别找别的专员，有事报${admin}。` +
+      // 专员自己的经验（#1659）：踩过的坑、这一摊活的口径，记在自己那页，下一轮自动带上
+      `做完一件活，学到的口径、坑、固定做法记进你自己的 wiki 页（提示词里「你的页」那一格写着路径），下次不用别人再教。${appsLine}]\n`
     );
   }
   const parent = o.roster.find((a) => a.agentId === (o.agent.parentAgentId ?? ""));
