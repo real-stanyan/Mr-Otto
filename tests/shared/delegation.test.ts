@@ -28,6 +28,9 @@ describe("delegationRolePrompt", () => {
     expect(s).toContain("指定的代办智能体：助手");
     expect(s).not.toContain("：管理员");
     expect(s).toContain("别替 小明 答应任何事");
+    // #1614：客人的「他」默认是主人；待客分寸
+    expect(s).toContain("小红 嘴里的「他 / 她 / 你主人 / 他本人」默认就是 小明");
+    expect(s).toContain("不许说「说人话」");
     expect(delegationRolePrompt({ isAdmin: true, ownerName: "小明", peerName: "小红", others: [{ agentId: "admin", name: "管理员" }] })).toContain("没有指定别的代办智能体");
   });
   it("别的智能体：等管理员下发；名字过 promptSafe", () => {

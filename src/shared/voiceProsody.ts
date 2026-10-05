@@ -17,6 +17,10 @@ export const EMOTION_TAGS: Readonly<Record<string, SpeechEmotion>> = {
   笑: "happy", 惊: "surprised", 叹: "sad", 气: "angry", 怕: "fearful", 嫌: "disgusted",
 };
 
+/** 中性记号：模型在六个之外常自己写「（平）」（真机 2026-10-05 对面管理员每句都带）。它只会是记号、不会是话——
+    剥掉、不传情绪；不进 EMOTION_TAGS 是因为那张表的值要对 MiniMax 的档 */
+const NEUTRAL_TAGS: ReadonlySet<string> = new Set(["平"]);
+
 const LITERAL: Readonly<Record<SpeechEmotion, string>> = {
   happy: "（笑）", surprised: "（惊）", sad: "（叹）", angry: "（气）", fearful: "（怕）", disgusted: "（嫌）",
 };
@@ -31,7 +35,7 @@ export function parseEmotionTag(bubble: string): { emotion: SpeechEmotion | null
   const m = TAG_AT_START.exec(bubble);
   if (m === null) return { emotion: null, text: bubble };
   const emotion = EMOTION_TAGS[m[1]!];
-  if (emotion === undefined) return { emotion: null, text: bubble };
+  if (emotion === undefined) return NEUTRAL_TAGS.has(m[1]!) ? { emotion: null, text: bubble.slice(m[0].length) } : { emotion: null, text: bubble };
   return { emotion, text: bubble.slice(m[0].length) };
 }
 
@@ -44,7 +48,7 @@ const TAG_AT_PARAGRAPH = /(^|\n[ \t\u3000]*\n)([ \t\u3000]*)[（(]([^()（）\s]
 
 export function stripEmotionTags(content: string): string {
   return content.replace(TAG_AT_PARAGRAPH, (whole, sep: string, indent: string, word: string) =>
-    EMOTION_TAGS[word] === undefined ? whole : `${sep}${indent}`
+    EMOTION_TAGS[word] === undefined && !NEUTRAL_TAGS.has(word) ? whole : `${sep}${indent}`
   );
 }
 

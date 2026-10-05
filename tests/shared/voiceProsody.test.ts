@@ -77,3 +77,10 @@ describe("GAP_MS", () => {
     expect(GAP_MS).toEqual({ sentence: 230, speaker: 460 });
   });
 });
+
+describe("中性记号「（平）」（#1614，真机 2026-10-05）", () => {
+  it("剥掉、不传情绪；整条里每段首的（平）也剥", () => {
+    expect(parseEmotionTag("（平）行——「他」是哪个？")).toEqual({ emotion: null, text: "行——「他」是哪个？" });
+    expect(stripEmotionTags("(平) 没听懂。\n\n（平）你说。")).toBe("没听懂。\n\n你说。");
+  });
+});

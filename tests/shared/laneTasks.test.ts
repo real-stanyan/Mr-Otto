@@ -143,3 +143,14 @@ describe("电话与电话后的话是一张卡（#1613，真机 2026-10-05）", 
     expect(tasks[0]!.title).toBe("打给 峰哥 的电话");
   });
 });
+
+describe("车道气泡剥情绪记号（#1614）", () => {
+  it("段首的（笑）/（平）不进抽屉；正文里的括注不动", () => {
+    reset();
+    const tasks = laneTasksOf([
+      ev({ type: "user_message", content: "在吗", fromUid: ME }),
+      ev({ type: "assistant_message", agentId: "admin", content: "（平）在。\n\n（笑）你说（真的）。" }),
+    ], ME, nameOf);
+    expect(tasks[0]!.items.at(-1)!.text).toBe("在。\n\n你说（真的）。");
+  });
+});
