@@ -27,7 +27,7 @@ export function createCollabTool(deps: CollabToolDeps): Tool {
       name: INVITE_COLLABORATOR_TOOL_NAME,
       description:
         "把一个任务交给对方的管理员协作（需要对方那边的信息或动作时）。任务还归你牵头，对方是协作者，可以拒。" +
-        "先 create_task 再调；note 里写清要对方配合什么。对方主人要先点头它的管理员才会动，不在线就得等（24 小时没回算失败）；" +
+        "先 create_task 再调；note 里写清要对方配合什么（用主人说话的语言写，两边主人都会看到）。对方主人要先点头它的管理员才会动，不在线就得等（24 小时没回算失败）；" +
         "它的回复会落在这条对话里。不要直接找对方的别的智能体。",
       parameters: {
         type: "object",

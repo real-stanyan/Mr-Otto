@@ -2179,8 +2179,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // message_friend（#1549）：call_friend 的姊妹刀。亮刀条件逐字相同（主场、主人亲口、非车道 / 外联、非监督轮）——
     // 它写进的是主人与朋友的私聊，和打电话一样是「以主人名义对外」，凭据只能是主人本人这一轮亲口说的
     const friendMessage = opts.friendMessage ?? null;
+    // 车道里也挂（#1682 人与人模拟）：主人在车道里让它起草回朋友的话，一句「发吧」它却只能说「你自己复制粘贴」。
+    // 车道就在那条私聊旁边，主人亲口说发，替他发进去（标明代发）正是车道的用处；call_friend 照旧不挂（汇报轮在车道里没卡可点）
     const messageFriendTool =
-      friendMessage === null || !opts.approveAll || isOutreach || isPair
+      friendMessage === null || !opts.approveAll || isOutreach
         ? null
         : createMessageFriendTool({
             maySend: () =>
@@ -2227,7 +2229,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           });
     // 定时任务三把刀（#1283）：只在主场私聊里挂；亮不亮按「主人亲口 && 不受监督」现算（routine 轮算主人亲口，Task 8）
     const routineTools =
-      opts.routines === null || !opts.approveAll || (chatKind !== "dm" && chatKind !== "seat")
+      opts.routines === null || !opts.approveAll || (chatKind !== "dm" && chatKind !== "seat" && chatKind !== "pair")
         ? []
         : createRoutineTools({
             workspaceId: opts.workspaceId, agentId: spec.agentId, ownerUid: opts.ownerUid, store: opts.routines,
@@ -2431,6 +2433,11 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         // 客人的话（tightenSupervision）要对这一圈已经定下来的调用也生效，快照值收紧不到它们。
         // Object.create 让 def / run 走原型，原来的工具对象一个字不改。包出来的对象**自有属性只有 requiresApproval**：
         // 不许对它展开（`{ ...tool }` 只拷自有可枚举属性，def / run 会整个丢掉），要改形状就再包一层 Object.create
+        // 车道里别人点起的那一轮（#1682 人与人模拟；#1526）：公开车道里朋友 @ 它、管理员车道里对面管理员接力进来——
+        // 这两种对话在手机上没有审批卡可点，掀成要批只会让卡等两分钟超时、整条对话堵住。刀干脆不亮：
+        // 它用主人已经说过、写给朋友看的东西回话；要动主人的东西，回一句「得问 X 本人」。
+        // message_friend_agent 例外（只说话，同下面那条不掀的例外）
+        if ((isPair || isAdmins) && guestTurn()) return list.filter((t) => t.def.name === MESSAGE_FRIEND_AGENT_TOOL_NAME);
         return opts.approveAll
           ? list.map((t) =>
               // message_friend_agent（#1542）不掀：它只往对面车道落一句两个人都看得到的话，与回话是同一种东西
