@@ -155,7 +155,8 @@ export function openingTraits(
     ownerReport: openings.some((o) => o.greeting === "dnd_report"),
     // routine 开场白（#1283）是 greeting 一族里唯一算「主人亲口」的：正文是主人自己写的任务原话，
     // 与他当场说一句逐字等价；不放行的话定时轮里 call_friend 永远灭着（spec §5.2 的已知代价）
-    ownerSpoke: openings.length > 0 && openings.every((o) => o.fromUid === ownerUid && o.relay === undefined && (o.greeting === undefined || o.greeting === "routine")),
+    // collab_accept（#1605）同 routine：那一轮是主人点了「接」才起的，算主人亲口
+    ownerSpoke: openings.length > 0 && openings.every((o) => o.fromUid === ownerUid && o.relay === undefined && (o.greeting === undefined || o.greeting === "routine" || o.greeting === "collab_accept")),
     nonOwner: openings.some((o) => o.fromUid !== ownerUid),
   };
 }

@@ -173,7 +173,7 @@ import { createInviteToCallTool } from "./inviteToCallTool.js";
 import type { VoiceCallParticipant } from "../../../src/session/events.js";
 import { LoopEngine } from "../../../src/loop/engine.js";
 import type { EventStore } from "../../../src/session/store.js";
-import type { FriendPickCandidate, SessionEvent, SessionCreatedEvent, UserMessageEvent, AssistantMessageEvent, AgentRelayEvent, CallRingEvent, OutreachEvent, OutreachLine, OutreachOutcome, UserAttachmentRef, ChatVideoRef, TokenUsage } from "../../../src/session/events.js";
+import type { FriendPickCandidate, SessionEvent, SessionCreatedEvent, UserMessageEvent, AssistantMessageEvent, AgentRelayEvent, CallRingEvent, OutreachEvent, OutreachLine, OutreachOutcome, UserAttachmentRef, ChatVideoRef, TokenUsage, CollabRequestEvent, CollabDecisionEvent } from "../../../src/session/events.js";
 import { ChatMediaRejectedError } from "./chatMediaIntake.js";
 import { mediaPlaceholder, type ChatMediaRef } from "../../../src/shared/chatMedia.js";
 import { pendingImageDescriptions } from "../../../src/shared/visionPending.js";
@@ -195,7 +195,9 @@ import type { RoutineStore } from "./routineStore.js";
 import { ROUTINE_MAX_ROUNDS, routineOpeningText } from "../../../src/shared/routines.js";
 import { createMessageFriendAgentTool } from "./messageFriendAgentTool.js";
 import { createCollabTool } from "./collabTool.js";
-import { collabAuthPrompt } from "../../../src/shared/collab.js";
+import { COLLAB_EXPIRE_MS, collabAcceptText, collabAuthPrompt } from "../../../src/shared/collab.js";
+import { splitSpeakerPrefix } from "../../../src/shared/speakerPrefix.js";
+import { randomUUID } from "node:crypto";
 import type { FriendTier } from "../../../src/shared/friendTier.js";
 import { MESSAGE_FRIEND_AGENT_TOOL_NAME } from "../../../src/shared/laneBridge.js";
 import type { DeltaKind, ModelAdapter } from "../../../src/model/adapter.js";
@@ -239,6 +241,14 @@ import { createRosterTools } from "./rosterTools.js";
 import { createBuildAppTool } from "./buildAppTool.js";
 import { createSettingsTool, type OwnerSettingsStore } from "./settingsTool.js";
 import { pickCallAck } from "../../../src/shared/callAck.js";
+
+/** 管理员车道的桥（#1605）：A 的协作请求送到 B 家的 admins 车道；B 的决定与回复送回 A 的那条会话。daemon 一个 */
+export interface AdminsBridge {
+  /** 把请求送到对面家的管理员车道；回拒绝的那句话或 null */
+  deliverRequest(o: { ownerUid: string; peerUid: string; event: CollabRequestEvent; origin: { workspaceId: string; sessionId: string } }): Promise<string | null>;
+  /** 决定 / 回复送回发起方的那条会话 */
+  deliverBack(o: { origin: { workspaceId: string; sessionId: string }; fromUid: string; event?: CollabDecisionEvent; reply?: { text: string; fromAgentId: string; fromAgentName: string } }): Promise<void>;
+}
 import type { AppStore } from "./appStore.js";
 import { domainOf } from "../../../src/shared/agentTier.js";
 import { createTaskTools } from "./taskTools.js";
@@ -577,6 +587,8 @@ export interface CloudSessionOpts {
   /** 管理员改 Otto 设置（#1621）：update_settings 落库的那一半。可选：没接的装配不挂这把刀。
       刀只在主场私聊里、只给 L0；亮不亮同 routineTools（主人亲口的那一轮） */
   settings?: OwnerSettingsStore | null;
+  /** 管理员车道的桥（#1605）。可选：没接 = invite_collaborator 不挂、决定送不回去 */
+  adminsBridge?: AdminsBridge | null;
   /** 时钟（只给测试拧 TTL 用）。缺席 = Date.now */
   now?: () => number;
 }
@@ -726,6 +738,14 @@ export interface CloudSession {
       事实在日志，`workspace_session_members` 那张表只是给客户端 RLS 用的投影。进房、发言、审批、
       补跑时的复查都拿它和工作区成员一起判 */
   isGuest(uid: string): boolean;
+  /** 管理员车道（#1605）：对面家送来的协作请求（镜像一份，同 requestId）；重复的不落 */
+  receiveCollabRequest(e: CollabRequestEvent): void;
+  /** 发起方这条会话收对面主人的决定（镜像一份；任务的协作者状态从它折） */
+  receiveCollabDecision(e: CollabDecisionEvent): void;
+  /** 发起方这条会话收对面管理员的回话：以接力棒的形状落一条并起管理员的一轮 */
+  receiveCollabReply(o: { fromUid: string; text: string; fromAgentId: string; fromAgentName: string }): void;
+  /** 对面主人接 / 不接（#1605）：只有主人、只在管理员车道、只对还没答的请求；接 = 替主人落 collab_accept 开场白起管理员的一轮 */
+  decideCollab(requestId: string, byUid: string, decision: "accepted" | "declined"): Promise<{ ok: true } | { ok: false; message: string }>;
   /** 外联会话里，这通电话进行中且 uid 就是被打的那位好友时，签一张语音票（#1441）；否则 null。
       票的有效期从这通电话开始算起（`startedTs + SPEECH_TICKET_TTL_MS`），不从签发那刻算 */
   speechTicketFor(uid: string): Promise<string | null>;
@@ -840,11 +860,20 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   // 只有他，车道不收客人），开跑前读一份私聊信封。同 chatKind，建会话时记进日志的事实，一生不变
   const isPair = chatKind === "pair";
   const pairFacts = isPair ? createdCloud?.pair : undefined;
+  // 管理员车道（#1605）：对面主人的协作请求的收件箱。名单固定只有管理员，对面主人是只读客人。同 chatKind，一生不变
+  const isAdmins = chatKind === "admins";
+  const adminsFacts = isAdmins ? createdCloud?.admins : undefined;
+  /** 这条日志里见过的协作请求（两边都折：A 那份看任务状态，B 那份看该不该放行对面的接力）；从 seed 播种，notify 里推进 */
+  const collabRequests = new Map<string, { event: CollabRequestEvent; decision: CollabDecisionEvent["decision"] | null; timer: unknown }>();
+  for (const e of seed) {
+    if (e.type === "collab_request" && !collabRequests.has(e.requestId)) collabRequests.set(e.requestId, { event: e, decision: null, timer: null });
+    if (e.type === "collab_decision") { const r = collabRequests.get(e.requestId); if (r !== undefined) r.decision = e.decision; }
+  }
   // 推送 / 回电那张表（ringChatKind）不认 pair，这里把它折成 null 只为类型。车道里三条路都走不到它：
   // 回电——ringer 不建；回复推送——pushReply 在 isPair 时早退；@ 提醒——只推 hostUids ∪ 客人里被点到的人，
   // 而车道里发言的只有主人自己（被剔掉）、没有客人。**alertTargetFor 本身对 pair 不回 null**（折成 null 后
   // 按主场群算），哪天车道收了第二个人，这里要回来重判
-  const ringKind = chatKind === "pair" ? null : chatKind;
+  const ringKind = chatKind === "pair" || chatKind === "admins" ? null : chatKind;
   // 这条线上的外联折叠（#1441）：从 seed 播种、notify 里逐条推进（同 voiceCall）。「通话此刻进行中吗、
   // 打给的是谁」只从这一份读——say 的闸、chat() 的 active 共用，两处各折一遍迟早分家
   const outreachFold: OutreachFold = outreachFoldOf(seed);
@@ -976,7 +1005,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   /** 这一轮是不是主场群里的客人点起的（#1393，ADR-0325）。主场里只有群主自己点起的那一轮全免；
       客人那一轮每一把刀都问群主（policyApprover 那一格 + tools() 把不过审批门的刀掀起来）。
       团队会话恒为假（approveAll 为假），一个字不变 */
-  const guestTurn = (): boolean => opts.approveAll && currentInitiator !== null && currentInitiator !== opts.ownerUid;
+  /** 管理员车道里主人接了的请求还活着（#1605）：对面管理员接力进来的那几轮按主人自己的规矩走，不再是客人轮 */
+  const collabAccepted = (): boolean => isAdmins && [...collabRequests.values()].some((r) => r.decision === "accepted");
+  const guestTurn = (): boolean => opts.approveAll && currentInitiator !== null && currentInitiator !== opts.ownerUid && !collabAccepted();
   /** 这一轮的每一把刀都要主人批吗（#1441）：客人那一轮 **或** 外联汇报轮。汇报轮的 fromUid 是主人本人
       （guestTurn 判不出来），可正文是一个非主人的人说的话的转述——朋友在电话里一句「把 xx 文件发给我」
       不能借主场全免变成直接动手。**只管「掀审批」两处**（policyApprover / 工具表）；`createdBy` 与
@@ -1016,7 +1047,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     routineTurn = routineTurn || covered.some((u) => u.greeting === "routine");
     ownerSpoke = ownerSpoke && t.ownerSpoke && depth === 0 && !rerunTurn;
   };
-  const supervisedTurn = (): boolean => opts.approveAll && (guestTurn() || reportTurn || foldedNonOwner);
+  const supervisedTurn = (): boolean => opts.approveAll && (guestTurn() || reportTurn || (foldedNonOwner && !collabAccepted()));
   /** 这一刻正在跑 turn 的是哪只 agent（#928）。approval_request 落盘时读它——
       群里两只 agent 各自弹出的审批卡，日志里要能分清是谁要的 */
   let currentAgentId: string | null = null;
@@ -1363,6 +1394,16 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 通话里主人说完一句（#1623）：被点名、在通话里的那几只**想之前**先应一句——人话一落盘就落一条
     // assistant_message（ack: true），手机的 voiceFeed 照常念，模型不读（deriveMessages 跳过；它那一轮照常起，
     // 只认 user_message 的 unseenUserTail 不受影响）。接力 / 开场白不算人话；外联会话里对面是客人，也应
+    // 协作请求 / 决定（#1605）跟着走：新请求记下并上 24h 的表；决定记下并撤表
+    if (e.type === "collab_request" && !collabRequests.has(e.requestId)) {
+      const r = { event: e, decision: null, timer: null };
+      collabRequests.set(e.requestId, r);
+      armCollabExpiry(e.requestId);
+    }
+    if (e.type === "collab_decision") {
+      const r = collabRequests.get(e.requestId);
+      if (r !== undefined) { r.decision = e.decision; if (r.timer !== null) { clearCollabTimer(r.timer); r.timer = null; } }
+    }
     if (e.type === "user_message" && e.voice === true && e.relay === undefined && e.greeting === undefined && voiceCall !== null && !archived) {
       const inCall = (e.mentions ?? []).filter((id) => voiceCall!.participants.some((p) => p.agentId === id));
       for (const agentId of inCall) {
@@ -1370,6 +1411,38 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         lastCallAck = text;
         notify(store.append({ sessionId, ts: Date.now(), type: "assistant_message", agentId, content: text, model: callerModelOf(store.load(sessionId), agentId), ack: true }));
       }
+    }
+  }
+
+  /** 24 小时没回算失败（#1605）：两边各自到点落一条 expired（不互相等）；重启后从 seed 补上表 */
+  const setCollabTimer = opts.ringTimers?.setTimer ?? ((fn: () => void, ms: number) => setTimeout(fn, ms));
+  const clearCollabTimer = opts.ringTimers?.clearTimer ?? ((h: unknown) => clearTimeout(h as ReturnType<typeof setTimeout>));
+  function armCollabExpiry(requestId: string): void {
+    const r = collabRequests.get(requestId);
+    if (r === undefined || r.decision !== null || r.timer !== null) return;
+    const wait = Math.max(0, r.event.expiresTs - Date.now());
+    r.timer = setCollabTimer(() => {
+      r.timer = null;
+      if (archived || r.decision !== null) return;
+      const d = store.append({ sessionId, ts: Date.now(), type: "collab_decision", requestId, decision: "expired", byUid: null, ignorable: true }) as CollabDecisionEvent;
+      notify(d);
+    }, wait);
+  }
+  for (const id of collabRequests.keys()) armCollabExpiry(id);
+  /** B 的管理员这一轮说的话送回 A（#1605）：只送主人接了的那条请求的 origin；系统替它应的那句（ack）不送 */
+  async function mirrorAdminsReply(spec: AgentSpec, scanFrom: number): Promise<void> {
+    const bridge = opts.adminsBridge ?? null;
+    if (bridge === null) return;
+    const live = [...collabRequests.values()].filter((r) => r.decision === "accepted" && r.event.origin !== undefined).at(-1);
+    if (live === undefined) return;
+    const said = store.load(sessionId, { afterSeq: scanFrom })
+      .filter((e): e is AssistantMessageEvent => e.type === "assistant_message" && e.agentId === spec.agentId && e.ack === undefined && e.content.trim() !== "")
+      .map((e) => e.content.trim());
+    if (said.length === 0) return;
+    try {
+      await bridge.deliverBack({ origin: live.event.origin!, fromUid: opts.ownerUid, reply: { text: said.join("\n\n"), fromAgentId: spec.agentId, fromAgentName: specNames.get(spec.agentId) ?? spec.name } });
+    } catch (err) {
+      console.warn(`[otto-runtime] 管理员车道的回复送不回去（session=${sessionId}）：${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -1731,22 +1804,58 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
               }),
           });
     // 跨主场协作（#1578）：管理员把任务交给对方的管理员——落 task_collab + 走同一条桥
+    // 第 1 期 b（#1605）：落点从对面的公开车道换成 collab_request——本地一份（任务的协作者状态从它折）+ 送到对面家的管理员车道
+    const adminsBridge = opts.adminsBridge ?? null;
     const collabTool =
-      laneBridge === null || !isPair || pairFacts === undefined
+      adminsBridge === null || !isPair || pairFacts === undefined
         ? null
         : createCollabTool({
             peer: () => ({ uid: pairFacts.peerUid, name: pairFacts.peerName }),
             ownerName: () => pairFacts.ownerName,
             tasks: () => taskFold,
-            record: (taskId, withUid, withName) => {
-              if (archived) return;
-              notify(store.append({ sessionId, ts: Date.now(), type: "task_collab", taskId, withUid, withName, byAgentId: spec.agentId, ignorable: true }));
+            ownerLineBefore: (taskId) => {
+              const log = store.load(sessionId);
+              const at = log.find((e) => e.type === "task_created" && e.taskId === taskId)?.seq ?? Number.POSITIVE_INFINITY;
+              for (let i = log.length - 1; i >= 0; i--) {
+                const e = log[i]!;
+                if (e.seq >= at) continue;
+                if (e.type === "user_message" && e.fromUid === opts.ownerUid && e.relay === undefined && e.greeting === undefined) {
+                  return (splitSpeakerPrefix(e.content)?.body ?? e.content).replace(/\s+/g, " ").trim().slice(0, 200);
+                }
+              }
+              return "";
             },
-            send: (text) =>
-              laneBridge.send({
-                ownerUid: opts.ownerUid, peerUid: pairFacts.peerUid, fromAgentId: spec.agentId,
-                fromAgentName: specNames.get(spec.agentId) ?? spec.name, text, wanted: undefined, depth: currentOpeningDepth,
-              }),
+            request: async ({ task, note, ownerLine, result }) => {
+              if (archived) return "这条会话已经收尾了";
+              const requestId = `r_${randomUUID().slice(0, 8)}`;
+              const draft: CollabRequestEvent = {
+                sessionId, seq: 0, ts: Date.now(), type: "collab_request", requestId, taskId: task.id, title: task.title,
+                fromUid: opts.ownerUid, fromAgentName: specNames.get(spec.agentId) ?? spec.name,
+                quote: { ownerName: pairFacts.ownerName, ownerLine, note }, result: result.slice(0, 500), expiresTs: Date.now() + COLLAB_EXPIRE_MS,
+                byAgentId: spec.agentId, ignorable: true,
+              };
+              // **先送达、再落本地**（真机 2026-10-05：对面建车道撞了约束，这边却已经落了请求，任务卡写着「等 TA 点头」）。
+              // 送不到 = 这边一个字不落，回那句话
+              const refused = await adminsBridge
+                .deliverRequest({ ownerUid: opts.ownerUid, peerUid: pairFacts.peerUid, event: draft, origin: { workspaceId: opts.workspaceId, sessionId } })
+                .catch((err: unknown) => {
+                  console.warn(`[otto-runtime] 协作请求送不过去（session=${sessionId}）：${err instanceof Error ? err.message : String(err)}`);
+                  return "对面那边这会儿接不住，稍后再试";
+                });
+              if (refused !== null) return refused;
+              // 先 task_collab 再 collab_request：重放时 foldTask 要先见到协作者那一格，请求才记得上 pending
+              notify(store.append({ sessionId, ts: Date.now(), type: "task_collab", taskId: task.id, withUid: pairFacts.peerUid, withName: pairFacts.peerName, byAgentId: spec.agentId, ignorable: true }));
+              const { seq: _seq, ...rest } = draft;
+              notify(store.append({ ...rest, ts: Date.now() }));
+              return null;
+            },
+            redeliver: async (requestId) => {
+              const e = store.load(sessionId).find((x): x is CollabRequestEvent => x.type === "collab_request" && x.requestId === requestId);
+              if (e === undefined) return "找不到那条请求";
+              return adminsBridge
+                .deliverRequest({ ownerUid: opts.ownerUid, peerUid: pairFacts.peerUid, event: e, origin: { workspaceId: opts.workspaceId, sessionId } })
+                .catch(() => "对面那边这会儿接不住，稍后再试");
+            },
           });
     const engine = new LoopEngine({
       store: agentView(store, spec.agentId),
@@ -1784,7 +1893,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           ...(messageFriendTool !== null && adminOnly && !supervisedTurn() ? [messageFriendTool] : []),
           // 对面公开的智能体（#1542）：只在这条车道此刻是公开的（朋友在客人名单里）才亮
           ...(bridgeTool !== null && adminOnly && pairFacingOf(chatHumans, pairFacts!.peerUid) === "both" ? [bridgeTool] : []),
-          ...(collabTool !== null && adminOnly && pairFacingOf(chatHumans, pairFacts!.peerUid) === "both" ? [collabTool] : []),
+          // 第 1 期 b（#1605）：不再要求车道公开——对面看的是自己家的管理员车道，不是这条
+          ...(collabTool !== null && adminOnly ? [collabTool] : []),
           ...(isAdmin ? [createAgentTool] : []),
           // 管理员拉人 / 请人（#1571 第二轮第 3 条）：主场里才有，外联 / 团队会话没有这回事
           ...(isAdmin && opts.approveAll ? [rosterTools.bring, rosterTools.dismiss] : []),
@@ -2872,6 +2982,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       currentEngine = null;
       // 切片 5（#950）：这只说完了才看它 @ 了谁。aborted 不接力（人按了停止，不该再点起别人）
       if (outcome === "completed") await relayAfterTurn(job, spec, scanFrom, openingDepth);
+      // 管理员车道（#1605）：这一轮说的话原样送回发起方的那条会话（主人接了的那条请求的 origin）
+      if (outcome === "completed" && isAdmins) await mirrorAdminsReply(spec, scanFrom);
     } catch (err) {
       if (!engineStarted) {
         notify(store.append({
@@ -3059,6 +3171,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 这一道是第二道：判据挂在「这条车道是谁的」这个事实上，不挂在「此刻谁进得了房」的巧合上
       // 公开车道（#1523）：朋友以客人身份进来，也能说。isGuest 读的是日志里此刻的名单——事实在日志
       if (isPair && fromUid !== opts.ownerUid && !isGuest(fromUid)) throw new SayRejectedError("这是别人的私人智能体。");
+      // 管理员车道（#1605）：对面主人本人在这里只看不说；对面管理员的话走桥（带 relay）
+      if (isAdmins && fromUid !== opts.ownerUid && relay === undefined) throw new SayRejectedError("管理员车道里只有两家管理员说话。");
       // 人刚开口 → 要此刻的名单（#979 第 5 条）：他在设置页刚建/改的那只要能立刻 @ 到
       const roster = await rosterNow({ fresh: true });
       // **名单降级 + 这句话点了名 = 一个字节都不落**（#957 E2-4）：degraded 那份
@@ -3441,6 +3555,55 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       return archived;
     },
 
+    // ── 管理员车道（#1605）──
+    receiveCollabRequest(e) {
+      if (archived || collabRequests.has(e.requestId)) return;
+      const { seq: _seq, sessionId: _sid, ts: _ts, ...rest } = e;
+      notify(store.append({ ...rest, sessionId, ts: Date.now() }));
+    },
+    receiveCollabDecision(e) {
+      if (archived) return;
+      const r = collabRequests.get(e.requestId);
+      if (r === undefined || r.decision !== null) return;
+      const { seq: _seq, sessionId: _sid, ts: _ts, ...rest } = e;
+      notify(store.append({ ...rest, sessionId, ts: Date.now() }));
+    },
+    receiveCollabReply({ fromUid, text, fromAgentId, fromAgentName }) {
+      if (archived) return;
+      // 对面管理员的回话以接力棒的形状落进来（同车道桥的 say）：点名管理员、带 relay；这一轮是客人点起的接力轮
+      const opening = store.append({
+        sessionId, ts: Date.now(), type: "user_message", content: `[${fromAgentName}]: ${text}`, fromUid, mentions: [ADMIN_AGENT_ID],
+        relay: { fromAgentId, depth: 1 },
+      }) as UserMessageEvent;
+      notify(opening);
+      if (coordinator.enqueue({ agentId: ADMIN_AGENT_ID, fromUid, opening }) === "start_turn") startDrain();
+    },
+    async decideCollab(requestId, byUid, decision) {
+      if (!isAdmins) return { ok: false, message: "这不是管理员车道" };
+      if (byUid !== opts.ownerUid) return { ok: false, message: "只有主人能点" };
+      const r = collabRequests.get(requestId);
+      if (r === undefined) return { ok: false, message: "没有这条请求" };
+      if (r.decision !== null) return { ok: false, message: r.decision === "expired" ? "这条已经过期了" : "已经答过了" };
+      if (archived) return { ok: false, message: "这条会话已经收尾了" };
+      const d = store.append({ sessionId, ts: Date.now(), type: "collab_decision", requestId, decision, byUid, ignorable: true }) as CollabDecisionEvent;
+      notify(d);
+      const bridge = opts.adminsBridge ?? null;
+      if (bridge !== null && r.event.origin !== undefined) {
+        void bridge.deliverBack({ origin: r.event.origin, fromUid: opts.ownerUid, event: d }).catch((err: unknown) => {
+          console.warn(`[otto-runtime] 协作决定送不回去（session=${sessionId}）：${err instanceof Error ? err.message : String(err)}`);
+        });
+      }
+      if (decision === "accepted") {
+        // 接 = 主人自己点起的一轮（不是客人轮）：刀按主人的规矩，openingTraits 把 collab_accept 算主人亲口
+        const opening = store.append({
+          sessionId, ts: Date.now(), type: "user_message", content: collabAcceptText(r.event), fromUid: opts.ownerUid, mentions: [ADMIN_AGENT_ID], greeting: "collab_accept",
+        }) as UserMessageEvent;
+        notify(opening);
+        if (coordinator.enqueue({ agentId: ADMIN_AGENT_ID, fromUid: opts.ownerUid, opening }) === "start_turn") startDrain();
+      }
+      return { ok: true };
+    },
+
     chat() {
       if (chatKind === null) return null;
       return {
@@ -3454,6 +3617,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         // 私密车道（#1461）：配对的是哪位朋友、朝向。客户端认得出「这条车道是我和谁的」
         // 朝向从名单推导（#1523）：朋友在客人名单里 = 公开。session_created 里那一格只是建会话时的初值
         ...(pairFacts !== undefined ? { pair: { peerUid: pairFacts.peerUid, facing: pairFacingOf(chatHumans, pairFacts.peerUid) } } : {}),
+        // 管理员车道（#1605）：对面是哪位朋友
+        ...(adminsFacts !== undefined ? { admins: { peerUid: adminsFacts.peerUid, peerName: adminsFacts.peerName } } : {}),
       };
     },
 

@@ -91,6 +91,7 @@ import { isAgentDomain } from "../../../src/shared/agentDomain.js";
 import { APP_BUCKET } from "../../../src/shared/apps.js";
 import { createSupabaseAppStore } from "./appStore.js";
 import { createSupabaseOwnerSettings } from "./ownerSettingsStore.js";
+import type { AdminsBridge } from "./sessionService.js";
 import { isAgentTier, type AgentTier } from "../../../src/shared/agentTier.js";
 import { findModel } from "../../../src/shared/modelCatalog.js";
 import type { RemoteTransport } from "../../../src/shared/remote/transport.js";
@@ -417,6 +418,50 @@ async function main(): Promise<void> {
     if (!data) return null;
     const r = data as { workspace_id: string; publisher_uid: string; archived: boolean };
     return { workspace_id: r.workspace_id, archived: r.archived, publisherUid: r.publisher_uid };
+  }
+
+  /** 这个人的主场（#1605）：workspaces.kind = home、owner_uid = 他；没有回 null */
+  async function homeWorkspaceOf(uid: string): Promise<string | null> {
+    const { data, error } = await supabase.from("workspaces").select("id").eq("owner_uid", uid).eq("kind", "home").maybeSingle();
+    if (error) throw new Error(`主场查询失败（${uid}）：${error.message}`);
+    return data ? (data as { id: string }).id : null;
+  }
+  /** 这家对这位朋友现成的那条管理员车道（#1605），没有回 null。0065 的唯一索引是权威 */
+  async function findAdminsSession(workspaceId: string, peerUid: string): Promise<string | null> {
+    const { data, error } = await supabase.from("workspace_sessions").select("id").eq("workspace_id", workspaceId).eq("chat_kind", "admins").eq("peer_uid", peerUid).maybeSingle();
+    if (error) throw new Error(`管理员车道查询失败（${workspaceId}）：${error.message}`);
+    return data ? (data as { id: string }).id : null;
+  }
+  /** 开（或拿到）这家对这位朋友的管理员车道（#1605）：一行 + session_created（chat.kind admins）+ 名单（管理员 + 朋友当只读客人） */
+  async function ensureAdminsSession(workspaceId: string, ownerUid: string, peerUid: string): Promise<string> {
+    const existing = await findAdminsSession(workspaceId, peerUid);
+    if (existing !== null) return existing;
+    const sessionId = randomUUID();
+    const [ownerName, peerName] = await Promise.all([labelOf(ownerUid), labelOf(peerUid)]);
+    const { error } = await supabase.from("workspace_sessions").insert({
+      id: sessionId, workspace_id: workspaceId, publisher_uid: ownerUid, kind: "cloud", title: `管理员之间 · ${peerName}`, pkg_id: null,
+      chat_kind: "admins", agent_ids: [ADMIN_AGENT_ID], peer_uid: peerUid,
+    });
+    if (error) {
+      if (error.code === "23505") {
+        const again = await findAdminsSession(workspaceId, peerUid);
+        if (again !== null) return again;
+      }
+      throw new Error(`管理员车道 insert 失败：${error.message}`);
+    }
+    const store = storeFor(workspaceId);
+    store.append({
+      sessionId, ts: Date.now(), type: "session_created", workspace: WORKDIR,
+      cloud: { workspaceId, chat: { kind: "admins" }, admins: { ownerName, peerUid, peerName }, home: true },
+    });
+    const team = await agentsCache.get(workspaceId);
+    store.append({
+      sessionId, ts: Date.now(), type: "chat_roster_changed", ignorable: true,
+      agents: [{ agentId: ADMIN_AGENT_ID, name: team.find((a) => a.agentId === ADMIN_AGENT_ID)?.name ?? "管理员" }],
+      humans: [{ uid: peerUid, name: peerName }],
+    });
+    await syncGuestRows(sessionId, [{ uid: peerUid }], ownerUid);
+    return sessionId;
   }
 
   /** 这只智能体现成的那条私聊（#1280），没有回 null。库里那条唯一索引是权威，
@@ -757,6 +802,38 @@ async function main(): Promise<void> {
             if (error) throw new Error(error.message);
           },
         });
+
+  // 管理员车道的桥（#1605）：A 的协作请求 → B 家的管理员车道（没有就建）；B 的决定 / 回复 → A 的那条会话（房没开按原聊天那条路现开）
+  const adminsBridge: AdminsBridge = {
+    async deliverRequest({ ownerUid, peerUid, event, origin }) {
+      let rows: FriendTierRow[];
+      try {
+        rows = await acceptedFriendRows(ownerUid, [peerUid]);
+      } catch (err) {
+        console.warn(`[otto-runtime] 送协作请求时查好友失败（owner=${ownerUid}）：${String(err)}`);
+        return "这会儿查不到好友名单，稍后再试";
+      }
+      if (!friendSetOf(ownerUid, rows).has(peerUid)) return "你们已经不是朋友了，送不过去";
+      const home = await homeWorkspaceOf(peerUid);
+      if (home === null) return "对方还没有主场，送不过去";
+      const sid = await ensureAdminsSession(home, peerUid, ownerUid);
+      const room = openSessionRoom(home, sid, peerUid, peerUid, true);
+      room.receiveCollabRequest({ ...event, origin });
+      return null;
+    },
+    async deliverBack({ origin, fromUid, event, reply }) {
+      const room = await openOriginRoom<CloudSession>(
+        { active: (id) => activeSessions.get(id)?.session ?? null, row: sessionRowOf, open: (w, id, publisherUid) => openExistingRoom(w, id, publisherUid), discard: discardRoom },
+        origin.workspaceId, origin.sessionId,
+      );
+      if (room === null) {
+        console.warn(`[otto-runtime] 协作的决定 / 回复送不回去：原会话开不出来（session=${origin.sessionId}）`);
+        return;
+      }
+      if (event !== undefined) room.receiveCollabDecision(event);
+      if (reply !== undefined) room.receiveCollabReply({ fromUid, ...reply });
+    },
+  };
 
   // 管理员改 Otto 设置（#1621）：落库的那一半。好友名单同外联那条路（只认 accepted，名字现取）；名册走 agentsCache；
   // 车道朝向走 updateChat（查友谊、公开时补管理员、落 chat_roster_changed）——房没开就按原聊天那条路现开
@@ -1158,6 +1235,8 @@ async function main(): Promise<void> {
       routines: routineStore,
       // 管理员改设置（#1621）：同 routines，挂不挂由 sessionService 按 approveAll + chatKind + L0 判
       settings: ownerSettings,
+      // 管理员车道的桥（#1605）
+      adminsBridge,
       // 回电（#1411）：推送关着 = null（刀不出现）。isWatching = 这个房间里有没有他的连接——手机切后台会
       // 主动断开会话房（mobile/src/cloud/cloudClient.ts），所以「连着」就是「开着这条聊天」
       // 外联（#1441）：收尾时把结果汇报回原聊天、call_friend 那把刀的出口。推送关着 = 没有 hub = 两样都是 null；
@@ -1577,6 +1656,15 @@ async function main(): Promise<void> {
         return { sessionId };
       },
       ownerOf,
+      // 对面管理员的协作请求，主人接 / 不接（#1605）：房没开就按原聊天那条路现开
+      async decideCollab(workspaceId, sessionId, byUid, requestId, decision) {
+        const room = await openOriginRoom<CloudSession>(
+          { active: (id) => activeSessions.get(id)?.session ?? null, row: sessionRowOf, open: (w, id, publisherUid) => openExistingRoom(w, id, publisherUid), discard: discardRoom },
+          workspaceId, sessionId,
+        );
+        if (room === null) return { ok: false, message: "这条聊天不存在" };
+        return room.decideCollab(requestId, byUid, decision);
+      },
       /** 改一条聊天的名字 / 名单（#1280）。名单那一半的事实归日志（CloudSession 落事件），
           这里只写两列投影——写库失败不回滚也不报失败，启动对账时日志赢 */
       async updateChat(workspaceId, sessionId, byUid, patch) {

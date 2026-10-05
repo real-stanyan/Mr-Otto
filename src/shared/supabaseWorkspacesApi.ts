@@ -797,6 +797,13 @@ export async function findPairLane(
   return { sessionId: row.id, agentIds, facing: row.facing === "both" ? "both" : "self" };
 }
 
+/** 我家对这位朋友的管理员车道（#1605，0064）：chat_kind = admins、peer_uid = 朋友。没有回 null；读不到抛 */
+export async function findAdminsLane(client: SupabaseClient, homeId: string, peerUid: string): Promise<{ sessionId: string } | null> {
+  const { data, error } = await client.from("workspace_sessions").select("id").eq("workspace_id", homeId).eq("chat_kind", "admins").eq("peer_uid", peerUid).eq("archived", false).maybeSingle();
+  if (error) throw new Error(error.message);
+  return data === null || data === undefined ? null : { sessionId: (data as { id: string }).id };
+}
+
 /** 这位朋友的公开智能体（#1533，0057 的 public_agent_of）：只给已接受、档位到「可带智能体」的好友；没设 / 不给 / 读不到
     都回 null——界面上同一个画法（不画），不像车道那样要分开说 */
 export async function fetchPublicAgentOf(client: SupabaseClient, uid: string): Promise<PublicAgentInfo | null> {

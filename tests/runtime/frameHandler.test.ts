@@ -20,6 +20,10 @@ import { mentionTokens } from "../../src/shared/remote/agentMention.js";
 function fakeSession(overrides: Partial<CloudSession> = {}): CloudSession {
   return {
     say: async () => {},
+    receiveCollabRequest: () => {},
+    receiveCollabDecision: () => {},
+    receiveCollabReply: () => {},
+    decideCollab: async () => ({ ok: true as const }),
     // #1356 A2：默认不落——绝大多数用例不关心"新建的智能体先开口"这条路
     greetNewAgent: () => {},
     speechTicketFor: async () => null,
@@ -103,6 +107,7 @@ function makeDeps(config: {
     labelOf: config.labelOf ?? (async (uid) => `Label(${uid})`),
     sessions: {
       get: config.getSession ?? (() => fakeSession()),
+      decideCollab: async () => ({ ok: true as const }),
       create: config.createSession ?? (async () => ({ sessionId: "new-session" })),
       ownerOf: config.ownerOf ?? (async () => "owner-uid"),
       archive: config.archiveSession ?? (async () => true),

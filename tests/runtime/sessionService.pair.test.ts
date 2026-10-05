@@ -70,6 +70,8 @@ function open(store: EventStore, o: { messages?: () => Promise<PairMessageRow[]>
       return o.messages ? o.messages() : [msg(PEER, OWNER, "周末去哪", 1), msg(OWNER, PEER, "爬山？", 2)];
     },
     outreach: o.outreach ?? null, laneBridge: o.bridge ?? null, approveAll: true, callback: null,
+    // 第 1 期 b（#1605）：invite_collaborator 挂不挂看 adminsBridge，不再看 laneBridge；这里跟 bridge 同进同出
+    adminsBridge: o.bridge ? { deliverRequest: async () => null, deliverBack: async () => {} } : null,
     ...(o.alerts ? { alert: (uid: string) => void o.alerts!.push(uid) } : {}),
   };
   probe.session = createCloudSession(opts);
@@ -263,7 +265,7 @@ describe("私密车道（#1461 P1）", () => {
       const tool = env.tools.find((t) => t.name === "message_friend_agent");
       expect(tool).toBeDefined();
       expect(env.system).toContain("message_friend_agent");
-      // 跨主场协作（#1578）：同一条件下 invite_collaborator 也挂着（只有 L0 有，HELPER 标的是 L0；提示词那段按 agentId 认
+      // 跨主场协作（#1578 → #1605）：接了 adminsBridge 时 invite_collaborator 也挂着（只有 L0 有，HELPER 标的是 L0；提示词那段按 agentId 认
       // 管理员，HELPER 不是 admin 所以这里不验 system）
       expect(env.tools.find((t) => t.name === "invite_collaborator")).toBeDefined();
       store.close();

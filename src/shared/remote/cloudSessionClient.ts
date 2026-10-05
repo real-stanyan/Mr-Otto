@@ -230,6 +230,8 @@ export interface CloudSessionClient {
     sessionId: string,
     patch: { name?: string; agentIds?: string[]; humans?: string[]; facing?: "self" | "both" },
   ): Promise<FriendsResult<null>>;
+  /** 对面管理员的协作请求，接 / 不接（控制房 RPC，协议 29，#1605）：只有主人能点，服务端判 */
+  collabDecide(workspaceId: string, sessionId: string, requestId: string, decision: "accepted" | "declined"): Promise<FriendsResult<null>>;
   /** 给朋友打电话（控制房 RPC，协议 27，#1534）：runtime 核对是好友、推一条 VoIP 来电给对方；回执带打的人要用的
       ICE 服务器与响铃到点的时刻。媒体与信令不经这里（call/humanCall.ts 直接走中继 hc:<callId> 房） */
   humanCall(callId: string, toUid: string): Promise<FriendsResult<{ ice: IceServer[]; expiresTs: number }>>;
@@ -1261,6 +1263,13 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     });
   }
 
+  function collabDecide(workspaceId: string, sessionId: string, requestId: string, decision: "accepted" | "declined"): Promise<FriendsResult<null>> {
+    return ctlRequest({ t: "collab_decide", workspaceId, sessionId, requestId, decision }, (msg) => {
+      if (msg.t !== "collab_decide_result" || msg.sessionId !== sessionId || msg.requestId !== requestId) return null;
+      return msg.ok ? { ok: true, value: null } : { ok: false, message: msg.message ?? "没有点成" };
+    });
+  }
+
   function currentSessionId(): string | null {
     return active ? active.sessionId : null;
   }
@@ -1278,5 +1287,5 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     };
   }
 
-  return { currentSessionId, activeSummary, create, join, leave, say, approve, pickFriend, archive, remove, chatUpdate, humanCall, stop, call, backlogPage, workspaceState, workspaceGitCredential, workspaceFiles, workspaceFilesSearch, workspaceWikiWrite };
+  return { currentSessionId, activeSummary, create, join, leave, say, approve, pickFriend, archive, remove, chatUpdate, collabDecide, humanCall, stop, call, backlogPage, workspaceState, workspaceGitCredential, workspaceFiles, workspaceFilesSearch, workspaceWikiWrite };
 }
