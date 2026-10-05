@@ -3112,8 +3112,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
                   const catalogId = catalogIdOfServer(serverId);
                   const r = catalogId === null ? null : resolveConnectApp(catalogId);
                   if (r === null || r.kind !== "ok") return null;
-                  offerAppConnect({ agentId: spec.agentId, catalogId: r.entry.id, appName: r.entry.name, why: "它的登录过期了，要重新登录才能接着用", reason: "needs_login" });
-                  return `${r.entry.name} 的登录过期了，已经在会话里请主人重新登录；这一轮别再调它。`;
+                  const said = offerAppConnect({ agentId: spec.agentId, catalogId: r.entry.id, appName: r.entry.name, why: "它的登录过期了，要重新登录才能接着用", reason: "needs_login" });
+                  // 真发出了新卡才说「已经请主人重新登录」；已有开着的卡 / 本小时发满了，卡没新发，
+                  // 照 offerAppConnect 自己那句说（并补上这次调用失败的原因），不能谎称已发
+                  return said === appConnectToolText(r.entry.name)
+                    ? `${r.entry.name} 的登录过期了，已经在会话里请主人重新登录；这一轮别再调它。`
+                    : `${r.entry.name} 的登录过期了。${said}`;
                 },
               }
             : {}),

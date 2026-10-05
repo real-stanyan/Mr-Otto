@@ -10,7 +10,7 @@ import { EventStore } from "../../src/session/store.js";
 import type { AppConnectEvent, RequestEnvelopeEvent, ToolResultEvent } from "../../src/session/events.js";
 import type { ModelAdapter, ModelReply } from "../../src/model/adapter.js";
 import type { ExecutionWorld } from "../../src/world/executionWorld.js";
-import type { PxCallDeps } from "../../services/runtime/src/pxTools.js";
+import { pxToolName, type PxCallDeps } from "../../services/runtime/src/pxTools.js";
 import type { AgentToolAllow } from "../../src/shared/agentToolAllow.js";
 import type { AgentTier } from "../../src/shared/agentTier.js";
 import { ADMIN_AGENT_ID } from "../../src/shared/workspaceAgents.js";
@@ -50,11 +50,11 @@ const outreachSeed = (store: EventStore): void => {
   store.append({ sessionId: SID, ts: 2, type: "chat_roster_changed", agents: [{ agentId: ADMIN_AGENT_ID, name: "运维" }], humans: [{ uid: PEER, name: "小红" }], ignorable: true });
 };
 
-function openWith(store: EventStore, o: { adapter: ModelAdapter; approveAll?: boolean; px?: PxCallDeps; now?: () => number }): CloudSession {
+function openWith(store: EventStore, o: { adapter: ModelAdapter; approveAll?: boolean; px?: PxCallDeps; now?: () => number; hostUids?: string[] }): CloudSession {
   return createCloudSession({
     sessionMeta: createInMemoryCloudSessionMeta(),
     workspaceId: "w1", sessionId: SID, ownerUid: OWNER, createdByUid: OWNER, store, world: fakeWorld,
-    agents: async () => [OPS], adapterFor: () => o.adapter, px: o.px ?? basePx, hostUids: async () => [OWNER],
+    agents: async () => [OPS], adapterFor: () => o.adapter, px: o.px ?? basePx, hostUids: async () => o.hostUids ?? [OWNER],
     onEvent: () => {},
     onUsage: () => {}, wiki: testWiki(), mentionInbox: createInMemoryMentionInbox(),
     agentWriter: createInMemoryAgentWriter(), isMember: async () => true, contextWindowOf: () => undefined,
@@ -192,12 +192,12 @@ describe("连接器 409 needs_login 兜底发卡（#1666）", () => {
       }
       return Response.json({ error: { message: "这个应用要在手机上重新登录", type: "otto_edge", code: "needs_login" } }, { status: 409 });
     }) as unknown as typeof fetch;
-  const callsPx = (n: number): ModelAdapter => {
+  const callsPx = (n: number, toolName: string = PX_TOOL): ModelAdapter => {
     let round = 0;
     return { model: "fake-model", async chat(): Promise<ModelReply> {
       round++;
       return round === 1
-        ? { content: "", toolCalls: Array.from({ length: n }, (_, i) => ({ id: `p${i + 1}`, name: PX_TOOL, args: {} })) }
+        ? { content: "", toolCalls: Array.from({ length: n }, (_, i) => ({ id: `p${i + 1}`, name: toolName, args: {} })) }
         : { content: "好的" };
     } };
   };
@@ -215,10 +215,53 @@ describe("连接器 409 needs_login 兜底发卡（#1666）", () => {
     const rs = results(store);
     expect(rs).toHaveLength(2);
     expect(rs[0]).toMatchObject({ status: "error" });
-    expect(rs[0]!.output).toContain("Supabase 的登录过期了");
-    // 第二次：已有开着的卡 → 替换文案是 offerAppConnect 的去重话，不落第二条
-    expect(rs[1]!.output).not.toContain("这个应用要在手机上重新登录");
+    expect(rs[0]!.output).toBe("Supabase 的登录过期了，已经在会话里请主人重新登录；这一轮别再调它。");
+    // 第二次：已有开着的卡 → 模型收到「登录过期了。」+ offerAppConnect 的去重话，不落第二条
+    expect(rs[1]!.output).toBe("Supabase 的登录过期了。连 Supabase 的卡已经在会话里了，等主人点。这一轮别再试它。");
     expect(calls.filter((u) => u.includes("/px/v1/call"))).toHaveLength(2);
+    store.close();
+  });
+
+  it("本小时连接卡已发满 3 张：不再发新卡，模型收到「登录过期了。」+ 封顶话，而不是「已经请主人重新登录」", async () => {
+    const store = newStore();
+    dmSeed(store);
+    let round = 0;
+    const adapter: ModelAdapter = { model: "fake-model", async chat(): Promise<ModelReply> {
+      round++;
+      return round === 1
+        ? { content: "", toolCalls: [
+            { id: "c1", name: TOOL, args: { app: "github", why: "要用它办事" } },
+            { id: "c2", name: TOOL, args: { app: "notion", why: "要用它办事" } },
+            { id: "c3", name: TOOL, args: { app: "linear", why: "要用它办事" } },
+            { id: "p1", name: PX_TOOL, args: {} },
+          ] }
+        : { content: "好的" };
+    } };
+    const s = openWith(store, { adapter, px: { ...basePx, fetchImpl: needsLoginFetch([]) } });
+    await s.say(OWNER, "Stan", "都办了", false, [], undefined, []);
+    await s.settled();
+    expect(cards(store).map((c) => c.catalogId)).toEqual(["github", "notion", "linear"]);
+    const out = results(store)[3]!.output;
+    expect(out).toContain("Supabase 的登录过期了。");
+    expect(out).toContain("这个小时已经发了 3 张");
+    expect(out).not.toContain("已经在会话里请主人重新登录");
+    store.close();
+  });
+
+  it("工具是别人托管的（hostUid ≠ 主人）：不发卡，模型收到 edge 原 message", async () => {
+    const store = newStore();
+    dmSeed(store);
+    const s = openWith(store, {
+      adapter: callsPx(1, pxToolName(PEER, "cloud-supabase", "list")),
+      px: { ...basePx, fetchImpl: needsLoginFetch([]) },
+      hostUids: [PEER],
+    });
+    await s.say(OWNER, "Stan", "查一下库", false, [], undefined, []);
+    await s.settled();
+    expect(cards(store)).toHaveLength(0);
+    const rs = results(store);
+    expect(rs).toHaveLength(1);
+    expect(rs[0]).toMatchObject({ status: "error", output: "这个应用要在手机上重新登录" });
     store.close();
   });
 
