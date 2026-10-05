@@ -530,11 +530,11 @@ export function createRequestAppConnectTool(deps: RequestAppConnectDeps): Tool {
 ### Task 8: 文档
 
 **Files:**
-- Create: `docs/adr/0373-智能体要连应用时发连接卡-按钮由手机判断-连上和不用了都起一轮.md`（号码合并前 re-fetch 再核）
+- Create: `docs/adr/0374-智能体要连应用时发连接卡-按钮由手机判断-连上和不用了都起一轮.md`（号码合并前 re-fetch 再核）
 - Modify: `docs/where-to-find-things.md`（一条，列 `src/shared/appConnect.ts` / `appConnectPopup.ts` / `requestAppConnectTool.ts` / `pxTools.onNeedsLogin` / `sessionService.answerAppConnect` / `frameHandler app_connect` / `Bubbles.AppConnectCard` / `AppConnectPrompt`，说清为什么按钮由手机判、协议 30、只在主场）
-- Modify: `CONTEXT.md`（产品术语段加「连接卡」：智能体请主人连上一个应用时会话里出的那张卡，ADR-0373）
+- Modify: `CONTEXT.md`（产品术语段加「连接卡」：智能体请主人连上一个应用时会话里出的那张卡，ADR-0374）
 
 - [ ] **Step 1: ADR**（格式照最近一条 ADR，比如 0372）：背景（#1666 原话）、决定（1. 显式工具 + 409 兜底；2. 按钮由手机判断，因为 edge 对平台身份 403；3. 连上 / 不用了都起一轮，开场白算主人亲口；4. 只在主场、非外联 / 车道 / 受监督轮、L0 / L1；5. 协议 30）、代价（旧手机被握手拒；团队工作区一期不发卡；桌面不画；Supabase 目录连接器只读，接上也跑不了 migration）。
 - [ ] **Step 2: where-to-find-things + CONTEXT.md**。
 - [ ] **Step 3: 全量门禁** `npm test`，日志里认 `GATE_EXIT=0`。
-- [ ] **Step 4: Commit** `docs: 连接卡 ADR-0373 + 代码地图 + 术语（#1666）`
+- [ ] **Step 4: Commit** `docs: 连接卡 ADR-0374 + 代码地图 + 术语（#1666）`
