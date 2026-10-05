@@ -294,6 +294,19 @@ describe("投影（spec §3.2）", () => {
     expect(text).toContain("### 团队口径（team.md）\n销量含退款");
     expect(text).not.toContain("运营]坏");
   });
+  it("只读（外联，#1655）：索引超限的截断尾巴不点名 wiki_read / index.md；默认仍是老尾巴", () => {
+    const index = Array.from({ length: 400 }, (_, i) => `- [[p${i}]] 第 ${i} 页 — 摘要摘要摘要`).join("\n");
+    const ro = renderWikiPrompt({ ...snap, index }, { readOnly: true });
+    expect(ro).toMatch(/索引还有 \d+ 行，这里没放/);
+    expect(ro).not.toContain("wiki_read");
+    expect(ro).not.toContain("index.md");
+    expect(renderWikiPrompt({ ...snap, index })).toContain("用 wiki_read 搜索或读 index.md 看全部");
+  });
+  it("只读（外联，#1655）：own 有内容就原样给，不出现「wiki write」", () => {
+    const ro = renderWikiPrompt(snap, { readOnly: true });
+    expect(ro).toContain("[你的页 agents/ops]\n按月查");
+    expect(ro).not.toContain("wiki write");
+  });
   it("own 为 null 时一句「还没有自己那页」", () => {
     expect(renderWikiPrompt({ ...snap, own: null })).toContain("还没有自己那页");
   });

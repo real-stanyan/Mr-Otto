@@ -9,6 +9,7 @@ import { ACTIVITY_ORDER, ACTIVITY_TEXT, activityFace, activityFoldOf, activityOf
 import { groupRows, rosterRows } from "./agentRoster.js";
 import { callRingFoldOf, RING_STATUS_TEXT, ringCardStatus, type RingCardStatus } from "./callRing.js";
 import { splitBubbles } from "./chatBubbles.js";
+import { escalationNoteText } from "./escalation.js";
 import { chatMediaItemsOf, type ChatMediaItem } from "./chatMedia.js";
 import { friendPickFoldOf, friendPickStatus, type FriendPickStatus } from "./friendPick.js";
 import {
@@ -285,6 +286,10 @@ export function chatRows(o: {
     // 定时任务（#1283）：开场白是 greeting 一族里唯一要画的——别的 greeting 都有前一条可见事件解释「为什么它开口了」
     // （名单变了 / 新建了它 / 电话接通了），这条没有，藏了就是回话凭空冒出来。要在 rowOf 之前认出来：
     // rowOf 先问 hiddenFromCloudTimeline，而桌面把 greeting 一族整条藏了
+    if (e.type === "user_message" && e.greeting === "escalation" && e.escalation !== undefined) {
+      items.push({ kind: "note", key: `escalation-${e.seq}`, ts: e.ts, text: escalationNoteText(e.escalation), tone: "muted", detail: null });
+      continue;
+    }
     if (e.type === "user_message" && e.greeting === "routine") {
       items.push({ kind: "note", key: `routine-${e.seq}`, ts: e.ts, text: `⏰ 定时任务「${e.routine?.title ?? "定时任务"}」`, tone: "muted", detail: null });
       continue;
@@ -429,12 +434,12 @@ export function outreachCard(seq: number, s: OutreachState, agentName: string): 
   };
 }
 
-/** 外联会话的输入栏（#1441）：这是智能体打电话的地方，好友不在这里打字（一期不能主动打给它，spec §13），主人只读。
-    其它聊天照旧。种子（welcome 之前）里没有 `outreach` 那一格时也认得出是外联——只是不知道主人叫什么，不编名字 */
+/** 外联会话的输入栏（#1441 → #1655）：朋友能在这里打字和那只聊（它替你给它主人带话，ADR-0372）；主人只读（他的回话走自己的管理员私聊）。
+    其它聊天照旧。种子（welcome 之前）里没有 `outreach` 那一格时也认得出是外联 */
 export function outreachComposer(chat: CsChatInfo | null, isOwner: boolean): { kind: "normal" } | { kind: "note"; text: string } {
   if (chat === null || chat.kind !== "outreach") return { kind: "normal" };
-  if (isOwner) return { kind: "note", text: "这是你的智能体给朋友打电话的地方，只能看" };
-  return { kind: "note", text: chat.outreach !== undefined ? `这是 ${chat.outreach.ownerName} 的智能体给你打电话的地方` : "这是朋友的智能体给你打电话的地方" };
+  if (isOwner) return { kind: "note", text: "这是你的智能体和朋友说话的地方，只能看。要回话，跟你的管理员说" };
+  return { kind: "normal" };
 }
 
 /** 正在写的那一段（流式碎片，协议 16）：累计快照按空行拆，画成它的一行。终态落盘时

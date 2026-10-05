@@ -1,7 +1,10 @@
 // outreachHub —— 把「原聊天」与「外联会话」两头接起来（#1441）。daemon 一个。只依赖注入的回调：
 // daemon.ts 进不了 vitest，判断住在这儿、接线留在那儿（同 chatCreate / chatHumans 的做法）。
 import { outreachTierProblem, type FriendTier } from "../../../src/shared/friendTier.js";
-import { FRIEND_MESSAGE_PER_HOUR_MAX, agentDmBody, friendMessageSentText, outreachReportText, resolveFriend, missedCallMessageText } from "../../../src/shared/outreach.js";
+import {
+  FRIEND_MESSAGE_PER_HOUR_MAX, RELAY_TO_OWNER_PER_HOUR_MAX, agentDmBody, friendMessageSentText, friendRelayText, outreachReportText,
+  ownerReplySentText, ownerReplyText, relaySentText, resolveFriend, missedCallMessageText,
+} from "../../../src/shared/outreach.js";
 import { bridgeWindowAllows, pruneBridgeWindow } from "../../../src/shared/laneBridge.js";
 import type { FriendPickCandidate, OutreachLine, OutreachOutcome } from "../../../src/session/events.js";
 import { friendPickToolText, pickFriend } from "../../../src/shared/friendPick.js";
@@ -27,6 +30,10 @@ export interface OutreachHubDeps {
   /** message_friend（#1549）：以主人（sender）名义往私聊里写一条。好友关系由 friendsOf（只认 accepted）+ resolveFriend 在这里验过，
       实现用 service key 绕过 RLS 直接 insert；抛错 = 没写进去 */
   sendDm(sender: string, recipient: string, body: string): Promise<void>;
+  /** 带话（#1655）：主人主场里主人与管理员的那条私聊房（关着就开）；没有 = null；抛错 = 这一刻开不了。可选：老夹具不带 = 带不了 */
+  ownerDm?(workspaceId: string): Promise<OwnerDmRoom | null>;
+  /** 回话（#1655）：这只与那位朋友的外联会话房（只找不建）；没有 = null。可选，同上 */
+  outreachRoom?(workspaceId: string, agentId: string, peerUid: string): Promise<OutreachReplyRoom | null>;
 }
 export interface OutreachTarget {
   startOutreach(s: OutreachStart): Promise<OutreachStartResult>;
@@ -42,6 +49,14 @@ export interface OutreachOrigin {
     pickId: string; phase: "offered" | "picked" | "dismissed" | "failed"; fromAgentId: string;
     question?: string; candidates?: FriendPickCandidate[]; brief?: string; opening?: string; uid?: string; message?: string;
   }): void;
+}
+/** 主人与管理员的私聊房（#1655）：落一条「朋友让带话」的开场白、起一轮。no_agent = 那间房里没有管理员 */
+export interface OwnerDmRoom {
+  relayFromFriend(r: { text: string }): Promise<"ok" | "archived" | "no_agent">;
+}
+/** 这只与某位朋友的外联会话房（#1655）：落一条「主人回话」的开场白、起一轮 */
+export interface OutreachReplyRoom {
+  ownerReply(r: { text: string }): Promise<"ok" | "archived" | "no_agent">;
 }
 export interface OutreachHub {
   dispatch(o: {
@@ -60,6 +75,10 @@ export interface OutreachHub {
   ended(workspaceId: string, ownerUid: string, r: OutreachEnded): Promise<void>;
   /** message_friend（#1549）：解析好友、档位、每小时窗，然后以主人名义写一条私聊。回给模型的那句话 */
   message(o: { workspaceId: string; ownerUid: string; agentId: string; agentName: string; friend: string; text: string }): Promise<string>;
+  /** relay_to_owner（#1655）：外联里的智能体把朋友的话带给主人——开主人与管理员的私聊、落开场白。回给模型的那句话 */
+  relayToOwner(o: { workspaceId: string; ownerUid: string; agentName: string; peerUid: string; peerName: string; text: string }): Promise<string>;
+  /** reply_to_friend（#1655）：主场里的管理员把主人的回话送回与那位朋友的外联会话。回给模型的那句话 */
+  replyToFriend(o: { workspaceId: string; ownerUid: string; agentId: string; agentName: string; friend: string; text: string }): Promise<string>;
 }
 
 type DialArgs = {
@@ -70,6 +89,8 @@ type DialArgs = {
 export function createOutreachHub(d: OutreachHubDeps): OutreachHub {
   // 发消息的滑动窗（#1549）：每（主场，智能体，好友）最近一小时的时间戳。进程内即可——重启清零的代价是多发几条，不是漏发
   const dmWindow = new Map<string, number[]>();
+  // 带话的滑动窗（#1655）：每（主场，朋友）最近一小时「成功带到」的时间戳——失败的不计
+  const relayWindow = new Map<string, number[]>();
   /** 认准了人（且档位已过）之后的拨号（dispatch 与 dialPicked 共用，#1520）：几道检查、开原聊天房、建外联会话、响铃、落 started */
   async function dialResolved(
     o: DialArgs, m: { uid: string; name: string },
@@ -202,6 +223,81 @@ export function createOutreachHub(d: OutreachHubDeps): OutreachHub {
       }
       dmWindow.set(key, [...sent, now]);
       return friendMessageSentText(m.name, body);
+    },
+    async relayToOwner(o) {
+      const key = `${o.workspaceId}/${o.peerUid}`;
+      const now = d.now();
+      const sent = pruneBridgeWindow(relayWindow.get(key) ?? [], now);
+      if (!bridgeWindowAllows(sent, now, RELAY_TO_OWNER_PER_HOUR_MAX)) {
+        return `这一小时已经替 ${o.peerName} 带了 ${RELAY_TO_OWNER_PER_HOUR_MAX} 次话了，这一句没带。告诉 ${o.peerName} 晚点再说，或者直接找主人。`;
+      }
+      const ownerName = await d.labelOf(o.ownerUid);
+      const fail = `没带到：${ownerName} 那边这会儿接不了，告诉 ${o.peerName} 稍后再试，或者直接找 ${ownerName}。`;
+      let room: OwnerDmRoom | null;
+      try {
+        room = d.ownerDm === undefined ? null : await d.ownerDm(o.workspaceId);
+      } catch (err) {
+        d.log(`带话开主人私聊失败（workspace=${o.workspaceId}）：${String(err)}`);
+        return fail;
+      }
+      if (room === null) return fail;
+      let res: "ok" | "archived" | "no_agent";
+      try {
+        res = await room.relayFromFriend({ text: friendRelayText({ agentName: o.agentName, ownerName, peerName: o.peerName, text: o.text }) });
+      } catch (err) {
+        d.log(`带话落开场白失败（workspace=${o.workspaceId}）：${String(err)}`);
+        return fail;
+      }
+      if (res !== "ok") return fail;
+      relayWindow.set(key, [...sent, now]);
+      return relaySentText(ownerName, o.peerName);
+    },
+    async replyToFriend(o) {
+      let friends: { uid: string; name: string; tier?: FriendTier }[];
+      try {
+        friends = await d.friendsOf(o.ownerUid);
+      } catch (err) {
+        d.log(`查好友名单失败（owner=${o.ownerUid}）：${String(err)}`);
+        return "这会儿查不到好友名单，话没送回去，稍后再试。";
+      }
+      const m = resolveFriend(friends, o.friend);
+      if (m.kind === "none") {
+        return m.names.length === 0
+          ? "他还没有好友。"
+          : `好友里没有叫「${o.friend}」的。他的好友有：${m.names.join("、")}。问问他指的是哪一位。`;
+      }
+      if (m.kind === "many") return `好友里有 ${m.count} 位叫「${o.friend}」，分不出是哪一位，问问他。`;
+      const tier = friends.find((f) => f.uid === m.uid)?.tier;
+      if (tier !== undefined) {
+        const refused = outreachTierProblem(tier, m.name);
+        if (refused !== null) return refused;
+      }
+      // 回话窗与 message_friend 的窗分开记（key 带 /reply），同一个上限数
+      const key = `${o.workspaceId}/${o.agentId}/${m.uid}/reply`;
+      const now = d.now();
+      const sent = pruneBridgeWindow(dmWindow.get(key) ?? [], now);
+      if (!bridgeWindowAllows(sent, now, FRIEND_MESSAGE_PER_HOUR_MAX)) {
+        return `这一小时里回 ${m.name} 的话已经到上限了（${FRIEND_MESSAGE_PER_HOUR_MAX} 条），缓一缓再回。`;
+      }
+      let room: OutreachReplyRoom | null;
+      try {
+        room = d.outreachRoom === undefined ? null : await d.outreachRoom(o.workspaceId, o.agentId, m.uid);
+      } catch (err) {
+        d.log(`找外联房失败（workspace=${o.workspaceId} → ${m.uid}）：${String(err)}`);
+        return "这会儿送不回去，稍后再试。";
+      }
+      if (room === null) return `${m.name} 没有和你聊过（你们之间没有那条线），改用 message_friend 发私聊。`;
+      const ownerName = await d.labelOf(o.ownerUid);
+      let res: "ok" | "archived" | "no_agent";
+      try {
+        res = await room.ownerReply({ text: ownerReplyText({ agentName: o.agentName, ownerName, peerName: m.name, text: o.text }) });
+      } catch (err) {
+        d.log(`回话落开场白失败（workspace=${o.workspaceId} → ${m.uid}）：${String(err)}`);
+        return "这会儿送不回去，稍后再试。";
+      }
+      if (res !== "ok") return "送不回去（那条线这会儿开不了），改用 message_friend 发私聊。";
+      dmWindow.set(key, [...sent, now]);
+      return ownerReplySentText(m.name);
     },
     async ended(workspaceId, ownerUid, r) {
       // 落到这里的都是收尾回调；抛了只记日志（同下面那层 try）

@@ -12,7 +12,7 @@ export interface QuietWindow {
 export type ReportMode = "call" | "message";
 /** 汇报计划：每天 / 按星期几的某个时刻（复用定时任务的 schedule 形状，不收 once），打电话或发消息 */
 export interface ReportPlan {
-  schedule: Exclude<RoutineSchedule, { kind: "once" }>;
+  schedule: Exclude<RoutineSchedule, { kind: "once" } | { kind: "every" }>;
   mode: ReportMode;
 }
 
@@ -55,7 +55,7 @@ export function parseReportPlan(v: unknown): ReportPlan | null {
   } catch {
     return null;
   }
-  if (schedule.kind === "once") return null;
+  if (schedule.kind === "once" || schedule.kind === "every") return null;
   return { schedule, mode: o.mode };
 }
 

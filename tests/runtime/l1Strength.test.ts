@@ -71,7 +71,7 @@ describe("管理员不在这条对话里时，专员往上转的路是主人", (
     expect(withAdmin).toContain("build_app 会拒，先回报管理员说做不到和替代方案");
   });
 
-  it("assign_task：专员派给不在场的 → 告诉它找主人，不叫它 bring_agent；管理员照旧提示 bring_agent", async () => {
+  it("assign_task：专员派给不在场的 → 告诉它用 escalate_to_admin，不叫它 bring_agent；管理员照旧提示 bring_agent", async () => {
     const fold = new Map<string, TaskRow>();
     let seq = 0;
     const toolsFor = (agentId: string) => createTaskTools({
@@ -82,7 +82,7 @@ describe("管理员不在这条对话里时，专员往上转的路是主人", (
     await create!.run({ title: "到点打电话" }, {} as ExecutionWorld);
     const id = [...fold.keys()][0]!;
     const err = await assign!.run({ taskId: id, to: "管理员" }, {} as ExecutionWorld).catch((e: Error) => e.message);
-    expect(err).toContain("直接告诉主人");
+    expect(err).toContain("escalate_to_admin");
     expect(err).not.toContain("bring_agent");
     const [, adminAssign] = toolsFor("admin");
     await expect(adminAssign!.run({ taskId: id, to: "出行" }, {} as ExecutionWorld)).rejects.toThrow("bring_agent");
