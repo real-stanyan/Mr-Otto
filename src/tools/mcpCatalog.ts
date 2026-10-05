@@ -8,8 +8,9 @@ import type { ExecutionWorld } from "../world/executionWorld.js";
 import { mapRegistryResponse, registrySearchUrl } from "../shared/mcpRegistry.js";
 
 /** 一条目录 → 说给水獭听的那段话。
-    导出只为了测：目录里此刻一条 blocked 都没有（#766），而"接不上的要跟水獭
-    说一声"这条行为仍然要钉住——拿合成条目测它，比等下一台坏 server 出现再说好 */
+    导出只为了测：目录条目自己此刻一条 blocked 都没有（#766），走到这条分支的只有 desktopBlocked
+    补上的预置客户端条目（Gmail，#1619）；"接不上的要跟水獭说一声"这条行为仍然要钉住——
+    拿合成条目测它，比等下一台坏 server 出现再说好 */
 export function render(e: CatalogEntry): string {
   const lines = [
     `## ${e.name}（建议 id: ${e.id}）`,

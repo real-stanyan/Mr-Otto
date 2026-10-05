@@ -42,7 +42,8 @@ export function McpServerEditor({
   blocked,
 }: {
   server: McpServerStatus;
-  /** 目录里标着"已知接不上"的那几条，值是原因（CatalogEntry.blocked，ADR-0190）。
+  /** 目录里标着"已知接不上"的那几条，值是原因（来自 desktopBlocked(entry)：CatalogEntry.blocked，
+      外加预置客户端条目的「在手机上接」，ADR-0190、#1619）。
       有值时这一段不画授权按钮、也不画那条错误红字 —— 详情页上面那条横幅已经
       给出了更准确的答案，而这两样各说各的：
       红字说"凭据不对"会把用户支去检查 token，而那不是问题所在（issue #764）。
