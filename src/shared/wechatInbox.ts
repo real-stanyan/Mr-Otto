@@ -136,6 +136,9 @@ export interface InboxRow {
   target: InboxTarget;
   title: string;
   avatar: AvatarSpec;
+  /** 这一行是朋友的智能体（外联 `o:`）时它的主人（#1641）：标题只写智能体的名字，主人画成名字右边那枚药丸（名字 + 头像）。
+      缺席 = 不是别人的智能体 */
+  owner?: PersonAvatar;
   /** 最近一句的时刻；0 = 还没人说过话（右边那格不画） */
   ts: number;
   /** 第二行（群里带「名字: 」；我说的不带） */
@@ -204,6 +207,12 @@ function faceCell(ws: WorkspaceSnapshot, agentId: string): FaceCell {
 
 function personCell(p: ChatPerson): PersonAvatar {
   return { kind: "person", name: p.name, url: p.avatarUrl };
+}
+
+/** 一个主场的主人（#1641 那枚药丸）：成员表里查 ownerUid；查不到名字空着，药丸照样画首字「?」 */
+export function ownerOf(ws: WorkspaceSnapshot): PersonAvatar {
+  const m = ws.members.find((x) => x.uid === ws.ownerUid);
+  return { kind: "person", name: m?.label ?? "", url: m?.avatarUrl ?? "" };
 }
 
 /** 有真人的群的拼图：人在前、智能体在后（同团队群），最多九格 */
@@ -325,22 +334,23 @@ export function inboxRows(o: {
     if (g.session.archived) continue;
     const last = g.last ?? undefined;
     if (g.outreach === true) {
-      // 外联（#1441）：别人的智能体打给我的电话。一只一行，名字「<主人> 的 <智能体>」，头像是那只的脸；第二行照旧是最后一句
-      // （响铃 / 未接那类状态不上列表：那是聊天页里通话记录的事）
+      // 外联（#1441）：别人的智能体打给我的电话。一只一行，头像是那只的脸；第二行照旧是最后一句
+      // （响铃 / 未接那类状态不上列表：那是聊天页里通话记录的事）。名字只写智能体自己的，主人是右边那枚药丸（#1641）
       const agentId = g.session.agentIds[0] ?? "";
-      const ownerName = g.ws.members.find((m) => m.uid === g.ws.ownerUid)?.label ?? "";
-      const title = outreachCallerName(ownerName, agentNameOf(g.ws, agentId));
+      const owner = ownerOf(g.ws);
+      const title = agentNameOf(g.ws, agentId);
       const key = `o:${g.session.id}`;
       rows.push({
         key,
         target: { kind: "outreach", workspaceId: g.ws.id, sessionId: g.session.id },
         title,
+        owner,
         avatar: stated(faceCell(g.ws, agentId), g.session.id),
         ts: last?.ts ?? g.session.updatedTs,
         preview: last?.excerpt ?? "",
         mention: false,
         unread: dot(last, key),
-        hay: [title, last?.excerpt ?? ""].join("\n"),
+        hay: [title, owner.name, last?.excerpt ?? ""].join("\n"),
         ...rowActivity(g.session.id, g.session.agentIds),
       });
       continue;
@@ -446,7 +456,9 @@ export function agentFolderSummary(agents: readonly InboxRow[], others: readonly
   const unread = inboxUnreadChats(all);
   const mention = all.some((r) => r.mention);
   const latest = all.reduce<InboxRow | null>((best, r) => (best === null || r.ts > best.ts ? r : best), null);
-  const preview = latest === null || latest.preview === "" ? "" : `${latest.title}: ${latest.preview}`;
+  // 一行字里画不了药丸：别人的智能体在这里仍写「<主人> 的 <智能体>」，否则「管理员: …」分不清是谁家的（#1641）
+  const who = latest === null ? "" : latest.owner !== undefined ? outreachCallerName(latest.owner.name, latest.title) : latest.title;
+  const preview = latest === null || latest.preview === "" ? "" : `${who}: ${latest.preview}`;
   return { unread, mention, preview, ts: latest?.ts ?? 0 };
 }
 
