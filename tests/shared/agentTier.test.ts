@@ -155,7 +155,7 @@ describe("提示词（spec §5）", () => {
     expect(p).toContain("出行：出行");
     expect(p).toContain("开发：码农");
     expect(p).not.toContain("订票员"); // L2 不在管理员的派发名单里
-    expect(p).toContain("提议建一只");
+    expect(p).toContain("用 create_agent 建一只"); // #1591 真机：管理员自己建专员，不再只是提议
     expect(p).toContain("不把密码、token、密钥写进它的说明或职责"); // #1585
     expect(tierPrompt({ agent: admin, ownerName: "Stan", roster: [admin] })).toContain("还没有专员");
   });
@@ -187,5 +187,14 @@ describe("提示词（spec §5）", () => {
     expect(p).toContain("报给 出行");
     expect(p).toContain("不派活");
     expect(tierPrompt({ agent: { ...booker, parentAgentId: "ghost" }, ownerName: "Stan", roster })).toContain("你的上级");
+  });
+});
+
+describe("管理员不自己做应用（#1591 真机）", () => {
+  it("提示词：没有合适域的专员就 create_agent 建一只；做应用派给应用专员、自己不写页面", () => {
+    const p = tierPrompt({ agent: admin, ownerName: "Stan", roster: [admin] });
+    expect(p).toContain("用 create_agent 建一只");
+    expect(p).toContain("做应用");
+    expect(p).toContain("你自己不写页面");
   });
 });
