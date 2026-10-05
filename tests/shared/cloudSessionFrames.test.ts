@@ -496,3 +496,21 @@ describe("cs 协议 30（#1666：应用连接卡）", () => {
     expect(decodeCsDown(b64({ t: "app_connect_result", connectId: 1, ok: true }))).toBeNull();
   });
 });
+
+describe("管理员车道的 welcome（#1680）", () => {
+  const PEER = "057e6ca5-640d-47f8-be94-ea46a242e5cb";
+  const welcome = (chat: unknown) => ({
+    t: "welcome", v: CS_PROTOCOL_VERSION, sessionId: "e39f3a20-9ed9-4a89-bfb1-3c0c3162e577", lastSeq: 70, initiatorUid: null, ownerUid: "u1", modelRoute: null, chat,
+  });
+
+  it("chat.kind=admins 认得出，带上 admins {peerUid, peerName}（真机：不认就整帧丢、页面一直转圈）", () => {
+    const f = decodeCsDown(b64(welcome({ kind: "admins", agentIds: ["admin"], humans: [{ uid: PEER, name: "继爸" }], admins: { peerUid: PEER, peerName: "继爸" } })));
+    expect(f).toMatchObject({ t: "welcome", chat: { kind: "admins", agentIds: ["admin"], humans: [{ uid: PEER, name: "继爸" }], admins: { peerUid: PEER, peerName: "继爸" } } });
+  });
+
+  it("admins 格形状不对当缺席、不拒帧（同 outreach / pair 的口径）", () => {
+    const f = decodeCsDown(b64(welcome({ kind: "admins", agentIds: ["admin"], humans: [], admins: { peerUid: "nope", peerName: 3 } })));
+    expect(f).not.toBeNull();
+    expect((f as { chat?: { admins?: unknown } }).chat?.admins).toBeUndefined();
+  });
+});
