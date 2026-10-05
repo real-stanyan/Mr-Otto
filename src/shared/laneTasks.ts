@@ -90,6 +90,8 @@ export function laneTasksOf(events: readonly SessionEvent[], selfUid: string | u
       // 协作（#1605）：交给了谁家的管理员、对面主人接没接——归当前任务，当智能体那一侧的一行
       const text = e.type === "task_collab"
         ? `已交给 ${e.withName} 的管理员，等 TA 点头`
+        : e.via === "tier_chat" ? "对面没开这个权限（仅聊天），按没有继续"
+        : e.via !== undefined ? "对面按好友权限直接接了，它的管理员在办"
         : e.decision === "accepted" ? "对面主人接了，它的管理员在办" : e.decision === "declined" ? "对面主人不方便，按没有继续" : "对面 24 小时没回，按没有继续";
       attach(
         { key: `k${e.seq}`, ts: e.ts, who: "agent", text, ...(e.type === "task_collab" ? { agentId: e.byAgentId } : {}) },

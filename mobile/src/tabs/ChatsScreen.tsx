@@ -13,6 +13,8 @@
 import { useFocusEffect, useNavigation, useScrollToTop } from "@react-navigation/native";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppState, FlatList, StyleSheet, Text, View } from "react-native";
+import { APPS_PULL_TRIGGER } from "../../../src/shared/appsDrawer.js";
+import { AppsDrawer } from "../apps/AppsDrawer.js";
 import { rosterGate, type RosterGate } from "../../../src/shared/agentRoster.js";
 import { CHAT_GROUP_CREATE_MIN } from "../../../src/shared/chatRoster.js";
 import { mixedGroupName } from "../../../src/shared/chatGuests.js";
@@ -100,6 +102,9 @@ export function ChatsScreen() {
   /** 建成的那一条：弹窗退场放完、名册刷新收尾之后再推它（名册里还没有它时推进去是一页「已经不在了」） */
   const created = useRef<{ kind: "agent"; agentId: string; refresh: Promise<void> } | { kind: "group"; sessionId: string } | null>(null);
   const list = useRef<FlatList<InboxRow>>(null);
+  // 主页下拉出应用抽屉（#1648，参考微信下拉小程序）：列表顶到头再往下拽过 APPS_PULL_TRIGGER、松手就开
+  const [appsOpen, setAppsOpen] = useState(false);
+  const appsPick = useRef<string | null>(null);
   useScrollToTop(list);
 
   useFocusEffect(useCallback(() => refreshAll(), []));
@@ -262,8 +267,15 @@ export function ChatsScreen() {
         contentContainerStyle={{ paddingBottom: space.xl }}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
+        onScrollEndDrag={(e) => { if (e.nativeEvent.contentOffset.y <= -APPS_PULL_TRIGGER && !searching) setAppsOpen(true); }}
       />
       </GestureDetector>
+
+      <AppsDrawer
+        visible={appsOpen}
+        onClose={() => setAppsOpen(false)}
+        onPick={(appId) => navigation.navigate("MiniApp", { appId })}
+      />
 
       <SidePanel visible={panel} title="智能体" onClose={() => setPanel(false)} onExited={onPanelExited}>
         <AgentPanel onPick={(pick) => { panelPick.current = pick; setPanel(false); }} />

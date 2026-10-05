@@ -26,10 +26,15 @@ export function collabRequestText(e: Pick<CollabRequestEvent, "requestId" | "tit
   parts.push("你主人点了头才轮到你动；按对方的授权答，不方便直说。");
   return parts.join("");
 }
-export function collabDecisionText(e: Pick<CollabDecisionEvent, "requestId" | "decision">): string {
+export function collabDecisionText(e: Pick<CollabDecisionEvent, "requestId" | "decision" | "via">): string {
+  if (e.via === "tier_chat") return `[协作 ${e.requestId}] 对面给你的权限是「仅聊天」，它的管理员不接这类事。按没有继续，照实告诉主人对方没开这个权限。`;
+  if (e.via !== undefined) return `[协作 ${e.requestId}] 对面按好友权限直接接了，它的管理员会在这里回你。`;
   const tail = e.decision === "accepted" ? "它的管理员会在管理员车道里回你。" : e.decision === "declined" ? "按没有继续，告诉主人。" : "24 小时没回，按没有继续，告诉主人「对面没回」。";
   return `[协作 ${e.requestId}] 对面主人：${COLLAB_DECISION_LABEL[e.decision]}。${tail}`;
 }
+
+/** 按好友权限自动接的那一轮里多的一句（tier_agents）：只答，不碰主人的东西 */
+export const COLLAB_AGENTS_TIER_LINE = "对方给的权限是「可带智能体」：用对方给的信息答、帮着想，不动你主人的数据 / 文件 / 日程、不花钱、不替主人对外发消息；真要动这些，回一句「这个要我主人点头」，别动手。";
 
 /** B 的管理员在公开车道里对 A 能说多少、做多少（spec §2.6 第 2 条）：按两边取小的那一档 */
 export function collabAuthPrompt(tier: FriendTier, peerName: string): string {
@@ -74,6 +79,12 @@ export function collabAcceptText(e: Pick<CollabRequestEvent, "requestId" | "titl
   if (e.result !== "") parts.push(`到目前的结果：${promptSafe(e.result)}。`);
   parts.push(`现在轮到你：按对 ${w} 的授权配合——事实直接答，要动手的按主人的规矩；回复写在这里，会原样送到「${a}」那边。`);
   return parts.join("");
+}
+
+/** 按好友权限自动接（#1605）：开场白换掉「你的主人接了」那一句 */
+export function collabAutoAcceptText(e: Pick<CollabRequestEvent, "requestId" | "title" | "fromAgentName" | "quote" | "result">, tier: "full" | "agents"): string {
+  const base = collabAcceptText(e).replace("你的主人接了", "按好友权限直接接了");
+  return tier === "agents" ? `${base}${COLLAB_AGENTS_TIER_LINE}` : base;
 }
 
 /** 管理员车道里管理员的那一段（deriveMessages 用） */

@@ -15,6 +15,7 @@
 import type { DirectMessage, FriendProfile } from "./friends.js";
 import { decodeEnvelope } from "./sessionPackageCodec.js";
 import { contactCardPreview, decodeContactCard } from "./contactCard.js";
+import { appCardPreview, decodeAppCard } from "./appCard.js";
 import { activityFace, mostUrgent, type AgentActivity } from "./agentActivity.js";
 import { agentFaceSlot } from "./agentAvatar.js";
 import { groupRows, rosterRows } from "./agentRoster.js";
@@ -626,6 +627,9 @@ export function dmPreview(body: string): string {
   // 名片（#1524）同理：写成「[名片] 名字」/「[智能体名片] 名字」，不摊开里面的提示词
   const card = decodeContactCard(body);
   if (card !== null) return contactCardPreview(card);
+  // 应用分享（#1648）
+  const app = decodeAppCard(body);
+  if (app !== null) return appCardPreview(app);
   const env = decodeEnvelope(body);
   if (env !== null) return env.title !== null && env.title.trim() !== "" ? `[会话分享] ${env.title.trim()}` : "[会话分享]";
   return body.replace(/\s+/g, " ").trim();

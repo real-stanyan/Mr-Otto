@@ -34,6 +34,8 @@ import { PRESENCE_TEXT } from "../../../src/shared/presence.js";
 import { agentNameOf } from "../../../src/shared/workspaceView.js";
 import { chatSessionOf, closeChatIf, openChat, sendText, useChatStore } from "../cloud/chatStore.js";
 import { PickAgentsDialog } from "../group/PickAgentsDialog.js";
+import { decodeAppCard } from "../../../src/shared/appCard.js";
+import { AppShareBubble } from "../apps/AppShareBubble.js";
 import { bringAgents, loadPairLane, loadPairPresence, usePairPresence } from "./pairLane.js";
 import { closePeerLane, ensurePeerLane, openPeerLane, sayToPeerLane, usePeerLane } from "./peerLane.js";
 import { CallPickDialog } from "./CallPickDialog.js";
@@ -154,8 +156,12 @@ function Bubble({ m, mine, name, meTile, friendTile, onLongPress, onOpenChat }: 
   const env = decodeEnvelope(m.body);
   // 名片（#1524）：整段 body 是一张卡；认不出才往下走分享信封 / 正文
   const card = decodeContactCard(m.body);
+  // 应用分享（#1648）
+  const appCard = card === null ? decodeAppCard(m.body) : null;
   const body = card !== null ? (
     <ContactCardBubble card={card} mine={mine} fromName={name} onOpenChat={onOpenChat} />
+  ) : appCard !== null ? (
+    <AppShareBubble card={appCard} mine={mine} messageId={m.id} />
   ) : env !== null ? (
     (() => {
       const v = shareCardView(env, { mine, fromName: name });

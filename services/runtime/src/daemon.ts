@@ -90,6 +90,8 @@ import { ADMIN_AGENT_ID, normalizeSandboxApproval, type SandboxApproval } from "
 import { isAgentDomain } from "../../../src/shared/agentDomain.js";
 import { APP_BUCKET } from "../../../src/shared/apps.js";
 import { createSupabaseAppStore } from "./appStore.js";
+import { acceptAppShare } from "./appShare.js";
+import { appRowOf, appVersionRowOf } from "../../../src/shared/apps.js";
 import { createSupabaseOwnerSettings } from "./ownerSettingsStore.js";
 import type { AdminsBridge } from "./sessionService.js";
 import { isAgentTier, type AgentTier } from "../../../src/shared/agentTier.js";
@@ -1416,6 +1418,39 @@ async function main(): Promise<void> {
   const frameHandlerDeps: FrameHandlerDeps = {
     log: (m) => console.log(`[otto-runtime] 帧：${m}`),
     // 人打人的电话（#1534）：是好友就能打；给对方推一条 VoIP 来电（RingPush 的壳，chat = human），两端各一张 TURN 票
+    // 添加分享来的应用（#1648）：判断在 appShare.ts，这里只接 service role 的读写
+    appAccept: (byUid, messageId) =>
+      acceptAppShare({
+        message: async (id) => {
+          const { data, error } = await supabase.from("messages").select("sender,recipient,body").eq("id", id).maybeSingle();
+          if (error) throw new Error(`读私信失败：${error.message}`);
+          return data === null ? null : (data as { sender: string; recipient: string; body: string });
+        },
+        areFriends: async (a, b) => (await acceptedFriendsOf(a, [b])).has(b),
+        homeOf: homeWorkspaceOf,
+        sourceApp: async (appId) => {
+          const { data, error } = await supabase.from("apps").select("*").eq("id", appId).maybeSingle();
+          if (error) throw new Error(`读应用失败：${error.message}`);
+          return data === null ? null : appRowOf(data);
+        },
+        sourceVersion: async (appId, version) => {
+          const { data, error } = await supabase.from("app_versions").select("*").eq("app_id", appId).eq("version", version).maybeSingle();
+          if (error) throw new Error(`读应用版本失败：${error.message}`);
+          const v = data === null ? null : appVersionRowOf(data);
+          return v === null ? null : { manifest: v.manifest, files: v.files };
+        },
+        appsOf: async (ws) => {
+          const { data, error } = await supabase.from("apps").select("*").eq("workspace_id", ws);
+          if (error) throw new Error(`读我的应用失败：${error.message}`);
+          return ((data ?? []) as unknown[]).map(appRowOf).filter((r): r is NonNullable<typeof r> => r !== null);
+        },
+        create: (o) => appStore.create(o),
+        recordVersion: (o) => appStore.recordVersion(o),
+        copyObject: async (from, to) => {
+          const { error } = await supabase.storage.from(APP_BUCKET).copy(from, to);
+          if (error) throw new Error(`复制文件失败 ${from}：${error.message}`);
+        },
+      }, byUid, messageId),
     humanCall: async (fromUid, toUid, callId) => {
       if (apns === null) return { ok: false, message: "这台服务器没开推送，打不了电话。" };
       if (fromUid === toUid) return { ok: false, message: "不能给自己打电话。" };

@@ -11,6 +11,7 @@ import { parseMentions, type MentionCandidate } from "./remote/agentMention.js";
 import { promptSafe } from "./promptSafe.js";
 import { decodeEnvelope } from "./sessionPackageCodec.js";
 import { contactCardPreview, decodeContactCard } from "./contactCard.js";
+import { appCardPreview, decodeAppCard } from "./appCard.js";
 import { openTurns } from "./turnLedger.js";
 
 /** 车道朝向。"self" = 仅我可见（P1）；"both" = 公开给朋友（P2，#1523）：朋友以 ADR-0325 客人的身份进同一条车道，
@@ -57,6 +58,8 @@ function oneLine(body: string): string {
   // 名片（#1524）：只给名字，不把一只智能体的整段提示词塞进另一只的上下文
   const card = decodeContactCard(body);
   if (card !== null) return contactCardPreview(card);
+  const app = decodeAppCard(body);
+  if (app !== null) return appCardPreview(app);
   const flat = body.replace(/\s+/g, " ").trim();
   return flat.length > PAIR_LINE_MAX_CHARS ? `${flat.slice(0, PAIR_LINE_MAX_CHARS)}…` : flat;
 }
