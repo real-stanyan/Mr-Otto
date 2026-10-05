@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { writeFileSync } from "node:fs";
 import { createCity } from "./simCity.js";
-import { CAST, SCENARIOS } from "./cast.js";
+import { CAST, LIFE_SCENARIOS, PEOPLE_SCENARIOS, SCENARIOS } from "./cast.js";
 import { checkScenario, type ScenarioReport } from "./checks.js";
 
 const LIVE = process.env.OTTO_LIVE === "1";
@@ -11,8 +11,15 @@ const LIVE = process.env.OTTO_LIVE === "1";
 describe.skipIf(!LIVE)("群座位制 · 欧美用户模拟", () => {
   it("建人 → 建专员 → 六个群场景 → 自动检查", async () => {
     const only = (process.env.OTTO_SIM_ONLY ?? "").split(",").filter((x) => x !== "");
-    const scenarios = SCENARIOS.filter((s) => only.length === 0 || only.includes(s.id));
-    const ids = new Set(scenarios.flatMap((s) => [s.owner, ...s.members, ...s.beats.flatMap((b) => (b.kind === "invite" ? b.add : []))]));
+    const scenarios = [...LIFE_SCENARIOS, ...PEOPLE_SCENARIOS, ...SCENARIOS].filter((s) => only.length === 0 || only.includes(s.id));
+    const ids = new Set(scenarios.flatMap((s) => [
+      ...(s.owner !== undefined ? [s.owner] : []), ...(s.members ?? []),
+      ...s.beats.flatMap((b) =>
+        b.kind === "invite" ? b.add
+          : b.kind === "friend_dm" ? [b.who, b.to]
+            : b.kind === "lane" ? [b.owner, b.peer]
+              : b.kind === "dm_admin" ? [b.who] : []),
+    ]));
     const cast = CAST.filter((p) => ids.has(p.id));
     const city = await createCity({
       edgeBase: process.env.OTTO_LIVE_EDGE!, runtimeSecret: process.env.OTTO_LIVE_SECRET!, payer: process.env.OTTO_LIVE_OWNER!, payerWs: process.env.OTTO_LIVE_WS!,
@@ -27,7 +34,7 @@ describe.skipIf(!LIVE)("群座位制 · 欧美用户模拟", () => {
       writeFileSync(out, JSON.stringify({
         setup, reports, usage, personaCalls: city.personaCalls,
         routines: city.routines.rows().map((r) => ({ owner: CAST.find((p) => p.uid === r.ownerUid)?.name, title: r.title, schedule: r.schedule, tz: r.tz, sessionId: r.sessionId ?? null, instruction: r.instruction })),
-        friendMessages: city.friendMessages, log: city.log,
+        friendDM: city.friendDM.map((m) => ({ from: CAST.find((p) => p.uid === m.sender)?.name, to: CAST.find((p) => p.uid === m.recipient)?.name, body: m.body })), log: city.log,
       }, null, 2));
     };
     try {
