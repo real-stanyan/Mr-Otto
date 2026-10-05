@@ -30,6 +30,7 @@ function fakeSession(overrides: Partial<CloudSession> = {}): CloudSession {
     logOutreach: () => {},
     logFriendPick: () => {},
     pickFriend: async () => ({ ok: true }),
+    answerAppConnect: async () => ({ ok: true }),
     reportOutreach: () => {},
     // #1283：默认不起——绝大多数用例不关心定时任务
     runRoutine: async () => "ok" as const,
@@ -439,6 +440,46 @@ describe("createFrameHandler", () => {
     expect(sent[0]).toEqual({
       cid: "c1",
       msg: { t: "pick_friend_result", pickId: "p1", ok: false, message: expect.stringContaining("不在这个团队") },
+    });
+  });
+
+  it("app_connect：转给 CloudSession.answerAppConnect（带发帧人的 uid），回执带 connectId（#1666）", async () => {
+    const calls: unknown[] = [];
+    const session = fakeSession({ answerAppConnect: async (...args) => (calls.push(args), { ok: true }) });
+    const { deps, sent } = makeDeps({ getSession: () => session });
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "app_connect", connectId: "k1", outcome: "connected" }));
+    expect(calls).toEqual([["k1", "u1", "connected"]]);
+    expect(sent).toEqual([{ cid: "c1", msg: { t: "app_connect_result", connectId: "k1", ok: true } }]);
+  });
+
+  it("app_connect：被拒时回 ok:false + 那句话 + log（#1666）", async () => {
+    const session = fakeSession({ answerAppConnect: async () => ({ ok: false, message: "这张卡已经用过或过期了。" }) });
+    const { deps, sent, logs } = makeDeps({ getSession: () => session });
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "app_connect", connectId: "k1", outcome: "dismissed" }));
+    expect(sent).toEqual([{ cid: "c1", msg: { t: "app_connect_result", connectId: "k1", ok: false, message: "这张卡已经用过或过期了。" } }]);
+    expect(logs.join("\n")).toContain("k1");
+  });
+
+  it("app_connect：hello 之后被移出团队 → 在籍复查拦下，回带 connectId 的 ok:false，没调到 answerAppConnect（#1666）", async () => {
+    let member = true;
+    const calls: unknown[] = [];
+    const session = fakeSession({ answerAppConnect: async (...args) => (calls.push(args), { ok: true }) });
+    const { deps, sent } = makeDeps({ getSession: () => session, isMember: async () => member });
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+    member = false;
+    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "app_connect", connectId: "k1", outcome: "connected" }));
+    expect(calls).toEqual([]);
+    expect(sent[0]).toEqual({
+      cid: "c1",
+      msg: { t: "app_connect_result", connectId: "k1", ok: false, message: expect.stringContaining("不在这个团队") },
     });
   });
 

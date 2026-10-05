@@ -194,7 +194,7 @@ import { createMessageFriendTool } from "./messageFriendTool.js";
 import { createRelayToOwnerTool } from "./relayToOwnerTool.js";
 import { createReplyToFriendTool } from "./replyToFriendTool.js";
 import { createRequestAppConnectTool } from "./requestAppConnectTool.js";
-import { APP_CONNECT_PER_HOUR_MAX, appConnectFoldOf, appConnectToolText, applyAppConnect, catalogIdOfServer, cloudServerIdOf, resolveConnectApp, openCardFor, type AppConnectFold } from "../../../src/shared/appConnect.js";
+import { APP_CONNECT_PER_HOUR_MAX, appConnectStatus, appConnectedOpening, appDeclinedOpening, appConnectFoldOf, appConnectToolText, applyAppConnect, catalogIdOfServer, cloudServerIdOf, resolveConnectApp, openCardFor, type AppConnectFold } from "../../../src/shared/appConnect.js";
 import { createRoutineTools } from "./routineTools.js";
 import type { RoutineStore } from "./routineStore.js";
 import { ROUTINE_MAX_ROUNDS, routineOpeningText } from "../../../src/shared/routines.js";
@@ -790,6 +790,10 @@ export interface CloudSession {
   /** 主人点了选人卡（#1520，pick_friend 帧）：uid null = 都不是。只认主人本人、只认还开着的卡、只认卡上的人；
       点了就落 picked 再拨，打不出去落 failed（回执仍是 ok，失败画在卡上） */
   pickFriend(pickId: string, byUid: string, uid: string | null): Promise<{ ok: true } | { ok: false; message: string }>;
+  /** 主人点了连接卡（#1666，app_connect 帧）：只认主人本人（主场、非外联、非车道）、只认还开着的卡。
+      先同步落结局事件（连点的第二帧就会被拒），再读名单：发卡那只还在 → 落一条 app_connected / app_declined 开场白并起一轮，
+      让它接着办；已不在 / 名单读不出来 → 只落结局、不起轮。拒绝一律带一句对主人说的话 */
+  answerAppConnect(connectId: string, byUid: string, outcome: "connected" | "dismissed"): Promise<{ ok: true } | { ok: false; message: string }>;
   /** 外联结束，叫那只智能体回来向主人汇报（#1441）：落一条 `greeting: "outreach_report"` 的开场白（fromUid 是主人、
       点它自己）并入队——同 greetNewAgent 那条路。**这一轮里每一把刀都要主人批**（正文是朋友说的话的转述，
       不是主人的指令，见 supervisedTurn）。那只已不在名单里就什么都不起 */
@@ -3993,6 +3997,38 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       }
       // 拒绝原话是说给模型听的（「…告诉他可以…」）：落盘前改成对主人说的，日志里就是卡上显示的那句
       if (failed !== null) log({ pickId, phase: "failed", fromAgentId: st.fromAgentId, message: friendPickFailureText(failed) });
+      return { ok: true };
+    },
+
+    async answerAppConnect(connectId, byUid, outcome) {
+      if (archived) return { ok: false, message: "这条聊天已经归档了。" };
+      // 与 request_app_connect 的挂载条件同一句（appConnectTool 装配处）：团队会话 / 外联会话 / 私密车道里不会有连接卡，也不认
+      if (isOutreach || isPair || !opts.approveAll || byUid !== opts.ownerUid) return { ok: false, message: "只有他本人能点。" };
+      const st = appConnectFold.get(connectId);
+      if (st === undefined || appConnectStatus(st, now()) !== "open") return { ok: false, message: "这张卡已经用过或过期了。" };
+      // 先落结局再 await：notify 同步推进 fold，连点的第二帧在上面就会看到「用过了」
+      logAppConnect({ connectId, phase: outcome, fromAgentId: st.fromAgentId });
+      // 刚连上：授权快照作废，开场白那一轮要看到新连上的工具，不能等 60s 的 TTL
+      if (outcome === "connected") grantsSnapshot = null;
+      // 名单现读（同 reportOutreach）：发卡那只此刻可能已删 / 被移出群。读不出来（degraded）不是「它不在了」，
+      // 但两种都没法稳妥地替主人叫它——结局已落盘，卡上画得对；只是不写开场白、不起轮
+      const roster = await rosterNow({ fresh: true });
+      if (archived) return { ok: true };
+      if (roster.some((a) => a.degraded) || !roster.some((a) => a.agentId === st.fromAgentId)) {
+        console.warn(`[otto-runtime] 连接卡的开场白丢了：${roster.some((a) => a.degraded) ? "智能体名单读不出来" : "那只智能体已不在名单里"}（session=${sessionId} agent=${st.fromAgentId}）`);
+        return { ok: true };
+      }
+      const opening = store.append({
+        sessionId,
+        ts: Date.now(),
+        type: "user_message",
+        content: outcome === "connected" ? appConnectedOpening(st.appName) : appDeclinedOpening(st.appName),
+        fromUid: opts.ownerUid,
+        mentions: [st.fromAgentId],
+        greeting: outcome === "connected" ? "app_connected" : "app_declined",
+      }) as UserMessageEvent;
+      notify(opening);
+      if (coordinator.enqueue({ agentId: st.fromAgentId, fromUid: opts.ownerUid, opening }) === "start_turn") startDrain();
       return { ok: true };
     },
 

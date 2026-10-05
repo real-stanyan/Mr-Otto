@@ -7,14 +7,14 @@ import { createWikiService, type WikiService } from "../../services/runtime/src/
 import { createMemoryWikiFs } from "../../services/runtime/src/wikiFs.js";
 import { createInMemoryWikiJournal } from "../../services/runtime/src/wikiJournal.js";
 import { EventStore } from "../../src/session/store.js";
-import type { AppConnectEvent, RequestEnvelopeEvent, ToolResultEvent } from "../../src/session/events.js";
+import type { AppConnectEvent, RequestEnvelopeEvent, ToolResultEvent, UserMessageEvent } from "../../src/session/events.js";
 import type { ModelAdapter, ModelReply } from "../../src/model/adapter.js";
 import type { ExecutionWorld } from "../../src/world/executionWorld.js";
 import { pxToolName, type PxCallDeps } from "../../services/runtime/src/pxTools.js";
 import type { AgentToolAllow } from "../../src/shared/agentToolAllow.js";
 import type { AgentTier } from "../../src/shared/agentTier.js";
 import { ADMIN_AGENT_ID } from "../../src/shared/workspaceAgents.js";
-import { REQUEST_APP_CONNECT_TOOL_NAME, appConnectToolText } from "../../src/shared/appConnect.js";
+import { REQUEST_APP_CONNECT_TOOL_NAME, appConnectToolText, appConnectedOpening, appDeclinedOpening } from "../../src/shared/appConnect.js";
 import { tempDir } from "../helpers/tempDir.js";
 import { createInMemoryAgentWriter } from "../../services/runtime/src/agentRegistry.js";
 import { createInMemoryMentionInbox } from "../../services/runtime/src/mentionInbox.js";
@@ -50,11 +50,11 @@ const outreachSeed = (store: EventStore): void => {
   store.append({ sessionId: SID, ts: 2, type: "chat_roster_changed", agents: [{ agentId: ADMIN_AGENT_ID, name: "运维" }], humans: [{ uid: PEER, name: "小红" }], ignorable: true });
 };
 
-function openWith(store: EventStore, o: { adapter: ModelAdapter; approveAll?: boolean; px?: PxCallDeps; now?: () => number; hostUids?: string[] }): CloudSession {
+function openWith(store: EventStore, o: { adapter: ModelAdapter; approveAll?: boolean; px?: PxCallDeps; now?: () => number; hostUids?: string[]; agents?: CloudSessionOpts["agents"] }): CloudSession {
   return createCloudSession({
     sessionMeta: createInMemoryCloudSessionMeta(),
     workspaceId: "w1", sessionId: SID, ownerUid: OWNER, createdByUid: OWNER, store, world: fakeWorld,
-    agents: async () => [OPS], adapterFor: () => o.adapter, px: o.px ?? basePx, hostUids: async () => o.hostUids ?? [OWNER],
+    agents: o.agents ?? (async () => [OPS]), adapterFor: () => o.adapter, px: o.px ?? basePx, hostUids: async () => o.hostUids ?? [OWNER],
     onEvent: () => {},
     onUsage: () => {}, wiki: testWiki(), mentionInbox: createInMemoryMentionInbox(),
     agentWriter: createInMemoryAgentWriter(), isMember: async () => true, contextWindowOf: () => undefined,
@@ -272,6 +272,191 @@ describe("连接器 409 needs_login 兜底发卡（#1666）", () => {
     await s.say(PEER, "小红", "喂", false, [], undefined, []);
     await s.settled();
     expect(cards(store)).toHaveLength(0);
+    store.close();
+  });
+});
+
+describe("主人点连接卡 answerAppConnect（#1666）", () => {
+  const CID = "card-1";
+  const seedCard = (store: EventStore, fromAgentId: string = ADMIN_AGENT_ID, ts: number = Date.now()): void => {
+    store.append({
+      sessionId: SID, ts, type: "app_connect", connectId: CID, phase: "offered", fromAgentId,
+      catalogId: "supabase", appName: "Supabase", why: "要建表", reason: "missing", ignorable: true,
+    });
+  };
+  /** 每轮把最后一条 user_message 的正文记下来，回一句收口 */
+  const recorder = (): { adapter: ModelAdapter; rounds: () => number } => {
+    let n = 0;
+    return { rounds: () => n, adapter: { model: "fake-model", async chat(): Promise<ModelReply> { n++; return { content: "好的" }; } } };
+  };
+  const phases = (store: EventStore): string[] => cards(store).map((c) => c.phase);
+  const openings = (store: EventStore): UserMessageEvent[] =>
+    (store.ofType(SID, "user_message") as UserMessageEvent[]).filter((m) => m.greeting === "app_connected" || m.greeting === "app_declined");
+
+  it("非主人点：拒，日志不变", async () => {
+    const store = newStore();
+    dmSeed(store);
+    seedCard(store);
+    const before = store.load(SID).length;
+    const s = openWith(store, { adapter: noop });
+    expect(await s.answerAppConnect(CID, PEER, "connected")).toEqual({ ok: false, message: "只有他本人能点。" });
+    expect(store.load(SID)).toHaveLength(before);
+    store.close();
+  });
+
+  it("外联会话 / 团队会话（approveAll=false）：同样拒", async () => {
+    const store = newStore();
+    dmSeed(store);
+    seedCard(store);
+    const s = openWith(store, { adapter: noop, approveAll: false });
+    expect(await s.answerAppConnect(CID, OWNER, "connected")).toEqual({ ok: false, message: "只有他本人能点。" });
+    store.close();
+    const store2 = newStore();
+    outreachSeed(store2);
+    seedCard(store2);
+    const s2 = openWith(store2, { adapter: noop });
+    expect(await s2.answerAppConnect(CID, OWNER, "connected")).toEqual({ ok: false, message: "只有他本人能点。" });
+    store2.close();
+  });
+
+  it("卡不存在 / 已连 / 已忽略 / 过期：拒「已经用过或过期了」", async () => {
+    const store = newStore();
+    dmSeed(store);
+    seedCard(store, ADMIN_AGENT_ID, 1); // 1970 年发的卡：早过期
+    const s = openWith(store, { adapter: noop });
+    const used = { ok: false, message: "这张卡已经用过或过期了。" };
+    expect(await s.answerAppConnect("nope", OWNER, "connected")).toEqual(used);
+    expect(await s.answerAppConnect(CID, OWNER, "connected")).toEqual(used);
+    store.close();
+
+    const store2 = newStore();
+    dmSeed(store2);
+    seedCard(store2);
+    const rec = recorder();
+    const s2 = openWith(store2, { adapter: rec.adapter });
+    expect(await s2.answerAppConnect(CID, OWNER, "dismissed")).toEqual({ ok: true });
+    await s2.settled();
+    expect(await s2.answerAppConnect(CID, OWNER, "connected")).toEqual(used); // 已忽略
+    expect(phases(store2)).toEqual(["offered", "dismissed"]);
+    store2.close();
+
+    const store3 = newStore();
+    dmSeed(store3);
+    seedCard(store3);
+    const s3 = openWith(store3, { adapter: recorder().adapter });
+    expect(await s3.answerAppConnect(CID, OWNER, "connected")).toEqual({ ok: true });
+    await s3.settled();
+    expect(await s3.answerAppConnect(CID, OWNER, "dismissed")).toEqual(used); // 已连
+    expect(phases(store3)).toEqual(["offered", "connected"]);
+    store3.close();
+  });
+
+  it("connected：落 connected，紧接 app_connected 开场白（主人亲口、点那只），起一轮", async () => {
+    const store = newStore();
+    dmSeed(store);
+    seedCard(store);
+    const rec = recorder();
+    const s = openWith(store, { adapter: rec.adapter });
+    expect(await s.answerAppConnect(CID, OWNER, "connected")).toEqual({ ok: true });
+    await s.settled();
+    expect(phases(store)).toEqual(["offered", "connected"]);
+    const ops = openings(store);
+    expect(ops).toHaveLength(1);
+    expect(ops[0]).toMatchObject({ greeting: "app_connected", fromUid: OWNER, mentions: [ADMIN_AGENT_ID], content: appConnectedOpening("Supabase") });
+    // 先落结局、再落开场白
+    expect(cards(store)[1]!.seq).toBeLessThan(ops[0]!.seq);
+    expect(rec.rounds()).toBe(1);
+    store.close();
+  });
+
+  it("connected：清掉授权快照——下一轮重新 fetch grants，刚连上的工具就能挂上", async () => {
+    const store = newStore();
+    dmSeed(store);
+    seedCard(store);
+    let grantCalls = 0;
+    const fetchImpl = (async (url: string) => {
+      if (String(url).includes("/px/v1/grants")) grantCalls++;
+      return Response.json({ servers: [] });
+    }) as unknown as typeof fetch;
+    const s = openWith(store, { adapter: recorder().adapter, px: { ...basePx, fetchImpl } });
+    await s.say(OWNER, "Stan", "在吗", false, [], undefined, []);
+    await s.settled();
+    const afterFirst = grantCalls;
+    expect(afterFirst).toBeGreaterThan(0);
+    // 对照：60s 快照内再说一句，命中缓存，不重新 fetch
+    await s.say(OWNER, "Stan", "还在吗", false, [], undefined, []);
+    await s.settled();
+    expect(grantCalls).toBe(afterFirst);
+    // 点「连上了」：快照清掉，开场白那一轮重新 fetch
+    expect(await s.answerAppConnect(CID, OWNER, "connected")).toEqual({ ok: true });
+    await s.settled();
+    expect(grantCalls).toBeGreaterThan(afterFirst);
+    store.close();
+  });
+
+  it("dismissed：落 dismissed + app_declined 开场白，同样起一轮；grants 不动", async () => {
+    const store = newStore();
+    dmSeed(store);
+    seedCard(store);
+    const rec = recorder();
+    const s = openWith(store, { adapter: rec.adapter });
+    expect(await s.answerAppConnect(CID, OWNER, "dismissed")).toEqual({ ok: true });
+    await s.settled();
+    expect(phases(store)).toEqual(["offered", "dismissed"]);
+    expect(openings(store)[0]).toMatchObject({ greeting: "app_declined", fromUid: OWNER, mentions: [ADMIN_AGENT_ID], content: appDeclinedOpening("Supabase") });
+    expect(rec.rounds()).toBe(1);
+    store.close();
+  });
+
+  it("发卡的那只已不在名单里：仍落结局事件，不写开场白、不起轮", async () => {
+    const store = newStore();
+    dmSeed(store);
+    seedCard(store, "ghost-agent");
+    const rec = recorder();
+    const s = openWith(store, { adapter: rec.adapter });
+    expect(await s.answerAppConnect(CID, OWNER, "connected")).toEqual({ ok: true });
+    await s.settled();
+    expect(phases(store)).toEqual(["offered", "connected"]);
+    expect(openings(store)).toHaveLength(0);
+    expect(rec.rounds()).toBe(0);
+    store.close();
+  });
+
+  it("名单读不出来（degraded）：仍落结局事件，不写开场白、不起轮", async () => {
+    const store = newStore();
+    dmSeed(store);
+    seedCard(store);
+    const rec = recorder();
+    const s = openWith(store, { adapter: rec.adapter, agents: async () => [{ ...OPS, degraded: true as const }] });
+    expect(await s.answerAppConnect(CID, OWNER, "connected")).toEqual({ ok: true });
+    await s.settled();
+    expect(phases(store)).toEqual(["offered", "connected"]);
+    expect(openings(store)).toHaveLength(0);
+    expect(rec.rounds()).toBe(0);
+    store.close();
+  });
+
+  it("连点第二帧：第一帧落了结局就被拒，只起一轮", async () => {
+    const store = newStore();
+    dmSeed(store);
+    seedCard(store);
+    const rec = recorder();
+    const s = openWith(store, { adapter: rec.adapter });
+    const [a, b] = await Promise.all([s.answerAppConnect(CID, OWNER, "connected"), s.answerAppConnect(CID, OWNER, "connected")]);
+    await s.settled();
+    expect([a.ok, b.ok].sort()).toEqual([false, true]);
+    expect(phases(store)).toEqual(["offered", "connected"]);
+    expect(openings(store)).toHaveLength(1);
+    store.close();
+  });
+
+  it("归档之后：拒「已经归档了」", async () => {
+    const store = newStore();
+    dmSeed(store);
+    seedCard(store);
+    const s = openWith(store, { adapter: noop });
+    s.archive("Stan");
+    expect(await s.answerAppConnect(CID, OWNER, "connected")).toEqual({ ok: false, message: "这条聊天已经归档了。" });
     store.close();
   });
 });
