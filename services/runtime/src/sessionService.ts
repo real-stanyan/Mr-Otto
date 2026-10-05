@@ -194,7 +194,7 @@ import { createMessageFriendTool } from "./messageFriendTool.js";
 import { createRelayToOwnerTool } from "./relayToOwnerTool.js";
 import { createReplyToFriendTool } from "./replyToFriendTool.js";
 import { createRequestAppConnectTool } from "./requestAppConnectTool.js";
-import { APP_CONNECT_PER_HOUR_MAX, appConnectFoldOf, appConnectToolText, applyAppConnect, cloudServerIdOf, openCardFor, type AppConnectFold } from "../../../src/shared/appConnect.js";
+import { APP_CONNECT_PER_HOUR_MAX, appConnectFoldOf, appConnectToolText, applyAppConnect, catalogIdOfServer, cloudServerIdOf, resolveConnectApp, openCardFor, type AppConnectFold } from "../../../src/shared/appConnect.js";
 import { createRoutineTools } from "./routineTools.js";
 import type { RoutineStore } from "./routineStore.js";
 import { ROUTINE_MAX_ROUNDS, routineOpeningText } from "../../../src/shared/routines.js";
@@ -3102,6 +3102,21 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         // 卡故意放未截断的提示词全文让人读完再批（ADR-0226），2 分钟是紧的
         cachedPxTools = buildPxTools(opts.px, job.fromUid, filterGrantedByAllow(granted, spec.tools), {
           requiresApproval: openingDepth > 0,
+          // 连接器登录过期（#1666）：edge 回 409 needs_login 时自动发「重新登录」卡，并把工具错误文本换成给模型的那句。
+          // 只在能发卡的场合传（主场、非外联、非车道，同 appConnectTool 的挂刀条件）；
+          // 只认主人自己云箱里的：别人借来的应用过期了，轮不到这位主人去登
+          ...(opts.approveAll && !isOutreach && !isPair
+            ? {
+                onNeedsLogin: ({ hostUid, serverId }: { hostUid: string; serverId: string }): string | null => {
+                  if (hostUid !== opts.ownerUid) return null;
+                  const catalogId = catalogIdOfServer(serverId);
+                  const r = catalogId === null ? null : resolveConnectApp(catalogId);
+                  if (r === null || r.kind !== "ok") return null;
+                  offerAppConnect({ agentId: spec.agentId, catalogId: r.entry.id, appName: r.entry.name, why: "它的登录过期了，要重新登录才能接着用", reason: "needs_login" });
+                  return `${r.entry.name} 的登录过期了，已经在会话里请主人重新登录；这一轮别再调它。`;
+                },
+              }
+            : {}),
         });
       }
       // 起跑**之前**捕获这只 agent 这一轮的扫描起点（复审 Critical ①，与
@@ -3354,7 +3369,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   /** 发一张「请主人连 X」的卡；回给模型的那句话。已经能用 / 已有开着的卡 / 这个小时发够了，都不发（#1666） */
   const offerAppConnect = (o: { agentId: string; catalogId: string; appName: string; why: string; reason: "missing" | "needs_login" }): string => {
     const t = now();
-    if (grantsSnapshot?.value.some((g) => g.serverId === cloudServerIdOf(o.catalogId))) return `${o.appName} 已经连上了，直接用它的工具。`;
+    // 「已经连上了」只对 missing 成立；needs_login 恰恰是「连着、但登录过期」——授权快照里必有它，不能拿来拦卡
+    if (o.reason === "missing" && grantsSnapshot?.value.some((g) => g.serverId === cloudServerIdOf(o.catalogId))) return `${o.appName} 已经连上了，直接用它的工具。`;
     if (openCardFor(appConnectFold, o.catalogId, t) !== null) return `连 ${o.appName} 的卡已经在会话里了，等主人点。这一轮别再试它。`;
     const sent = pruneBridgeWindow(appConnectOffered, t);
     if (!bridgeWindowAllows(sent, t, APP_CONNECT_PER_HOUR_MAX)) {

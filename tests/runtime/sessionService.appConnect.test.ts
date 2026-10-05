@@ -180,3 +180,55 @@ describe("request_app_connect 的挂刀条件（#1666）", () => {
     store.close();
   });
 });
+
+describe("连接器 409 needs_login 兜底发卡（#1666）", () => {
+  const PX_TOOL = "px_owner_cloud-supabase_list";
+  /** grants 回主人自己云箱里的 cloud-supabase；call 回 409 needs_login */
+  const needsLoginFetch = (calls: string[]): typeof fetch =>
+    (async (url: string) => {
+      calls.push(url);
+      if (url.includes("/px/v1/grants")) {
+        return Response.json({ servers: [{ serverId: "cloud-supabase", toolDefs: [{ name: "list", description: "d", inputSchema: {} }] }] });
+      }
+      return Response.json({ error: { message: "这个应用要在手机上重新登录", type: "otto_edge", code: "needs_login" } }, { status: 409 });
+    }) as unknown as typeof fetch;
+  const callsPx = (n: number): ModelAdapter => {
+    let round = 0;
+    return { model: "fake-model", async chat(): Promise<ModelReply> {
+      round++;
+      return round === 1
+        ? { content: "", toolCalls: Array.from({ length: n }, (_, i) => ({ id: `p${i + 1}`, name: PX_TOOL, args: {} })) }
+        : { content: "好的" };
+    } };
+  };
+
+  it("主人自己云箱的工具回 409 needs_login：落 app_connect offered（reason needs_login），tool_result 说登录过期了；再调一次不重发卡", async () => {
+    const store = newStore();
+    dmSeed(store);
+    const calls: string[] = [];
+    const s = openWith(store, { adapter: callsPx(2), px: { ...basePx, fetchImpl: needsLoginFetch(calls) } });
+    await s.say(OWNER, "Stan", "查一下库", false, [], undefined, []);
+    await s.settled();
+    const cs = cards(store);
+    expect(cs).toHaveLength(1);
+    expect(cs[0]).toMatchObject({ phase: "offered", catalogId: "supabase", appName: "Supabase", reason: "needs_login", fromAgentId: ADMIN_AGENT_ID });
+    const rs = results(store);
+    expect(rs).toHaveLength(2);
+    expect(rs[0]).toMatchObject({ status: "error" });
+    expect(rs[0]!.output).toContain("Supabase 的登录过期了");
+    // 第二次：已有开着的卡 → 替换文案是 offerAppConnect 的去重话，不落第二条
+    expect(rs[1]!.output).not.toContain("这个应用要在手机上重新登录");
+    expect(calls.filter((u) => u.includes("/px/v1/call"))).toHaveLength(2);
+    store.close();
+  });
+
+  it("外联会话不挂这个回调：不会走到发卡（不落 app_connect）", async () => {
+    const store = newStore();
+    outreachSeed(store);
+    const s = openWith(store, { adapter: noop, px: { ...basePx, fetchImpl: needsLoginFetch([]) } });
+    await s.say(PEER, "小红", "喂", false, [], undefined, []);
+    await s.settled();
+    expect(cards(store)).toHaveLength(0);
+    store.close();
+  });
+});

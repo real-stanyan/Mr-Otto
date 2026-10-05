@@ -133,7 +133,12 @@ export function buildPxTools(
   deps: PxCallDeps,
   fromUid: string,
   granted: readonly GrantedPxServer[],
-  opts?: { requiresApproval?: boolean }
+  opts?: {
+    requiresApproval?: boolean;
+    /** edge 回 409 needs_login（连接器登录过期）时调（#1666）：回非 null = 用这句替掉错误文本抛出，
+        回 null / 不传 = 照旧抛 edge 的原 message。回调自己决定要不要发「重新登录」卡 */
+    onNeedsLogin?: (g: { hostUid: string; serverId: string }) => string | null;
+  }
 ): Tool[] {
   // 缺省 false = ADR-0151 的既有口径（白名单内没有逐次审批，人自己 @ 起的那一轮
   // 照旧）。true 只有一个调用形态：**接力棒上的那一轮**（#957 B-C3）——那一轮不是
@@ -174,6 +179,11 @@ export function buildPxTools(
           });
           const payload: unknown = await res.json().catch(() => null);
           if (!res.ok) {
+            // 连接器登录过期（#1666）：edge 回 409 code=needs_login。回调能发卡就用它那句话替掉错误文本
+            if (isObj(payload) && isObj(payload.error) && payload.error.code === "needs_login") {
+              const alt = opts?.onNeedsLogin?.({ hostUid: g.hostUid, serverId: g.serverId }) ?? null;
+              if (alt !== null) throw new Error(alt);
+            }
             throw new Error(errMessage(payload) ?? `px 调用被拒（HTTP ${res.status}）`);
           }
           const result = isObj(payload) ? payload.result : null;
