@@ -469,7 +469,9 @@ export function FriendChatScreen({ route, navigation }: Props) {
     const rows = [
       ...(thread?.messages ?? []).map((m) => ({ kind: "dm" as const, ts: Date.parse(m.createdAt) || 0, m })),
       ...taskRows.map((t) => ({ kind: "task" as const, ts: t.task.ts, t })),
-      ...collabCards.map((card) => ({ kind: "collab" as const, ts: card.ts, card })),
+      // 等点头的镜像卡不进时间线（#1605 真机：卡钉在请求那一刻、被后面的话顶上去，Stan 以为「什么都没有」）——它吸在输入框上方，
+      // 点了接 / 不接才回到时间线里它该在的位置
+      ...collabCards.filter((card) => card.state !== "pending").map((card) => ({ kind: "collab" as const, ts: card.ts, card })),
     ].sort((a, b) => a.ts - b.ts || (a.kind === b.kind ? 0 : a.kind === "dm" ? -1 : 1));
     for (const r of rows) {
       const ts = r.ts;
@@ -748,6 +750,18 @@ export function FriendChatScreen({ route, navigation }: Props) {
             </View>
           ) : null}
         </View>
+        {collabCards.filter((card) => card.state === "pending").map((card) => (
+          // 吸底的镜像卡（#1605）：没点之前一直在这儿
+          <View key={`pending-${card.requestId}`} style={{ paddingTop: 8, paddingBottom: 4, borderTopWidth: 0.5, borderTopColor: c.border, backgroundColor: c.background }}>
+            <CollabMirrorCard
+              card={card}
+              friendName={name}
+              busy={deciding === card.requestId}
+              error={deciding === null && decideError !== null ? decideError : null}
+              onDecide={(d) => void decide(card.requestId, d)}
+            />
+          </View>
+        ))}
         {adminsRows.length > 0 ? (
           // 管理员之间（#1605）：两家管理员的往来折在这一行里，点开看全文（只读——要说话对自己的管理员说）
           <Pressable
