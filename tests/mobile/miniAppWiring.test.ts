@@ -145,3 +145,12 @@ describe("邀请卡（#1675）", () => {
     expect(b).toMatch(/navigation\.navigate\("MiniApp", \{ appId: myAppId, roomId: room\.id \}\)/);
   });
 });
+
+describe("房间推送点开（#1675）", () => {
+  it("room 目标：找我名下对应房主应用的那一份，进 MiniApp 房间模式；找不到回首页", () => {
+    const src = read("mobile/src/push/messagePush.ts");
+    expect(src).toMatch(/if \(t\.kind === "room"\) \{/);
+    expect(src).toMatch(/myAppForHost\(apps \?\? \[\], t\.hostAppId\)/);
+    expect(src).toMatch(/\{ name: "MiniApp" as const, params: \{ appId: mine\.id, roomId: t\.roomId \} \}/);
+  });
+});
