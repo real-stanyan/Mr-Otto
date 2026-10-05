@@ -95,13 +95,14 @@ function dropFile(id: string): void {
   }
 }
 
-const nativeAudio: HelperAudioBridge = {
+/** 原生放音器那一侧：字节落成缓存里的一个文件（扩展名按格式给，原生按它认文件），交给 OttoSpeech.play */
+const fileAudio = (ext: "mp3" | "m4a"): HelperAudioBridge => ({
   async play(bytes) {
     if (OttoSpeech === null) return { error: "这个版本的 app 里没有语音模块" };
     const id = `v${++audioSeq}`;
     try {
       if (!audioDir.exists) audioDir.create({ idempotent: true, intermediates: true });
-      const f = new File(audioDir, `${id}.mp3`);
+      const f = new File(audioDir, `${id}.${ext}`);
       files.set(id, f);
       f.create({ overwrite: true });
       f.write(bytes);
@@ -120,7 +121,12 @@ const nativeAudio: HelperAudioBridge = {
     await OttoSpeech?.stopPlay();
     for (const id of ids) dropFile(id);
   },
-};
+});
+
+/** TTS 合成回来的是 mp3 */
+const nativeAudio = fileAudio("mp3");
+/** 语音条（#1492）录的是 m4a */
+const clipAudio = fileAudio("m4a");
 
 const mic: VoiceMicPort = {
   start: (hints) => void OttoSpeech?.start(SPEECH_LOCALE, hints),
@@ -354,6 +360,55 @@ export function playPreview(bytes: Uint8Array, on: { start(): void; end(): void;
   // 停一次就够：起播之后 pause() 自己会停原生那边；起播的回执还没回来时 pause() 够不着，这里补那一次
   return () => {
     if (!started) void nativeAudio.stop();
+    audio.pause();
+  };
+}
+
+/** 这台能不能用原生放音器放语音条：Expo Go / 老原生包没有语音模块，语音条退回 expo-video */
+export function canPlayClipNatively(): boolean {
+  return OttoSpeech !== null;
+}
+
+/** 放一条语音条（#1492），回一个「停」。走和电话同一个原生放音器，**不走 expo-video**（#1631）：expo-video 放完
+    把共享音频会话留在 playback 且一直激活——下一通锁屏来电系统不再把会话交过来（接了记未接），或者通话里
+    引擎撞上一次配置变更、麦被停掉（它说话、你说话它不回）。原生放音器放完就把会话交还系统。
+    这台正在听电话时不放（同 playPreview：同一个音频引擎，会把电话那一段掐掉） */
+export function playVoiceClip(url: string, on: { end(): void; fail(message: string): void }): () => void {
+  if (store.get().listen !== null) {
+    on.fail("正在通话，挂了再听");
+    return () => {};
+  }
+  let stopped = false;
+  let started = false;
+  let audio: ReturnType<typeof createHelperAudio> | null = null;
+  void (async () => {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`语音下载失败（${res.status}）`);
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      if (stopped) return;
+      const a = createHelperAudio(bytes, clipAudio);
+      audio = a;
+      // 放完 / 放不了：这一段已经收尾，之后的「停」不再去碰原生那边（stopPlay 会把别人刚交出去的那段也停掉）
+      a.onended = () => {
+        audio = null;
+        on.end();
+      };
+      a.onerror = (message) => {
+        audio = null;
+        on.fail(message ?? "放不出来");
+      };
+      await a.play();
+      started = true;
+    } catch (err) {
+      if (!stopped) on.fail(err instanceof Error ? err.message : String(err));
+    }
+  })();
+  // 同 playPreview：起播的回执还没回来时 pause() 够不着原生那一段，这里补一次
+  return () => {
+    stopped = true;
+    if (audio === null) return;
+    if (!started) void clipAudio.stop();
     audio.pause();
   };
 }

@@ -2,13 +2,16 @@
 // 右边 N″；点一下播，再点停；同一时刻只放一条（新的一按，上一条停）。底下一行「转文字」：展开发送方录的时候
 // 听写出来的那份 transcript（没有就说「没有文字」）——接收方不再识别一遍（维护者拍板）。
 //
-// 放音走 expo-video 的无头播放器（AVPlayer 放 m4a 没问题）：不碰 otto-speech 的音频会话——那边管的是通话；
-// 代价是通话进行中按语音条会和通话抢扬声器，先不管（通话里本来也不该听别的）。
-import { createVideoPlayer, type VideoPlayer } from "expo-video";
+// 放音走 otto-speech 的原生放音器（和电话同一个，放完把会话交还系统）。原来走 expo-video 的无头播放器：它放完
+// 把共享音频会话留在 playback、一直激活，下一通锁屏来电就坏——接了记未接，或者它说话、你说话它不回（#1631）。
+// 正在通话时不放（同一个音频引擎）。Expo Go / 老原生包没有语音模块，退回 expo-video。
+import { createVideoPlayer } from "expo-video";
 import { useEffect, useRef, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { type ChatMediaItem } from "../../../src/shared/chatMedia.js";
 import { usePalette } from "../theme.js";
+import { canPlayClipNatively, playVoiceClip } from "../voice/voiceStore.js";
+import { toast } from "../wx/toast.js";
 import { Spinner } from "../ui.js";
 import { retryMediaUrl, useMediaUrl } from "./mediaUrls.js";
 
@@ -35,19 +38,13 @@ export function AudioBubble({ item, bucket, mine }: { item: ChatMediaItem; bucke
   const url = useMediaUrl(item.path, bucket);
   const [playing, setPlaying] = useState(false);
   const [showText, setShowText] = useState(false);
-  const player = useRef<VideoPlayer | null>(null);
+  /** 手上这一条的「停」（原生放音器或 expo-video 那一份）；null = 没在放 */
+  const halt = useRef<(() => void) | null>(null);
 
   const stop = (): void => {
-    const p = player.current;
-    player.current = null;
-    if (p !== null) {
-      try {
-        p.pause();
-        p.release();
-      } catch {
-        // 已经释放过
-      }
-    }
+    const h = halt.current;
+    halt.current = null;
+    h?.();
     setPlaying(false);
     if (current !== null && current.stop === stop) current = null;
   };
@@ -63,14 +60,16 @@ export function AudioBubble({ item, bucket, mine }: { item: ChatMediaItem; bucke
       return;
     }
     if (current !== null) current.stop();
-    const p = createVideoPlayer(url);
-    player.current = p;
     current = { stop };
-    p.addListener("playToEnd", () => stop());
-    p.addListener("statusChange", ({ status }) => {
-      if (status === "error") stop();
-    });
-    p.play();
+    halt.current = canPlayClipNatively()
+      ? playVoiceClip(url, {
+          end: () => stop(),
+          fail: (message) => {
+            stop();
+            toast(message);
+          },
+        })
+      : playWithExpoVideo(url, stop);
     setPlaying(true);
   };
 
@@ -105,6 +104,24 @@ export function AudioBubble({ item, bucket, mine }: { item: ChatMediaItem; bucke
       ) : null}
     </View>
   );
+}
+
+/** 没有语音模块时的退路（Expo Go / 老原生包）：expo-video 的无头播放器 */
+function playWithExpoVideo(url: string, onDone: () => void): () => void {
+  const p = createVideoPlayer(url);
+  p.addListener("playToEnd", () => onDone());
+  p.addListener("statusChange", ({ status }) => {
+    if (status === "error") onDone();
+  });
+  p.play();
+  return () => {
+    try {
+      p.pause();
+      p.release();
+    } catch {
+      // 已经释放过
+    }
+  };
 }
 
 /** 还没传完的那条：同样一条横条，压一层半透明 */
