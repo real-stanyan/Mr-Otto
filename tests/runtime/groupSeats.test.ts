@@ -47,7 +47,7 @@ function testWiki(): WikiService {
 
 /** 一次模型调用看到的东西：哪只（主场）、手上有哪些刀、整段上下文 */
 interface Call { ws: string; tools: string[]; transcript: string }
-type Script = (call: Call) => ModelReply;
+type Script = (call: Call) => ModelReply | Promise<ModelReply>;
 
 interface World {
   stores: Map<string, EventStore>;
@@ -55,6 +55,7 @@ interface World {
   calls: Call[];
   alerts: unknown[][];
   timers: (() => void)[];
+  deltas: { ws: string; agentId: string; text: string }[];
   group: CloudSession;
   seatOf(uid: string): CloudSession | undefined;
   seatLog(uid: string): SessionEvent[];
@@ -77,6 +78,7 @@ function setup(o: { script: Script; seats?: GroupSeat[]; legacyHumans?: { uid: s
   const calls: Call[] = [];
   const alerts: unknown[][] = [];
   const timers: (() => void)[] = [];
+  const deltas: { ws: string; agentId: string; text: string }[] = [];
   const seatIds = new Map<string, string>();
 
   const hub = createSeatHub({
@@ -110,12 +112,13 @@ function setup(o: { script: Script; seats?: GroupSeat[]; legacyHumans?: { uid: s
         async chat(messages, tools): Promise<ModelReply> {
           const call = { ws, tools: (tools ?? []).map((t) => t.name), transcript: JSON.stringify(messages) };
           calls.push(call);
-          return o.script(call);
+          return await o.script(call);
         },
       }),
       onEvent: () => {}, onUsage: () => {}, wiki: testWiki(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true, contextWindowOf: () => undefined, sandboxApproval: async () => "ask", workspaceLock: createWorkspaceLock(), relayRemainingMicro: async () => null,
       seatHub: hub,
+      onDelta: (agentId, kind, text) => { if (kind === "content") deltas.push({ ws, agentId, text }); },
       alert: (...a: unknown[]) => void alerts.push(a),
       ringTimers: { setTimer: (fn: () => void) => { timers.push(fn); return timers.length; }, clearTimer: () => {} },
     });
@@ -137,7 +140,7 @@ function setup(o: { script: Script; seats?: GroupSeat[]; legacyHumans?: { uid: s
     return sid === undefined ? undefined : rooms.get(`${HOME[uid]}/${sid}`);
   };
   return {
-    stores, rooms, calls, alerts, timers, group, seatOf,
+    stores, rooms, calls, alerts, timers, deltas, group, seatOf,
     seatLog: (uid) => (seatIds.has(uid) ? storeOf(HOME[uid]!).load(seatIds.get(uid)!) : []),
     groupLog: () => gs.load("g1"),
     // 桥是 fire-and-forget：反复等到所有房间都停下来、群日志不再长
@@ -386,5 +389,47 @@ describe("座位那一侧", () => {
     await w.group.say(C, "Edison Guo", "@雨姐 再查一下", true, [seatAgentId(A)]);
     await w.settleAll();
     expect(w.seatLog(A).filter((e) => e.type === "seat_request")).toHaveLength(1);
+  });
+});
+
+describe("群座位制：更刁的几种", () => {
+  it("主人那一轮还在跑时别人 @ 它：别人的话另排一轮（只有 ask_owner），主人那一轮的刀不被收紧", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    let first = true;
+    const w = setup({
+      script: async (c) => {
+        if (c.ws !== "wa") return { content: "?" };
+        if (first) { first = false; await gate; return { content: "主人那件办好了。" }; }
+        return { content: c.tools.includes("ask_owner") ? "你好呀。" : "又一件。" };
+      },
+    });
+    await w.group.say(A, "继爸", "@雨姐 整理下库存", true, [seatAgentId(A)]);
+    await new Promise((r) => setTimeout(r, 20));
+    await w.group.say(C, "Edison Guo", "@雨姐 在忙啥", true, [seatAgentId(A)]);
+    await new Promise((r) => setTimeout(r, 20));
+    release();
+    await w.settleAll();
+    const wa = w.calls.filter((c) => c.ws === "wa");
+    expect(wa[0]!.tools).toContain("bash");
+    expect(wa.some((c) => c.tools.length === 1 && c.tools[0] === "ask_owner")).toBe(true);
+    expect(said(w.groupLog(), A)).toEqual(["主人那件办好了。", "你好呀。"]);
+  });
+
+  it("流式半句话转进群里、署名是那个座位", async () => {
+    const w = setup({ script: () => ({ content: "x" }) });
+    w.group.receiveSeatDelta!(A, "在呢…");
+    w.group.receiveSeatDelta!("dddddddd-0000-4000-8000-000000000004", "不在群里的不转");
+    expect(w.deltas).toEqual([{ ws: "wa", agentId: seatAgentId(A), text: "在呢…" }]);
+  });
+
+  it("座位的提示词说清：谁的座位、主人 @ 没审批、别人 @ 只能聊天要用 ask_owner", async () => {
+    const w = setup({ script: () => ({ content: "好" }) });
+    await w.group.say(B, "Stan Yan", "@雨姐 你是谁", true, [seatAgentId(A)]);
+    await w.settleAll();
+    const t = w.calls[0]!.transcript;
+    expect(t).toContain("属于 继爸 的座位");
+    expect(t).toContain("ask_owner");
+    expect(t).not.toContain("这里没有审批：你做的每一步直接生效");
   });
 });

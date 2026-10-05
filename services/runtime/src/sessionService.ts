@@ -842,6 +842,8 @@ export interface CloudSession {
   /** 座位 → 群：管理员的回话 / 点头卡 / 结局（镜像进群的日志） */
   receiveSeatReply?(o: { seatUid: string; text: string; model: string; toUid: string | null; depth: number }): void;
   receiveSeatRequest?(e: SeatRequestEvent): void;
+  /** 座位 → 群：管理员流式的半句话，原样转成这间房的 delta 帧（署名 seat:<uid>） */
+  receiveSeatDelta?(seatUid: string, text: string): void;
   receiveSeatDecision?(e: SeatDecisionEvent): void;
   /** 座位主人在群里点头卡（seat_decide 帧）：只认那个座位的主人、只认还开着的卡 */
   decideSeat?(requestId: string, byUid: string, decision: "accepted" | "declined"): Promise<{ ok: true } | { ok: false; message: string }>;
@@ -1256,14 +1258,20 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   // 不截的话客户端会先画出一行伪造的发言、答案落下来时又消失。名单取此刻认得的人：
   // 发言标签表（speakerLabels：真人 + 同伴）+ 这条会话里 agent 的名字（specNames，runJob
   // 每次刷新）+ 系统旁白的保留名。specNames 在下面才声明——闭包只在 turn 跑起来之后执行
+  /** 流式碎片出门（#1107）。座位里（#1682）管理员的正文碎片另送一份回群——群里才看得到它在说 */
+  const emitDelta = (agentId: string, kind: "content" | "reasoning", text: string): void => {
+    opts.onDelta?.(agentId, kind, text);
+    const hub = opts.seatHub ?? null;
+    if (isSeat && kind === "content" && agentId === ADMIN_AGENT_ID && hub !== null && seatGroup !== null) hub.delta({ group: seatGroup, seatUid: opts.ownerUid, text });
+  };
   const deltas = createDeltaStream(
     (agentId, kind, text) => {
       if (kind !== "content") {
-        opts.onDelta?.(agentId, kind, text);
+        emitDelta(agentId, kind, text);
         return;
       }
       const names = new Set<string>([SYSTEM_SPEAKER_NAME, ...speakerLabels.values(), ...specNames.values()]);
-      opts.onDelta?.(agentId, kind, cutSpeakerLeak(text, names, specNames.get(agentId) ?? null).content);
+      emitDelta(agentId, kind, cutSpeakerLeak(text, names, specNames.get(agentId) ?? null).content);
     },
     opts.deltaTimers
   );
@@ -2309,7 +2317,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
             onAssistantRestart: () => {
               deltas.flush();
               deltas.clearAgent(spec.agentId);
-              opts.onDelta?.(spec.agentId, "content", "");
+              emitDelta(spec.agentId, "content", "");
             },
           }
         : {}),
@@ -4168,6 +4176,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       }
       seatRelaySent = [...sent, ...others.map(() => t)];
       for (const uid of others) deliverToSeat(uid, { fromUid: seatUid, fromName: seatLabel(seat), text, depth: depth + 1, groupSeq: said.seq });
+    },
+    receiveSeatDelta(seatUid, text) {
+      if (archived || !(groupSeats ?? []).some((s) => s.uid === seatUid)) return;
+      opts.onDelta?.(seatAgentId(seatUid), "content", text);
     },
     receiveSeatRequest(e) {
       if (archived || groupSeats === null || seatRequests.has(e.requestId)) return;

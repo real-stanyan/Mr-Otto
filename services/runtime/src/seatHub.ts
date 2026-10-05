@@ -32,6 +32,8 @@ export interface SeatHub {
   decide(o: { group: GroupRef; seatUid: string; requestId: string; byUid: string; decision: "accepted" | "declined" }): Promise<string | null>;
   /** 座位 → 群：管理员说了一句。`toUid` = 叫醒它的那个人（推送给他） */
   reply(o: { group: GroupRef; seatUid: string; text: string; model: string; toUid: string | null; depth: number }): Promise<void>;
+  /** 座位 → 群：管理员正在吐的半句话（流式预览，不落日志）。fire-and-forget */
+  delta(o: { group: GroupRef; seatUid: string; text: string }): void;
   /** 座位 → 群：点头卡与它的结局（镜像） */
   request(o: { group: GroupRef; event: SeatRequestEvent }): Promise<void>;
   decision(o: { group: GroupRef; event: SeatDecisionEvent }): Promise<void>;
@@ -82,6 +84,9 @@ export function createSeatHub(deps: SeatHubDeps): SeatHub {
     async reply({ group: ref, seatUid, text, model, toUid, depth }) {
       const group = await groupOf(ref);
       group?.receiveSeatReply?.({ seatUid, text, model, toUid, depth });
+    },
+    delta({ group: ref, seatUid, text }) {
+      void groupOf(ref).then((group) => group?.receiveSeatDelta?.(seatUid, text));
     },
     async request({ group: ref, event }) {
       const group = await groupOf(ref);
