@@ -1047,6 +1047,15 @@ export function decodeCsDown(b64: string): CsDown | null {
       return null;
     }
 
+    if (t === "collab_decide_result") {
+      if (typeof obj.workspaceId === "string" && typeof obj.sessionId === "string" && typeof obj.requestId === "string" && typeof obj.ok === "boolean" && (obj.message === undefined || typeof obj.message === "string")) {
+        const result: CsDown = { t: "collab_decide_result", workspaceId: obj.workspaceId, sessionId: obj.sessionId, requestId: obj.requestId, ok: obj.ok };
+        if (typeof obj.message === "string") result.message = obj.message;
+        return result;
+      }
+      return null;
+    }
+
     if (t === "chat_update_result") {
       if (
         typeof obj.workspaceId === "string" &&
