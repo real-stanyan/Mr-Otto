@@ -1,6 +1,7 @@
 // LoopEngine — 把环闭上：输入 → 落盘 → 投影 → 模型 → 落盘 → 工具 → 落盘 → 再投影……
 // 不变量执行处：每一步先 append 再继续，模型看到的永远是日志的投影。
 
+import { isPlaceholderReply } from "../shared/placeholderReply.js";
 import type { NewSessionEvent } from "../session/store.js";
 import type { EventLog } from "../session/eventLog.js";
 import type {
@@ -939,6 +940,8 @@ export class LoopEngine {
       if (this.opts.agentId) {
         const who = speakerNamesOf(log, this.opts.agentId);
         spoken = cutSpeakerLeak(reply.content, who.names, who.self);
+        // 整句只是「（无输出）」这类占位（#1683）：当它什么都没说——原话留在 trimmed，日志说得清模型吐了什么
+        if (isPlaceholderReply(spoken.content)) spoken = { content: "", trimmed: reply.content };
       }
 
       this.append({
