@@ -186,5 +186,7 @@ describe("房间（#1675）", () => {
   it("工具说明写了房间 API", () => {
     const def = createBuildAppTool({ agentId: "a", workspaceId: "w", ownerUid: "u", exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }), upload: async () => {}, store: createInMemoryAppStore(), card: () => {} }).def;
     for (const s of ["otto.room", "ifRev", "room.change", "ping"]) expect(def.description).toContain(s);
+    // #1675 终审：限速回 false、不在房间拒、current() 的形状、删除也走 room.change、from 是自报的
+    for (const s of ["回 false", "还没进房间", "me:{uid,name}", "members:[{uid,name,status}]", "{key, removed:true}", "自己的写也会收到", "from 是对方自报的", "胜负结果要写进 set"]) expect(def.description).toContain(s);
   });
 });
