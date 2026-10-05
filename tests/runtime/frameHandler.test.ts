@@ -95,6 +95,8 @@ function makeDeps(config: {
   writeWiki?: FrameHandlerDeps["writeWiki"];
   /** #1280：默认收下——绝大多数用例不关心聊天名单 */
   updateChat?: FrameHandlerDeps["sessions"]["updateChat"];
+  /** #1656：默认不接（绝大多数用例不关心健康读取） */
+  health?: FrameHandlerDeps["health"];
 } = {}): { deps: FrameHandlerDeps; sent: Sent[]; dropCidCalls: string[]; logs: string[] } {
   const sent: Sent[] = [];
   const dropCidCalls: string[] = [];
@@ -124,6 +126,7 @@ function makeDeps(config: {
     send: (cid, msg) => sent.push({ cid, msg }),
     dropCid: config.dropCid ?? ((cid) => dropCidCalls.push(cid)),
     log: (m) => logs.push(m),
+    ...(config.health !== undefined ? { health: config.health } : {}),
   };
   return { deps, sent, dropCidCalls, logs };
 }
@@ -2429,5 +2432,52 @@ describe("外联会话：语音票与客人进房（#1441）", () => {
     await h.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "call", participants: ["a1"] }));
     expect(r.sent.at(-1)!.msg).toEqual({ t: "call_result", ok: true });
     expect(r.logs.join("\n")).toContain("empty secret");
+  });
+});
+
+describe("Apple 健康（#1656）", () => {
+  function recorder() {
+    const calls: string[] = [];
+    const health: NonNullable<FrameHandlerDeps["health"]> = {
+      setCaps: (cid, uid, on) => calls.push(`caps ${cid} ${uid} ${on}`),
+      resolve: (cid, reqId) => { calls.push(`resolve ${cid} ${reqId}`); return reqId === "known"; },
+      gone: (cid) => calls.push(`gone ${cid}`),
+    };
+    return { calls, health };
+  }
+  async function joined(health: NonNullable<FrameHandlerDeps["health"]>) {
+    const m = makeDeps({ health });
+    const fh = createFrameHandler(m.deps);
+    await fh.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    return { fh, ...m };
+  }
+  it("caps 记到这条 cid 与验过的 uid 上", async () => {
+    const { calls, health } = recorder();
+    const { fh } = await joined(health);
+    await fh.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "caps", health: true }));
+    expect(calls).toEqual(["caps c1 u1 true"]);
+  });
+  it("health_result 交给 broker；对不上记一笔", async () => {
+    const { calls, health } = recorder();
+    const { fh, logs } = await joined(health);
+    const result = { ok: false as const, error: "x" };
+    await fh.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "health_result", reqId: "known", result }));
+    await fh.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "health_result", reqId: "stale", result }));
+    expect(calls).toEqual(["resolve c1 known", "resolve c1 stale"]);
+    expect(logs.some((l) => l.includes("健康回帧没对上") && l.includes("stale"))).toBe(true);
+  });
+  it("没 hello 的 cid 发 caps：拒，不进 broker", async () => {
+    const { calls, health } = recorder();
+    const m = makeDeps({ health });
+    const fh = createFrameHandler(m.deps);
+    await fh.onSessionFrame("w1", "s1", "c9", encodeCs({ t: "caps", health: true }));
+    expect(calls).toEqual([]);
+    expect(m.sent.at(-1)?.msg).toMatchObject({ t: "denied", code: "not_authorized" });
+  });
+  it("onGone 通知 broker", async () => {
+    const { calls, health } = recorder();
+    const { fh } = await joined(health);
+    fh.onGone("c1");
+    expect(calls).toEqual(["gone c1"]);
   });
 });
