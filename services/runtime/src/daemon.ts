@@ -37,6 +37,7 @@ import { delegationRoster } from "../../../src/shared/delegation.js";
 import { createReportScheduler, type ReportRow } from "./reportScheduler.js";
 import { parseReportPlan, reportOpeningText, type ReportPlan } from "../../../src/shared/quietHours.js";
 import { isIanaTimeZone } from "../../../src/shared/routines.js";
+import { eventForGuest } from "../../../src/shared/guestView.js";
 import { LANE_TASK_STATUS_LABEL, laneBusy, laneTaskStatus, laneTasksOf } from "../../../src/shared/laneTasks.js";
 import { dmPreview } from "../../../src/shared/wechatInbox.js";
 import { DEFAULT_STUN, HUMAN_CALL_RING_MS, humanRingPush } from "../../../src/shared/humanCall.js";
@@ -1004,8 +1005,16 @@ async function main(): Promise<void> {
 
     // 提出来命名，好让 notifyWorkspace（clone 结果通报）复用同一份广播
     // 逻辑，而不是重新拼一遍 for-of-roster
+    // 客人（外联里的朋友、主场群里的客人）拿到的是裁过的那一份（#1655）：主人的 wiki 快照不出门，seq 一格不少。
+    // backlog 那一路在 frameHandler。名单里的 cid 都已过 hello（welcome 才入名单），uid 必在；
+    // 万一不在 / session 还没造好（装配期间的回调）就按客人裁——宁可少给成员一段 wiki，不给客人多一段
     const broadcast = (e: SessionEvent): void => {
-      for (const cid of roster) globalSend(cid, { t: "event", event: e });
+      const guestCopy = eventForGuest(e);
+      for (const cid of roster) {
+        const uid = frameHandler.uidOf(cid);
+        const guest = guestCopy !== e && (uid === null || (session as CloudSession | undefined)?.isGuest(uid) !== false);
+        globalSend(cid, { t: "event", event: guest ? guestCopy : e });
+      }
     };
 
     session = createCloudSession({
