@@ -4,23 +4,24 @@
 //   mono  —— 只取形状，颜色跟主题前景色走（生成时已把写死的颜色换成 currentColor）
 //   color —— 品牌色照原样画
 //   png   —— 有一批牌子不发 SVG 标
-// 颜色只留给告警（needs_login 那一句走 warn）。三处尺寸：行首 40、弹窗顶 40、详情页 hero 64。
+// 颜色只留给告警（needs_login 那一句走 warn）。四处尺寸：行首 40、弹窗顶 40、连接卡弹窗 56、详情页 hero 64。
 import { Image, Text, View } from "react-native";
 import { SvgXml } from "react-native-svg";
 import { appInitial } from "../../../src/shared/mobileConnectors.js";
 import { usePalette } from "../theme.js";
 import { APP_ICON_PNG, APP_ICON_SVG } from "./appIcons.generated.js";
 
-export function AppTile({ name, icon = null, size = 40 }: { name: string; icon?: string | null; size?: 40 | 64 }) {
+export function AppTile({ name, icon = null, size = 40 }: { name: string; icon?: string | null; size?: 40 | 56 | 64 }) {
   const { c } = usePalette();
   const big = size === 64;
-  const mark = big ? 38 : 24;
+  const mid = size === 56;
+  const mark = big ? 38 : mid ? 32 : 24;
   const xml = icon === null ? undefined : APP_ICON_SVG[icon];
   const bitmap = icon === null ? undefined : APP_ICON_PNG[icon];
   return (
     <View
       style={{
-        width: size, height: size, borderRadius: big ? 15 : 9, backgroundColor: c.muted,
+        width: size, height: size, borderRadius: big ? 15 : mid ? 14 : 9, backgroundColor: c.muted,
         alignItems: "center", justifyContent: "center",
       }}
     >
@@ -29,7 +30,7 @@ export function AppTile({ name, icon = null, size = 40 }: { name: string; icon?:
       ) : bitmap !== undefined ? (
         <Image source={bitmap} style={{ width: mark, height: mark }} resizeMode="contain" />
       ) : (
-        <Text style={{ fontSize: big ? 28 : 17, fontWeight: "600", color: c.mutedForeground }}>{appInitial(name)}</Text>
+        <Text style={{ fontSize: big ? 28 : mid ? 24 : 17, fontWeight: "600", color: c.mutedForeground }}>{appInitial(name)}</Text>
       )}
     </View>
   );

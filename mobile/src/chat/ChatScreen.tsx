@@ -19,10 +19,11 @@
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { FlatList, Pressable, StyleSheet, Text, View } from "react-native";
+import { AppState, FlatList, Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { activityFoldOf } from "../../../src/shared/agentActivity.js";
 import { appConnectAction } from "../../../src/shared/appConnect.js";
+import { popupCandidate } from "../../../src/shared/appConnectPopup.js";
 import { MCP_CATALOG, type CuratedEntry } from "../../../src/shared/mcpCatalog.js";
 import { lendToTeam } from "../machine/connectApp.js";
 import { ConnectAppDialog } from "../machine/ConnectAppDialog.js";
@@ -86,6 +87,7 @@ import { pickFromCamera, pickFromLibrary, pickedKind, prepareAsset, type PickedA
 import { PasteDialog, pastedAssets, usePastedImages } from "../media/pasteImages.js";
 import type { PastedImage } from "../../../src/shared/pastedImages.js";
 import { MentionSheet } from "./MentionSheet.js";
+import { AppConnectPrompt } from "./AppConnectPrompt.js";
 import { DispatchDialog } from "./DispatchDialog.js";
 import { dispatchOpening, quoteLinesFromRows, quoteWindow } from "../../../src/shared/dispatchQuote.js";
 import { RoleChips } from "./RoleChips.js";
@@ -785,6 +787,35 @@ export function ChatScreen({ route, navigation }: Props) {
   const focused = useIsFocused();
   const [pasted, setPasted] = useState<{ key: number; visible: boolean; images: PastedImage[] } | null>(null);
   usePastedImages(focused && canMedia && !callOnly, (images) => setPasted({ key: Date.now(), visible: true, images }));
+  // 连接卡自动弹窗（#1666，spec §4.2）：这一页看着的时候新来的卡弹一次，翻历史不弹。判据在 appConnectPopup.ts；
+  // 这里管三样界面状态——app 在不在前台、基线 seq、弹没弹过。
+  // 基线 = 这一页第一次拿到完整日志（第一次 ready：服务器那一轮历史已全部进来，缓存不算，chatStore.onStatus）时的最大 seq；
+  // 之后 seq 更大的卡才是「看着的时候新来的」。切会话（sessionId 变）重置，弹没弹过的记录一并清掉
+  const [appActive, setAppActive] = useState(AppState.currentState === "active");
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (s) => setAppActive(s === "active"));
+    return () => sub.remove();
+  }, []);
+  const popupBaseline = useRef<{ sessionId: string; seq: number } | null>(null);
+  const popped = useRef(new Set<string>());
+  const [prompt, setPrompt] = useState<{ row: Extract<ChatRow, { kind: "app_connect" }>; visible: boolean; then: "primary" | null } | null>(null);
+  useEffect(() => {
+    if (session === null || session.provisional || session.state !== "ready") return;
+    if (popupBaseline.current?.sessionId !== session.sessionId) {
+      popupBaseline.current = { sessionId: session.sessionId, seq: events.reduce((m, e) => Math.max(m, e.seq), -1) };
+      popped.current = new Set();
+      setPrompt(null);
+      return;
+    }
+    // 一次只一张：别的弹窗 / 接入弹窗 / 正在发回执 / 通话页开着时不弹（两层 Modal 叠着 iOS 上什么都不发生），
+    // 等它们收了这个 effect 会再跑一遍
+    if (prompt !== null || connectEntry !== null || connecting !== null) return;
+    if (dispatching !== null || picker !== null || pasted !== null || mentioning || callSheetOpen || callOpen || callOnly) return;
+    const cand = popupCandidate(rows, { baselineSeq: popupBaseline.current.seq, popped: popped.current, focused: focused && appActive });
+    if (cand === null) return;
+    popped.current.add(cand.connectId);
+    setPrompt({ row: cand, visible: true, then: null });
+  }, [session, events, rows, focused, appActive, prompt, connectEntry, connecting, dispatching, picker, pasted, mentioning, callSheetOpen, callOpen, callOnly]);
   if (offerPhone) plus.push({ key: "call", icon: "phone", label: "语音通话", onPress: () => void onStartCall() });
   const openPicker = (kind: "group" | "add" | "invite"): void => {
     setPickError(null);
@@ -1023,6 +1054,27 @@ export function ChatScreen({ route, navigation }: Props) {
             const id = connectEntry.connectId;
             setConnectEntry(null);
             if (landed !== null) void answerAppConnect(id, "connected");
+          }}
+        />
+      ) : null}
+      {prompt !== null ? (
+        <AppConnectPrompt
+          key={prompt.row.connectId}
+          row={prompt.row}
+          action={appConnectActionOf(prompt.row.catalogId)}
+          visible={prompt.visible}
+          // 主按钮只收起并记一笔「收完要去做」；真正的动作在 onExited（弹窗完全退场）之后——
+          // 接入弹窗要升系统登录页，不能叠在一张正在退场的 Modal 上。「稍后」只收起，卡还在会话里；
+          // 退场途中的第二下点击不改已经记下的那一笔
+          onPrimary={() => setPrompt((p) => (p === null ? p : { ...p, visible: false, then: "primary" }))}
+          onLater={() => setPrompt((p) => (p === null ? p : { ...p, visible: false }))}
+          onExited={() => {
+            const done = prompt;
+            setPrompt(null);
+            if (done.then !== "primary") return;
+            // 弹窗开着这段时间卡可能已经被另一台设备答了：按此刻日志里那一份行判，不拿弹出时的快照
+            const now = rows.find((r) => r.kind === "app_connect" && r.connectId === done.row.connectId);
+            if (now !== undefined && now.kind === "app_connect") void onAppConnect(now);
           }}
         />
       ) : null}
