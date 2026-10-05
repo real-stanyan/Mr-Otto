@@ -7,10 +7,10 @@
 // 地方都是：先把换 token / tools/list 这些网络活干完，再进 `store.atomic` 读出最新的箱改一处写回；临界区里
 // 没有 fetch（测试的假上游在临界区里被打到会直接抛）。
 
-import { MCP_CATALOG, type CatalogEntry } from "../../../src/shared/mcpCatalog.js";
+import { MCP_CATALOG, type CatalogEntry, type PresetClientName } from "../../../src/shared/mcpCatalog.js";
 import { fillHttpEntry, missingParams } from "../../../src/shared/mcpCatalogFill.js";
 import {
-  CLOUD_TEXT, cloudServerId, cloudView, emptyCloudBox, ensureHomeGrant, markNeedsLogin, removeCloudService,
+  CLOUD_TEXT, cloudServerId, cloudView, emptyCloudBox, ensureHomeGrant, markNeedsLogin, presetUnconfiguredText, removeCloudService,
   setCloudGrant, upsertCloudService, withCloudOAuth,
   type CloudBox, type CloudOAuth, type CloudServiceInput, type CloudViewItem, type ConnectDone, type ConnectReply,
 } from "../../../src/shared/remote/pxCloud.js";
@@ -60,6 +60,8 @@ export interface CloudOpsDeps {
   /** 缺省 MCP_CATALOG；测试注小表 */
   catalog?: readonly CatalogEntry[];
   callbackUrl: string;
+  /** 预置 OAuth 客户端（#1619）：worker 从 Worker secret 现取，没配 = null。缺省（测试不注）也当没配 */
+  presetClient?: (name: PresetClientName) => { client_id: string; client_secret: string } | null;
   /** 主场 id：service key 现查（spec §3.4），不信手机报的 */
   homeIdOf(uid: string): Promise<string | null>;
   isMember(uid: string, workspaceId: string): Promise<boolean>;
@@ -95,6 +97,14 @@ function upstreamText(entry: CatalogEntry, code: string, message: string): strin
   return code === "upstream_auth" && entry.auth === "token" ? CLOUD_TEXT.badToken : `没接上：${message}`;
 }
 
+/** 记下的 clientInformation 若是预置客户端（只记了名字），补上现取的 secret 再外呼；不是预置的原样返回；
+    预置但此刻取不到 = null。**补出来的这份只给外呼用，绝不写回箱 / pending**（密钥只存 Worker secret 一处） */
+function resolveClient(d: CloudOpsDeps, ci: Record<string, unknown>): Record<string, unknown> | null {
+  if (ci.preset !== "google") return ci;
+  const p = d.presetClient?.(ci.preset) ?? null;
+  return p ? { ...ci, client_secret: p.client_secret } : null;
+}
+
 export async function cloudConnect(
   d: CloudOpsDeps, uid: string, req: { catalogId: string; params: Record<string, string> }
 ): Promise<{ ok: true; reply: ConnectReply } | OpFail> {
@@ -123,6 +133,10 @@ export async function cloudConnect(
     return { ok: true, reply: { kind: "connected", serverId } };
   }
 
+  // 预置客户端没配：在任何外呼之前就回（#1619）
+  const preset = entry.presetClient !== undefined ? (d.presetClient?.(entry.presetClient) ?? null) : undefined;
+  if (preset === null) return fail(503, "preset_unconfigured", presetUnconfiguredText(entry.name));
+
   // 浏览器登录：外呼（发现 + 注册）全部在前，最后才进临界区记 pending。
   // 先便宜地看一眼 pending 满没满（只读、仅供参考，权威判断仍在下面的临界区里）：满了就别先去厂商那儿注册一个用不上的 client
   const nowForCap = d.now();
@@ -134,17 +148,24 @@ export async function cloudConnect(
     d.log?.(`[px-cloud] discovery ${serverId} ${disc.code}: ${disc.message}`);
     return fail(502, disc.code, `没接上：${disc.message}`);
   }
-  const reg = await registerClient(d.fetch, disc.meta, d.callbackUrl);
-  if (!reg.ok) {
-    d.log?.(`[px-cloud] register ${serverId} ${reg.code}: ${reg.message}`);
-    return fail(reg.code === "no_dcr" ? 422 : 502, reg.code, reg.code === "no_dcr" ? CLOUD_TEXT.noDcr : `没接上：${reg.message}`);
+  // 预置客户端只记 client_id + 名字，secret 等换 token / 续期时再现取（resolveClient）
+  let client: Record<string, unknown> & { client_id: string };
+  if (preset && entry.presetClient !== undefined) {
+    client = { client_id: preset.client_id, preset: entry.presetClient };
+  } else {
+    const reg = await registerClient(d.fetch, disc.meta, d.callbackUrl);
+    if (!reg.ok) {
+      d.log?.(`[px-cloud] register ${serverId} ${reg.code}: ${reg.message}`);
+      return fail(reg.code === "no_dcr" ? 422 : 502, reg.code, reg.code === "no_dcr" ? CLOUD_TEXT.noDcr : `没接上：${reg.message}`);
+    }
+    client = reg.client;
   }
   const state = makeState(uid, d.random);
   const { verifier, challenge } = await pkcePair(d.random);
   const resource = disc.meta.resource ?? url;
   const pending: PendingAuth = {
     state, uid, catalogId: entry.id, url, resource, verifier,
-    clientInformation: reg.client, tokenEndpoint: disc.meta.tokenEndpoint, exp: d.now() + PENDING_TTL_MS,
+    clientInformation: client, tokenEndpoint: disc.meta.tokenEndpoint, exp: d.now() + PENDING_TTL_MS,
   };
   const full = await d.store.atomic(async () => {
     const now = d.now();
@@ -162,7 +183,11 @@ export async function cloudConnect(
     ok: true,
     reply: {
       kind: "authorize",
-      authorizeUrl: authorizeUrl({ meta: disc.meta, clientId: reg.client.client_id, redirectUri: d.callbackUrl, challenge, state, resource }),
+      authorizeUrl: authorizeUrl({
+        meta: disc.meta, clientId: client.client_id, redirectUri: d.callbackUrl, challenge, state, resource,
+        ...(entry.scopes ? { scopes: entry.scopes } : {}),
+        ...(entry.authorizeParams ? { extra: entry.authorizeParams } : {}),
+      }),
     },
   };
 }
@@ -180,10 +205,16 @@ export async function cloudCallback(
   if (q.error) return { ok: false, message: q.error };
   if (!q.code) return { ok: false, message: CLOUD_TEXT.unknown };
 
+  const client = resolveClient(d, pending.clientInformation);
+  if (!client) {
+    const name = (d.catalog ?? MCP_CATALOG).find((e) => e.id === pending.catalogId)?.name ?? pending.catalogId;
+    d.log?.(`[px-cloud] callback ${pending.catalogId} preset_unconfigured`);
+    return { ok: false, message: presetUnconfiguredText(name) };
+  }
   const tok = await exchangeCode(d.fetch, {
     tokenEndpoint: pending.tokenEndpoint, code: q.code, verifier: pending.verifier,
     clientId: pending.clientInformation.client_id, redirectUri: d.callbackUrl, resource: pending.resource,
-    ...(typeof pending.clientInformation.client_secret === "string" ? { clientSecret: pending.clientInformation.client_secret } : {}),
+    ...(typeof client.client_secret === "string" ? { clientSecret: client.client_secret } : {}),
   });
   const serverId = cloudServerId(pending.catalogId);
   if (!tok.ok) {
@@ -263,7 +294,16 @@ export async function cloudRefresh(d: CloudOpsDeps, serverId: string): Promise<C
     return null;
   }
   const snapshotRefresh = refreshTokenOf(svc.oauth);
-  const result = await refreshCloudOAuth(d.fetch, svc.oauth);
+  const stored = svc.oauth.clientInformation;
+  const client = stored ? resolveClient(d, stored) : undefined;
+  if (client === null) {
+    // 预置客户端此刻取不到 secret：是我们没配好，不是用户登录坏了——按抖动处理，不标 needs_login（#1619）
+    d.log?.(`[px-cloud] refresh ${serverId} preset_unconfigured`);
+    return null;
+  }
+  const raw = await refreshCloudOAuth(d.fetch, client ? { ...svc.oauth, clientInformation: client } : svc.oauth);
+  // 写回 / 交回的那份换回箱里记的 clientInformation：补进去的 secret 不落盘
+  const result = raw.kind === "ok" && stored ? { ...raw, oauth: { ...raw.oauth, clientInformation: stored } } : raw;
   if (result.kind === "transient") {
     d.log?.(`[px-cloud] refresh ${serverId} transient`);
     return null;
