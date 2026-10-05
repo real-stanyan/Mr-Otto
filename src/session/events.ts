@@ -31,6 +31,8 @@ export interface UserMessageEvent extends SessionEventBase {
   attachments?: UserAttachmentRef[];
   /** 云会话里发的视频（#1491）。可选 = 旧日志照常重放 */
   videos?: ChatVideoRef[];
+  /** 云会话里发的文件（#1683）：PDF / Word / Excel / PPT / 文本。可选 = 旧日志照常重放 */
+  files?: ChatFileRef[];
   /** 文本文件附件(全文快照,同 skill_invoked 语义:日志自包含,原文件改/删
       不影响重放)。结构化存而不内联进 content——content 保持纯用户正文,
       UI 才能把文件渲染成卡片而不是摊开全文;模型投影时(deriveMessages)
@@ -183,6 +185,25 @@ export interface ChatVideoRef {
   poster?: string;
 }
 
+/** 聊天里的一份文件（#1683）：人发来的，或智能体做出来交给人的（create_document / send_file）。
+    本体在 Storage 的 `chat-media/<团队>/<会话>/<hex>.<ext>`（id 的 hex 就是对象名，同 ChatVideoRef），客户端自己签名去开。
+    人发来的那份 runtime 收下时还会：原件存进工作区（`path`）、转成文字（`text`，≤ 100KB，**快照语义**同 UserTextFile——
+    日志自包含，原件后来改了删了不影响重放）。转不出的写 `textError`（扫描件 PDF、加密、太大）。
+    智能体交出去的那份三格都不带：它是给人看的，模型那一轮的事实在 tool_result 的 output 里 */
+export interface ChatFileRef {
+  id: string;        // "sha256:<hex>"，对象名
+  /** 给人看的名字（cleanFileName 过的） */
+  name: string;
+  mediaType: string; // DOC_MIME_TYPES 之一
+  bytes: number;
+  /** 原件在工作区里的路径（人发来的那份才有） */
+  path?: string;
+  /** 转出来的文字（Markdown）。模型投影读它 */
+  text?: string;
+  /** 转不出文字的原因（人话） */
+  textError?: string;
+}
+
 /** 模型发出的一次工具调用请求（不是事件，是 AssistantMessageEvent 的组成部分） */
 export interface ToolCallRequest {
   id: string;      // 调用唯一 id：审批、结果都靠它对号
@@ -246,6 +267,8 @@ export interface AssistantMessageEvent extends SessionEventBase {
       **模型不读**（deriveMessages 不折它：图是给人看的，画图那一侧的 tool_result.images 才是那一轮的事实）。
       缺席 = 没带图（旧日志 / 本机会话照常重放） */
   attachments?: UserAttachmentRef[];
+  /** 这句回话带的文件（#1683）：同上一格，座位里做出来的文件跟着回话进群。模型不读。缺席 = 没带 */
+  files?: ChatFileRef[];
   /** 这条是哪只工作区 agent 干的（#928）。**缺席 = 单 agent 会话**——旧日志、
       本机会话、云会话在多智能体上线前落的那些，全在这一档，照常重放。
       落盘由 engine 的 env() 统一供料，不是每个 append 点各写一遍 */
@@ -300,6 +323,10 @@ export interface ToolResultEvent extends SessionEventBase {
       可选 = 旧日志无此字段照样重放（schema 向后兼容硬规则）。
       图丢了不该炸时间线 —— 同 ADR-0009 对用户附件的取舍，UI 退成一行缺图提示 */
   images?: UserAttachmentRef[];
+  /** 这次调用交给人的文件（#1683，create_document / send_file）：只记 ref，本体在 Storage 的 chat-media
+      （手机够不着 VPS 的磁盘，同 images 那条「传一份进 Storage」）。传上去由中间件做（硬规则：工具不碰 fs / 网络）。
+      可选 = 旧日志照常重放 */
+  files?: ChatFileRef[];
   /** 这次工具调用里套着的那次模型调用的账（#1084）：generate_image 走网关出图，
       钱扣在网关那边（usage_event 有行），本机的账也得能从日志求和——它的载体
       只能是这条 tool_result（出图不产生 assistant_message）。四格与
@@ -1390,6 +1417,8 @@ export interface ChatMessageEvent extends SessionEventBase {
       逐字相同；可选 = 旧日志照常重放 */
   attachments?: UserAttachmentRef[];
   videos?: ChatVideoRef[];
+  /** 群里随手发的文件（#1683），同 user_message.files */
+  files?: ChatFileRef[];
   /** 座位里镜像进来的群聊行（#1682，ADR-0376）：群日志里的 seq。座位据它知道镜像到哪儿了；在场的这一句不收紧监督
       （它是群里的背景，不是对这一轮的指令）。缺席 = 不是镜像（旧日志照常重放） */
   mirror?: { seq: number };

@@ -169,16 +169,28 @@ type ItemRow = Exclude<ChatRow, { kind: "time" }>;
 
 /** 这句带的图 / 视频（#1491）：有才给那一格（exactOptionalPropertyTypes 不许塞 undefined） */
 function mediaFieldOf(
-  e: { sessionId: string; attachments?: readonly { id: string; mediaType: string; bytes: number; name?: string; width?: number; height?: number }[]; videos?: readonly { id: string; mediaType: string; bytes: number; width: number; height: number; durationMs: number; poster?: string }[] },
+  e: {
+    sessionId: string;
+    attachments?: readonly { id: string; mediaType: string; bytes: number; name?: string; width?: number; height?: number }[];
+    videos?: readonly { id: string; mediaType: string; bytes: number; width: number; height: number; durationMs: number; poster?: string }[];
+    /** 文件（#1683） */
+    files?: readonly { id: string; name: string; mediaType: string; bytes: number }[];
+  },
   ws: WorkspaceSnapshot,
 ): { media?: ChatMediaItem[] } {
-  if (e.attachments === undefined && e.videos === undefined) return {};
-  const media = chatMediaItemsOf(ws.id, e.sessionId, e.attachments, e.videos);
+  if (e.attachments === undefined && e.videos === undefined && e.files === undefined) return {};
+  const media = chatMediaItemsOf(ws.id, e.sessionId, e.attachments, e.videos, e.files);
   return media.length > 0 ? { media } : {};
 }
 
+/** 只交文件、一个字没说的那句回话（#1683：座位里做出来的文件跟着回话进群，正文可能是空的）。isAgentStep 把空正文
+    当中间步骤藏掉——对它不成立：人要的就是那份文件。要了工具的那条照旧是步骤 */
+function filesOnlyReply(e: SessionEvent): boolean {
+  return e.type === "assistant_message" && (e.toolCalls?.length ?? 0) === 0 && (e.files?.length ?? 0) > 0;
+}
+
 function rowOf(e: SessionEvent, ws: WorkspaceSnapshot, selfUid: string): ItemRow | null {
-  if (hiddenFromCloudTimeline(e)) return null;
+  if (hiddenFromCloudTimeline(e) && !filesOnlyReply(e)) return null;
   const key = `e${e.seq}`;
   switch (e.type) {
     case "user_message": {
@@ -293,8 +305,9 @@ export function chatRows(o: {
       if (healthCalls.has(e.toolCallId)) {
         items.push({ kind: "note", key: `health-${e.seq}`, ts: e.ts, text: healthReadLineText(healthCalls.get(e.toolCallId), e.status), tone: "muted", detail: null });
       }
-      if (e.status === "ok" && e.images !== undefined && e.images.length > 0) {
-        const media = chatMediaItemsOf(o.ws.id, e.sessionId, e.images, undefined);
+      // 工具交给人的文件（#1683，create_document / send_file）与图同一个位置、同一种画法
+      if (e.status === "ok" && ((e.images !== undefined && e.images.length > 0) || (e.files !== undefined && e.files.length > 0))) {
+        const media = chatMediaItemsOf(o.ws.id, e.sessionId, e.images, undefined, e.files);
         if (media.length > 0) {
           const agentId = e.agentId ?? "";
           items.push({ kind: "agent", key: `img-${e.seq}`, ts: e.ts, agentId, name: agentId !== "" ? agentNameOf(o.ws, agentId) : "Agent", paragraphs: [], media });

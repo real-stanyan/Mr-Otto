@@ -62,6 +62,7 @@ import { markSeen, setOpenKey } from "../inbox/seenStore.js";
 import { useInbox } from "../inbox/useInbox.js";
 import { MediaBubble, PendingMediaBubble } from "../media/MediaBubble.js";
 import { pickFromCamera, pickFromLibrary, pickedKind, prepareAsset, type PickedAsset } from "../media/prepareMedia.js";
+import { documentPickerAvailable, pickDocuments } from "../media/pickDocuments.js";
 import { PasteDialog, pastedAssets, usePastedImages } from "../media/pasteImages.js";
 import type { PastedImage } from "../../../src/shared/pastedImages.js";
 import type { RootStackParams } from "../nav/types.js";
@@ -626,6 +627,21 @@ export function FriendChatScreen({ route, navigation }: Props) {
     for (const group of planMediaMessages(ready)) sendMediaToFriend(uid, group);
     if (problems.length > 0) setNote(problems.length === 1 ? (problems[0] ?? "") : `有 ${problems.length} 样没发：${problems[0] ?? ""}`);
   };
+  // 文件（#1683）：系统的文件选择器挑几份，一份一条，走同一条 sendMediaToFriend（shared 的 sendMediaMessage：先传后写消息，
+  // 正文是占位「[文件] 名字」——会话列表第二行、推送、老客户端读到的都是它）。收不下的只说那一份，别的照发
+  const sendFiles = async (): Promise<void> => {
+    setNote(null);
+    let picked: { ready: PreparedMedia[]; problems: string[] };
+    try {
+      picked = await pickDocuments();
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e));
+      return;
+    }
+    for (const group of planMediaMessages(picked.ready)) sendMediaToFriend(uid, group);
+    const problems = picked.problems;
+    if (problems.length > 0) setNote(problems.length === 1 ? (problems[0] ?? "") : `有 ${problems.length} 份没发：${problems[0] ?? ""}`);
+  };
   // 输入框里粘贴图片（#1645）：还是朋友、这一页在最上面时才收；先问一句再走 sendPicked
   const [pasted, setPasted] = useState<{ key: number; visible: boolean; images: PastedImage[] } | null>(null);
   usePastedImages(focused && friend, (images) => setPasted({ key: Date.now(), visible: true, images }));
@@ -796,6 +812,8 @@ export function FriendChatScreen({ route, navigation }: Props) {
               // 图片 / 视频（#1443）：相册一次最多挑 9 样；拍摄是拍照或录一段（≤60 秒）
               { key: "album", icon: "image", label: "相册", onPress: () => void sendPicked(pickFromLibrary) },
               { key: "camera", icon: "camera", label: "拍摄", onPress: () => void sendPicked(pickFromCamera) },
+              // 文件（#1683）：选择器是原生模块，老原生包热更新过来没有它——那就不画这一格
+              ...(documentPickerAvailable ? [{ key: "file", icon: "folder" as const, label: "文件", onPress: () => void sendFiles() }] : []),
               // 名片（#1524）：推一位朋友给 TA，或把我的一只智能体发给 TA（TA 接受就复制进 TA 的智能体库）
               { key: "card", icon: "user-round", label: "名片", onPress: () => { setCardError(null); setCarding({ key: Date.now(), visible: true }); } },
               // 应用（#1648 真机：「没办法直接分享给 Stan」）：挑一个我的应用，直接发一张应用卡

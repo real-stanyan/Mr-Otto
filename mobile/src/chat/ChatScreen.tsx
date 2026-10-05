@@ -90,6 +90,7 @@ import { uploadMediaFile } from "../friends/friendsApi.js";
 import { fileSizeOf, sha256OfFile } from "../media/hash.js";
 import { PendingMediaBubble } from "../media/MediaBubble.js";
 import { pickFromCamera, pickFromLibrary, pickedKind, prepareAsset, type PickedAsset } from "../media/prepareMedia.js";
+import { documentPickerAvailable, pickDocuments } from "../media/pickDocuments.js";
 import { PasteDialog, pastedAssets, usePastedImages } from "../media/pasteImages.js";
 import type { PastedImage } from "../../../src/shared/pastedImages.js";
 import { MentionSheet, SEAT_MENTION_FOOTER } from "./MentionSheet.js";
@@ -613,6 +614,26 @@ export function ChatScreen({ route, navigation }: Props) {
     }
     if (problems.length > 0) setPageNote({ text: problems.length === 1 ? (problems[0] ?? "") : `有 ${problems.length} 样没发：${problems[0] ?? ""}`, tone: "error" });
   };
+  // 文件（#1683）：系统的文件选择器挑几份（PDF / Word / Excel / PPT / 文本），一份一条（planMediaMessages 本来就这么拆），
+  // 走同一条 sendCloudMedia——上传时的 Content-Type 就是 preparePickedDoc 认出来的格式，bucket 按它的白名单收（0069）。
+  // 收不下的（格式不对、超过 20MB）只说那一份，别的照发
+  const sendFiles = async (): Promise<void> => {
+    setPageNote(null);
+    let picked: { ready: PreparedMedia[]; problems: string[] };
+    try {
+      picked = await pickDocuments();
+    } catch (e) {
+      setPageNote({ text: e instanceof Error ? e.message : String(e), tone: "error" });
+      return;
+    }
+    for (const group of planMediaMessages(picked.ready)) {
+      const p: PendingCloudMedia = { key: ++pendingMediaSeq.current, items: group, state: "sending", progress: 0, error: null };
+      setPendingMedia((list) => [...list, p]);
+      runMediaSend(p);
+    }
+    const problems = picked.problems;
+    if (problems.length > 0) setPageNote({ text: problems.length === 1 ? (problems[0] ?? "") : `有 ${problems.length} 份没发：${problems[0] ?? ""}`, tone: "error" });
+  };
 
   const stop = async (seq: number): Promise<void> => {
     setStopping(true);
@@ -892,6 +913,8 @@ export function ChatScreen({ route, navigation }: Props) {
   if (canMedia) {
     plus.push({ key: "album", icon: "image", label: "相册", onPress: () => void sendPicked(pickFromLibrary) });
     plus.push({ key: "camera", icon: "camera", label: "拍摄", onPress: () => void sendPicked(pickFromCamera) });
+    // 文件（#1683）：选择器是原生模块，老原生包热更新过来没有它——那就不画这一格（documentPickerAvailable）
+    if (documentPickerAvailable) plus.push({ key: "file", icon: "folder", label: "文件", onPress: () => void sendFiles() });
   }
   // 输入框里粘贴图片（#1645）：能发图、这一页在最上面时才收；先问一句再走 sendPicked
   const focused = useIsFocused();

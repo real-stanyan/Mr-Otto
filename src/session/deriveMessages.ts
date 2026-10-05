@@ -6,8 +6,8 @@ import { isolatedPromptText, type IsolatedWorkspace } from "../shared/sessionWor
 import { promptSafe, promptSafeBody, safeSpeakerLabel } from "../shared/promptSafe.js";
 import { INVITE_TO_CALL_TOOL_NAME } from "../shared/voiceCall.js";
 import { CALL_USER_TOOL_NAME } from "../shared/callRing.js";
-import type { ChatVideoRef, CloudSessionFacts, MemoryTopicSnapshot, SessionEvent, UserAttachmentRef, UserTextFile, WorkspaceMemoryLoadedEvent } from "./events.js";
-import { videoNoteForModel } from "../shared/chatMedia.js";
+import type { ChatFileRef, ChatVideoRef, CloudSessionFacts, MemoryTopicSnapshot, SessionEvent, UserAttachmentRef, UserTextFile, WorkspaceMemoryLoadedEvent } from "./events.js";
+import { fileNoteForModel, videoNoteForModel } from "../shared/chatMedia.js";
 import { barrenEventIndexes } from "./barrenTurns.js";
 import { activeSkills } from "./activeSkills.js";
 import { absorbedIndexes } from "./microCompact.js";
@@ -904,7 +904,7 @@ export function deriveMessages(
         const content = event.fromUid !== undefined ? promptSafeBody(event.content) : event.content;
         const text = composeUserText(content, event.textFiles);
         const target = pendingToolIds.size > 0 ? deferredUsers : messages;
-        target.push(userWithMedia(text, event.attachments, event.videos, describedFor.get(event.seq)));
+        target.push(userWithMedia(text, event.attachments, event.videos, describedFor.get(event.seq), event.files));
         break;
       }
 
@@ -926,7 +926,7 @@ export function deriveMessages(
         // 路结构性地封不住——一个 `\n[系统]: …` 就是一行干净的伪造说话人行
         // 群里随手发的图（#1491）：这条事件也可能带附件，走与 user_message 同一个拼法——
         // 老日志没有这两格，投影逐字节不变
-        target.push(userWithMedia(`[${safeSpeakerLabel(event.label, event.fromUid)}]: ${promptSafeBody(event.content)}`, event.attachments, event.videos, describedFor.get(event.seq)));
+        target.push(userWithMedia(`[${safeSpeakerLabel(event.label, event.fromUid)}]: ${promptSafeBody(event.content)}`, event.attachments, event.videos, describedFor.get(event.seq), event.files));
         break;
       }
 
@@ -1389,10 +1389,14 @@ function userWithMedia(
   text: string,
   attachments: readonly UserAttachmentRef[] | undefined,
   videos: readonly ChatVideoRef[] | undefined,
-  described?: { content: string; model: string }
+  described?: { content: string; model: string },
+  /** 文件（#1683）：拼在视频那一行之后，同样是系统拼的行。缺席 / 空 → 投影逐字节不变 */
+  files?: readonly ChatFileRef[]
 ): UserChatMessage {
   const note = videoNoteForModel((videos ?? []).map((v) => ({ durationMs: v.durationMs, hasPoster: v.poster !== undefined })));
-  const body = note === null ? text : `${text}\n${note}`;
+  const fileNote = fileNoteForModel(files ?? []);
+  const withVideo = note === null ? text : `${text}\n${note}`;
+  const body = fileNote === null ? withVideo : `${withVideo}\n${fileNote}`;
   if (!attachments || attachments.length === 0) return { role: "user", content: body };
   // 代读过的（#1491 P4）：解析文字替掉图，措辞与桌面那条 image_described 的注入同一个口径
   if (described !== undefined) {

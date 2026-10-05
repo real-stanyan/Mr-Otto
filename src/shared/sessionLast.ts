@@ -10,6 +10,7 @@
 
 import type { SessionEvent } from "../session/events.js";
 import { splitBubbles } from "./chatBubbles.js";
+import { mediaPlaceholder } from "./chatMedia.js";
 import { isAgentStep, parseUserMessageLabel } from "./cloudTimeline.js";
 import { humanSpeakerOf } from "./sessionParticipants.js";
 import { isSystemNote } from "./systemNote.js";
@@ -54,7 +55,13 @@ export function lastOf(e: SessionEvent): SessionLast | null {
   if (e.type === "assistant_message") {
     // 座位制的群里专员（L1）镜像进来的话（#1682，带 worker）不算：那是某家管理员手下干活的过程，群里折成一行小字，
     // 不是谁的回话——名册第二行写它，就成了「继爸的管理员: 正在查航班…」
-    if (!e.agentId || isAgentStep(e) || e.worker !== undefined) return null;
+    if (!e.agentId || e.worker !== undefined) return null;
+    // 只交文件、没说话的那句（#1683）：名册第二行写「[文件] 名字」，同人发文件时 runtime 落的占位正文
+    const files = e.files ?? [];
+    if ((e.toolCalls?.length ?? 0) === 0 && e.content.trim() === "" && files.length > 0) {
+      return { ts: e.ts, excerpt: excerptOf(mediaPlaceholder(files.map((f) => ({ kind: "file" as const, name: f.name })))), from: `agent:${e.agentId}` };
+    }
+    if (isAgentStep(e)) return null;
     const excerpt = excerptOf(e.content);
     return excerpt === "" ? null : { ts: e.ts, excerpt, from: `agent:${e.agentId}` };
   }
