@@ -118,7 +118,7 @@ export function formatHealthForModel(q: HealthQuery, r: HealthResult): string; /
 - `services/runtime/src/frameHandler.ts`
   - `case "caps"`：记 `capsOf(cid) = { health }`；cid 断开时清掉。
   - `case "health_result"`：`parseHealthResult` 不过 → 丢；交 broker，broker 核对**回帧 cid 就是当初发请求的那条**，对不上丢。
-  - 暴露 `healthCidOf(uid): string | null`——该 uid 名下声明了 health 的连接中**最近一条**（按建连先后）。
+  - 能力表放在 healthBroker 里（不在 frameHandler）：`cidOf(uid)` 回该 uid 名下声明了 health 的连接中**最近声明的那一条**。
 - 新 `services/runtime/src/healthBroker.ts`
   - `request(cid, query, signal): Promise<HealthResult>`；`reqId` 随机。
   - 结束于：收到回帧 / 30 秒超时（`{ok:false, error:"手机 30 秒没回"}`）/ `signal` abort / 该 cid 断开（`"手机断开了"`）。
@@ -159,9 +159,9 @@ export function formatHealthForModel(q: HealthQuery, r: HealthResult): string; /
   - 收 `health_query` → `parseHealthQuery` → 原生 `query` → 回 `health_result`；原生抛错回 `{ok:false, error}`；
     开关已关仍收到 → 回 `{ok:false, error:"用户已关闭 Apple 健康"}`。
 - 设置页（`mobile/src/account/SettingsScreen.tsx`）加一行开关；打开时先 `requestAuthorization()`。
-- `src/shared/mobileChat.ts`：新行种 `health_read`。从 `assistant_message.toolCalls` 记 `toolCallId → args`，
-  遇到 `name === "read_health"` 的 `tool_result` 产出 `{kind:"health_read", metrics, from, to, ok}`。
-  `mobile/src/chat/Bubbles.tsx` 画一行灰字。其他工具照旧不画。
+- `src/shared/mobileChat.ts`：不加新行种，复用现成的 `note`（muted 灰字，Bubbles 已经会画）。`chatRows` 的循环里从
+  `assistant_message.toolCalls` 记 `toolCallId → args`，遇到 `name === "read_health"` 的 `tool_result` 产出一行
+  `note`，文字由 `healthReadLineText(args, status)` 给。其他工具照旧不画。
 
 ### 3.5 ADR
 
