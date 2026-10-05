@@ -58,6 +58,7 @@ function openAdmins(store: EventStore, o: {
   bridge?: AdminsBridge;
   timers?: { fns: (() => void)[] };
   events?: SessionEvent[];
+  alerts?: unknown[][];
 }): CloudSession {
   store.append({ sessionId: "s1", ts: 1, type: "session_created", workspace: "/work", cloud: { workspaceId: "w1", chat: { kind: "admins" }, admins: { ownerName: "Stan Yan", peerUid: "u_a", peerName: "继爸" }, home: true } });
   store.append({ sessionId: "s1", ts: 2, type: "chat_roster_changed", ignorable: true, agents: [{ agentId: "admin", name: "峰哥" }], humans: [{ uid: "u_a", name: "继爸" }] });
@@ -76,6 +77,7 @@ function openAdmins(store: EventStore, o: {
     onEvent: (e) => o.events?.push(e), onUsage: () => {}, wiki: testWiki(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
     isMember: async () => true, contextWindowOf: () => undefined, sandboxApproval: async () => "ask", workspaceLock: createWorkspaceLock(), relayRemainingMicro: async () => null,
     ...(o.bridge === undefined ? {} : { adminsBridge: o.bridge }),
+    ...(o.alerts === undefined ? {} : { alert: (...a: unknown[]) => void o.alerts!.push(a) }),
     ...(o.timers === undefined ? {} : { ringTimers: { setTimer: (fn: () => void) => { o.timers!.fns.push(fn); return o.timers!.fns.length; }, clearTimer: () => {} } }),
   });
 }
@@ -229,6 +231,23 @@ describe("A 家开房时重送还在等点头的请求（#1605 真机）", () =>
     await new Promise((r) => setTimeout(r, 0));
     expect(b.requests.map((x) => x.event.requestId)).toEqual(["r_live"]);
     expect(b.requests[0]).toMatchObject({ ownerUid: "u_a", peerUid: "u_b", origin: { workspaceId: "wa", sessionId: "s1" } });
+    store.close();
+  });
+});
+
+describe("协作请求推给对面主人（#1605 真机）", () => {
+  it("新来的推一次（朋友消息那一类、点开去和对面那位的私聊）；一小时内对面重送不再推；答过的不推", async () => {
+    const store = newStore();
+    const alerts: unknown[][] = [];
+    const s = openAdmins(store, { alerts });
+    s.receiveCollabRequest(REQUEST);
+    s.receiveCollabRequest(REQUEST);
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]![0]).toBe("owner");
+    expect(alerts[0]![1]).toBe("friend");
+    expect(alerts[0]![2]).toMatchObject({ title: "继爸 的管理员找你的管理员", target: { kind: "friend", uid: "u_a" } });
+    expect((alerts[0]![2] as { body: string }).body).toContain("看 9 月营业额");
+    await s.decideCollab("r_1", "owner", "declined");
     store.close();
   });
 });

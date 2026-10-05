@@ -195,7 +195,7 @@ import type { RoutineStore } from "./routineStore.js";
 import { ROUTINE_MAX_ROUNDS, routineOpeningText } from "../../../src/shared/routines.js";
 import { createMessageFriendAgentTool } from "./messageFriendAgentTool.js";
 import { createCollabTool } from "./collabTool.js";
-import { COLLAB_EXPIRE_MS, collabAcceptText, collabAuthPrompt } from "../../../src/shared/collab.js";
+import { COLLAB_EXPIRE_MS, COLLAB_REMIND_MS, collabAcceptText, collabAuthPrompt } from "../../../src/shared/collab.js";
 import { splitSpeakerPrefix } from "../../../src/shared/speakerPrefix.js";
 import { randomUUID } from "node:crypto";
 import type { FriendTier } from "../../../src/shared/friendTier.js";
@@ -1005,6 +1005,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   /** 这一轮是不是主场群里的客人点起的（#1393，ADR-0325）。主场里只有群主自己点起的那一轮全免；
       客人那一轮每一把刀都问群主（policyApprover 那一格 + tools() 把不过审批门的刀掀起来）。
       团队会话恒为假（approveAll 为假），一个字不变 */
+  /** 协作请求推给主人的时刻（#1605）：同一条隔一小时以上才再提醒 */
+  const collabPushedAt = new Map<string, number>();
   /** 管理员车道里主人接了的请求还活着（#1605）：对面管理员接力进来的那几轮按主人自己的规矩走，不再是客人轮 */
   const collabAccepted = (): boolean => isAdmins && [...collabRequests.values()].some((r) => r.decision === "accepted");
   const guestTurn = (): boolean => opts.approveAll && currentInitiator !== null && currentInitiator !== opts.ownerUid && !collabAccepted();
@@ -3568,9 +3570,24 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
 
     // ── 管理员车道（#1605）──
     receiveCollabRequest(e) {
-      if (archived || collabRequests.has(e.requestId)) return;
-      const { seq: _seq, sessionId: _sid, ts: _ts, ...rest } = e;
-      notify(store.append({ ...rest, sessionId, ts: Date.now() }));
+      if (archived) return;
+      const known = collabRequests.get(e.requestId);
+      if (known === undefined) {
+        const { seq: _seq, sessionId: _sid, ts: _ts, ...rest } = e;
+        notify(store.append({ ...rest, sessionId, ts: Date.now() }));
+      }
+      // 推给主人（#1605 真机 2026-10-05：卡落进来了，Stan 不知道）：新来的推一次；还在等点头、对面又送了一遍的，
+      // 隔一小时以上再提醒一次（内存里记，重启后对面开房重送那一下会再提醒一次）。点开去和对面那位的私聊，卡吸在输入框上方
+      const pending = known === undefined || known.decision === null;
+      const last = collabPushedAt.get(e.requestId) ?? 0;
+      if (pending && adminsFacts !== undefined && Date.now() - last >= COLLAB_REMIND_MS) {
+        collabPushedAt.set(e.requestId, Date.now());
+        opts.alert?.(opts.ownerUid, "friend", {
+          title: `${e.quote.ownerName} 的管理员找你的管理员`,
+          body: alertBody(`「${e.title}」${e.quote.note !== "" ? `——${e.quote.note}` : ""}。点开看看，接不接你定。`),
+          target: { kind: "friend", uid: adminsFacts.peerUid },
+        });
+      }
     },
     receiveCollabDecision(e) {
       if (archived) return;
