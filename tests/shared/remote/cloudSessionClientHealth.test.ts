@@ -160,4 +160,57 @@ describe("Apple 健康（#1656）", () => {
     await tick();
     expect(t.decoded()).toContainEqual({ t: "health_result", reqId: "r1", result: { ok: false, error: "boom" } });
   });
+
+  const Q = { metrics: ["steps"], from: "2026-10-04", to: "2026-10-04" } as const;
+  const capsTo = (t: ReturnType<typeof harness>["transports"][number], cid: string) =>
+    t.sent.filter((s) => s.to === cid && decodeCsUp(s.payload)?.t === "caps");
+
+  it("重连竞态：新 host 的 welcome 之前 refreshCaps 不发；welcome 之后补发（#1656 fix）", async () => {
+    const h = harness({ deviceCaps: () => ({ health: true }) });
+    const t = await ready(h);
+    t.emitGone();
+    t.emitPeer("host-cid-2");
+    await tick();
+    h.client.refreshCaps();
+    expect(capsTo(t, "host-cid-2")).toHaveLength(0);
+    t.emitDown(WELCOME, "host-cid-2");
+    await tick();
+    expect(capsTo(t, "host-cid-2")).toHaveLength(1); // (c) 重连 + 新 welcome 之后再发一次
+    h.client.refreshCaps();
+    expect(capsTo(t, "host-cid-2")).toHaveLength(2);
+  });
+  it("gone（hostCid 为空）时 refreshCaps 是空操作", async () => {
+    const h = harness({ deviceCaps: () => ({ health: true }) });
+    const t = await ready(h);
+    const before = t.sent.length;
+    t.emitGone();
+    h.client.refreshCaps();
+    expect(t.sent.length).toBe(before);
+  });
+  it("迟到的答案跨重连：丢掉，不发给新 host", async () => {
+    let resolve!: (r: { ok: true; days: []; workouts: [] }) => void;
+    const h = harness({ onHealthQuery: () => new Promise((r) => { resolve = r; }) });
+    const t = await ready(h);
+    t.emitDown({ t: "health_query", reqId: "r1", query: { ...Q, metrics: ["steps"] } });
+    await tick();
+    t.emitGone();
+    t.emitPeer("host-cid-2");
+    await tick();
+    resolve({ ok: true, days: [], workouts: [] });
+    await tick();
+    expect(t.decoded().some((m) => m?.t === "health_result")).toBe(false);
+  });
+  it("deviceCaps 抛错：backlog 请求照发，会话不卡在 connecting", async () => {
+    const h = harness({ deviceCaps: () => { throw new Error("nope"); } });
+    const t = await ready(h);
+    expect(t.decoded().some((m) => m?.t === "backlog")).toBe(true);
+    expect(t.decoded().some((m) => m?.t === "caps")).toBe(false);
+  });
+  it("onHealthQuery 同步抛错（非 async）：回 ok:false", async () => {
+    const h = harness({ onHealthQuery: (() => { throw new Error("sync boom"); }) as never });
+    const t = await ready(h);
+    t.emitDown({ t: "health_query", reqId: "r1", query: { ...Q, metrics: ["steps"] } });
+    await tick();
+    expect(t.decoded()).toContainEqual({ t: "health_result", reqId: "r1", result: { ok: false, error: "sync boom" } });
+  });
 });

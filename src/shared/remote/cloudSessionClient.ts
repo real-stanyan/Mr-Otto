@@ -194,7 +194,8 @@ export interface CloudSessionSummary {
 }
 
 export interface CloudSessionClient {
-  /** 开关变了（#1656）：对当前会话房重发一次 caps。还没 welcome / 没有会话 = 空操作（welcome 那一刻会发） */
+  /** 开关变了（#1656）：对当前会话房重发一次 caps。没有会话 / 当前这次连接还没 welcome（含重连中）= 空操作
+      （welcome 那一刻会发） */
   refreshCaps(): void;
   /** 当前已 join 的云会话 id；没有 = null。handleDecideApproval 拿它判断一个
       sessionId 是不是该走云端分流，不碰本地 agents */
@@ -286,6 +287,9 @@ interface ActiveSession {
   /** runtime（host）这一次连接的 cid，从 onPeer 拿到。null = 还没等到，或者
       对端刚走（gone/close），发帧没有收件人可用 */
   hostCid: string | null;
+  /** 这一次连接的 hello 是否已经被 runtime 认下（welcome 到了）。**按连接算**：新 host 的 onPeer / markGone 都清零。
+      runtime 只认 hello 过的 cid，welcome 之前发任何别的帧都会被当成未授权、把会话打成终态 denied（#1656） */
+  welcomed: boolean;
   status: "connecting" | "ready" | "denied" | "gone";
   deniedCode?: CsDeniedCode;
   /** denied 帧带回来的服务端协议号（复审 C2-I6）。只有 version_mismatch 带得到；
@@ -546,6 +550,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
   }
 
   function markGone(session: ActiveSession): void {
+    session.welcomed = false;
     // denied 是终态：runtime 掉线不该把"你没有权限"覆盖成"离线了"，反过来
     // 也不该把已经 gone 的会话重复推送（onGone/onClose 可能各触发一次）
     if (session.status === "gone" || session.status === "denied") return;
@@ -657,6 +662,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
         session.lastSeq = msg.lastSeq; // issue #957 C-I7：backlog 落定时拿它对账
         session.initiatorUid = msg.initiatorUid;
         session.ownerUid = msg.ownerUid;
+        session.welcomed = true;
         session.chat = msg.chat ?? null; // #1280：缺席 = 团队会话
         // 外联会话的语音票（#1441）：缺席就不动（重连后 runtime 会再发新的；旧的过期了网关自会退回记好友自己）
         if (msg.speechTicket !== undefined) session.speechTicket = msg.speechTicket;
@@ -666,7 +672,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
         // 仍是 connecting，但占位的 initiatorUid/ownerUid 已经补上真值——
         // 渲染层立刻能显示"谁发起的/谁是 owner"，不用等 backlog 跑完
         pushStatus(session);
-        if (deps.deviceCaps !== undefined) sendFrame(session, { t: "caps", ...deps.deviceCaps() });
+        sendCaps(session);
         // 聊天进房只拉末尾一屏（#1280）：一只一条永久线，全量拉迟早是十几秒。
         // 团队会话照旧 afterSeq:-1——那边的上下文环与通话折卡都靠「把整份日志
         // 读一遍」，改成分页会让它们静默算错
@@ -685,10 +691,17 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
         // 读手机的健康数据（#1656）：结果可能要几秒（HealthKit 查询），不阻塞这条连接的其余帧；
         // 期间人离开了这条会话就不回——runtime 那边会按断开收场
         const answer = deps.onHealthQuery ?? (async (): Promise<HealthResult> => ({ ok: false, error: "这台设备不读健康数据" }));
-        void answer(msg.query)
+        const cid = session.hostCid;
+        // Promise.resolve().then：非 async 的 onHealthQuery 同步抛错也落成 ok:false，不逃出这个 switch
+        void Promise.resolve()
+          .then(() => answer(msg.query))
           .catch((e: unknown): HealthResult => ({ ok: false, error: e instanceof Error ? e.message : String(e) }))
           .then((result) => {
-            if (active === session) sendFrame(session, { t: "health_result", reqId: msg.reqId, result });
+            // 答案迟到、期间连接换了一个 host：丢掉。发给新 host 它还没 hello，会被当未授权把会话打死；
+            // runtime 那边 30 秒自己超时，无害
+            if (active === session && session.welcomed && session.hostCid === cid) {
+              sendFrame(session, { t: "health_result", reqId: msg.reqId, result });
+            }
           });
         return;
       }
@@ -1060,6 +1073,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
       title: title ?? null,
       transport,
       hostCid: null,
+      welcomed: false,
       status: "connecting",
       initiatorUid: null,
       ownerUid: "",
@@ -1100,6 +1114,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
         return;
       }
       session.hostCid = cid;
+      session.welcomed = false; // 新 host：它的 hello 还没处理，别往它发 hello 之外的帧
       // gone 之后 runtime 回来了：状态先弹回 connecting（而不是等 welcome 才动），
       // UI 立刻能看出"正在重连"而不是干等在"离线"
       if (session.status === "gone") {
@@ -1326,10 +1341,24 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     };
   }
 
+  /** deviceCaps 抛错 = 跳过这一次（记日志）：绝不能让它打断 welcome 里后面的 backlog 请求 */
+  function sendCaps(session: ActiveSession): void {
+    if (deps.deviceCaps === undefined) return;
+    let caps: { health: boolean };
+    try {
+      caps = deps.deviceCaps();
+    } catch (e) {
+      deps.log?.(`云会话:deviceCaps 抛错，跳过 caps:${e instanceof Error ? e.message : String(e)}`);
+      return;
+    }
+    sendFrame(session, { t: "caps", health: caps.health });
+  }
+
   function refreshCaps(): void {
-    // ownerUid 由 welcome 填（之前是占位 ""）：welcome 之前发任何帧都会被当成未 hello 拒掉
-    if (active === null || active.ownerUid === "" || deps.deviceCaps === undefined) return;
-    sendFrame(active, { t: "caps", ...deps.deviceCaps() });
+    // 只对「已经 welcome 的这一次连接」发：重连窗口里 ownerUid 还是旧值、hostCid 已是新 host，
+    // 按 ownerUid 判会把帧发给还没 hello 的新 host（#1656）
+    if (active === null || !active.welcomed) return;
+    sendCaps(active);
   }
 
   return { refreshCaps, currentSessionId, activeSummary, create, join, leave, say, approve, pickFriend, archive, remove, chatUpdate, collabDecide, humanCall, appAccept, appDelete, stop, call, backlogPage, workspaceState, workspaceGitCredential, workspaceFiles, workspaceFilesSearch, workspaceWikiWrite };
