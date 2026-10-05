@@ -70,7 +70,11 @@ interface ImageRig { ready: boolean; uploads: string[] }
 const PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
 const imageWorld: ExecutionWorld = { ...fakeWorld, http: { postJson: async () => ({ data: [{ b64_json: PNG_B64, media_type: "image/png" }] }) } };
 
-function setup(o: { script: Script; seats?: GroupSeat[]; legacyHumans?: { uid: string; name: string }[]; images?: ImageRig }): World {
+/** 文件那一套（#1683）：工作区是内存里的字节表，传进桶的对象记下来 */
+interface DocRig { uploads: string[]; files: Map<string, Uint8Array> }
+const docRig = (): DocRig => ({ uploads: [], files: new Map() });
+
+function setup(o: { script: Script; seats?: GroupSeat[]; legacyHumans?: { uid: string; name: string }[]; images?: ImageRig; docs?: DocRig }): World {
   const attachmentStores = new Map<string, AttachmentStore>();
   const attachmentsOf = (ws: string): AttachmentStore => {
     let a = attachmentStores.get(ws);
@@ -121,7 +125,11 @@ function setup(o: { script: Script; seats?: GroupSeat[]; legacyHumans?: { uid: s
       diskUsage: () => null, routines: null, onOutreachEnded: null, signSpeechTicket: async () => "t", pairMessages: null, outreach: null, callback: null,
       approveAll: true, sessionMeta: createInMemoryCloudSessionMeta(),
       workspaceId: ws, sessionId: sid, ownerUid: owner, createdByUid: owner,
-      store: storeOf(ws), world: o.images !== undefined ? imageWorld : fakeWorld, px: { edgeBase: "https://edge.example", runtimeSecret: "sek" }, hostUids: async () => [owner],
+      store: storeOf(ws),
+      world: o.docs !== undefined
+        ? { ...fakeWorld, fs: { ...fakeWorld.fs, readBytes: async (p: string) => { const d = o.docs!.files.get(`${ws}:${p}`); if (d === undefined) throw new Error(`没有 ${p}`); return d; }, writeBytes: async (p: string, d: Uint8Array) => void o.docs!.files.set(`${ws}:${p}`, d) } }
+        : o.images !== undefined ? imageWorld : fakeWorld,
+      px: { edgeBase: "https://edge.example", runtimeSecret: "sek" }, hostUids: async () => [owner],
       agents: async () => [admin],
       adapterFor: (): ModelAdapter => ({
         model: "m",
@@ -138,6 +146,17 @@ function setup(o: { script: Script; seats?: GroupSeat[]; legacyHumans?: { uid: s
         ? {
             imageGen: { ready: async () => o.images!.ready, resolve: async () => ({ url: "https://edge.example/llm/v1/images", headers: {}, model: "seedream-5-0-lite" }) },
             toolImages: { store: attachmentsOf(ws), upload: async (bucket: string, path: string) => void o.images!.uploads.push(`${bucket}:${path}`) },
+          }
+        : {}),
+      ...(o.docs !== undefined
+        ? {
+            toolImages: { store: attachmentsOf(ws), upload: async (bucket: string, path: string) => void o.docs!.uploads.push(`${bucket}:${path}`) },
+            documents: { fonts: { get: () => null } },
+            // 人发来的文件：收下时转好的文字直接给（真 intake 在 chatMediaIntake.test 里测）
+            media: async (refs: readonly { sha256: string; name?: string; mediaType: string; bytes: number }[]) => ({
+              attachments: [], videos: [],
+              files: refs.map((r) => ({ id: `sha256:${r.sha256}`, name: r.name ?? "f", mediaType: r.mediaType, bytes: r.bytes, path: `inbox/${r.name}`, text: "Clause 7: rent is due on the 1st." })),
+            }),
           }
         : {}),
       onDelta: (agentId, kind, text) => { if (kind === "content") deltas.push({ ws, agentId, text }); },
@@ -563,5 +582,55 @@ describe("群座位制：出图（#1682）", () => {
     await w.settleAll();
     expect(w.calls[0]!.tools).toContain("bash");
     expect(w.calls[0]!.tools).not.toContain("generate_image");
+  });
+});
+
+describe("群座位制：文件（#1683）", () => {
+  const make = (reply: string) => (c: Call): ModelReply =>
+    c.tools.includes("create_document") && !c.transcript.includes("做好了：")
+      ? { content: "", toolCalls: [{ id: "d1", name: "create_document", args: { format: "pdf", filename: "Packing list", title: "Packing list", content: "- Passport\n- Charger" } }] }
+      : { content: reply };
+
+  it("主人 @ 自己的管理员做 PDF：文件存进 outputs/、落座位的 tool_result.files、跟着回话进群，群里那份传在群的目录下", async () => {
+    const rig = docRig();
+    const w = setup({ script: make("Done — packing list attached."), docs: rig });
+    await w.group.say(A, "继爸", "@雨姐 make me a packing list PDF", true, [seatAgentId(A)]);
+    await w.settleAll();
+    expect(w.calls[0]!.tools).toEqual(expect.arrayContaining(["create_document", "read_document", "send_file"]));
+    expect(rig.files.has("wa:outputs/Packing list.pdf")).toBe(true);
+    const result = w.seatLog(A).find((e) => e.type === "tool_result");
+    expect(result).toMatchObject({ status: "ok", files: [{ name: "Packing list.pdf", mediaType: "application/pdf" }] });
+    const id = (result as { files: { id: string }[] }).files[0]!.id;
+    const hex = id.slice("sha256:".length);
+    const seatSid = w.seatLog(A)[0]!.sessionId;
+    expect(rig.uploads).toEqual([`chat-media:wa/${seatSid}/${hex}.pdf`, `chat-media:wa/g1/${hex}.pdf`]);
+    const reply = w.groupLog().find((e) => e.type === "assistant_message" && e.agentId === seatAgentId(A));
+    expect(reply).toMatchObject({ content: "Done — packing list attached.", files: [{ id, name: "Packing list.pdf" }] });
+  });
+
+  it("交了文件之后一句话没说：轮末把文件送回群（不等它下一句）", async () => {
+    const rig = docRig();
+    const w = setup({ script: make(""), docs: rig });
+    await w.group.say(A, "继爸", "@雨姐 PDF please", true, [seatAgentId(A)]);
+    await w.settleAll();
+    const reply = w.groupLog().find((e) => e.type === "assistant_message" && e.agentId === seatAgentId(A));
+    expect(reply).toMatchObject({ content: "", files: [{ name: "Packing list.pdf" }] });
+  });
+
+  it("别人使唤你的管理员：那一轮没有文件刀（只有 ask_owner）", async () => {
+    const w = setup({ script: () => ({ content: "等继爸点头。" }), docs: docRig() });
+    await w.group.say(B, "Stan Yan", "@雨姐 make a PDF of 继爸's notes", true, [seatAgentId(A)]);
+    await w.settleAll();
+    expect(w.calls.find((c) => c.ws === "wa")!.tools).toEqual(["ask_owner"]);
+  });
+
+  it("群里发的文件跟着 @ 那一句进座位：管理员读得到转好的文字", async () => {
+    const w = setup({ script: () => ({ content: "Rent is due on the 1st." }), docs: docRig() });
+    const ref = { kind: "file" as const, sha256: "a".repeat(64), mediaType: "application/pdf" as const, bytes: 1234, width: 0, height: 0, name: "lease.pdf" };
+    await w.group.say(A, "继爸", "@雨姐 when is rent due?", true, [seatAgentId(A)], undefined, undefined, undefined, [ref]);
+    await w.settleAll();
+    expect(w.groupLog().find((e) => e.type === "chat_message" && e.fromUid === A)).toMatchObject({ files: [{ name: "lease.pdf" }] });
+    expect(w.calls[0]!.transcript).toContain("lease.pdf");
+    expect(w.calls[0]!.transcript).toContain("Clause 7: rent is due on the 1st.");
   });
 });

@@ -1,7 +1,7 @@
 // 群聊座位制（#1682，ADR-0376，spec docs/superpowers/specs/2026-10-05-group-seats-design.md）：
 // 群里每个人都带着自己的管理员。群只记人说的话与各家管理员的回话；管理员住在各自主场的「座位」会话里干活。
 // 这里是三端共用的纯逻辑：座位名单怎么折、群里的智能体 id 怎么写、@ 怎么认、哪几句要镜像进座位、几句固定的话。
-import type { SessionEvent } from "../session/events.js";
+import type { ChatFileRef, SessionEvent } from "../session/events.js";
 import { promptSafe } from "./promptSafe.js";
 
 /** 群里一个座位 = 一个人 + 他的管理员。名字是写进日志那一刻的快照；`policy` 缺席 = 别人使唤要每次问我 */
@@ -101,6 +101,8 @@ export interface MirrorLine {
   fromUid: string;
   label: string;
   content: string;
+  /** 群里发的文件（#1683）：连同转出来的文字一起镜像进座位，人 @ 自家管理员「看看这份」时它读得到 */
+  files?: ChatFileRef[];
 }
 
 /** 群里这一段里哪几句要镜像进 `seatUid` 的座位：人的话、系统话、**别家**管理员的回话。
@@ -110,7 +112,7 @@ export function mirrorLinesOf(events: readonly SessionEvent[], seatUid: string, 
   for (const e of events) {
     if (e.type === "chat_message") {
       if (e.mirror !== undefined) continue;
-      out.push({ seq: e.seq, fromUid: e.fromUid, label: e.label, content: e.content });
+      out.push({ seq: e.seq, fromUid: e.fromUid, label: e.label, content: e.content, ...(e.files !== undefined && e.files.length > 0 ? { files: e.files } : {}) });
     } else if (e.type === "assistant_message" && e.agentId !== undefined && e.content.trim() !== "" && e.ack === undefined) {
       const uid = seatUidOf(e.agentId);
       if (uid === null || uid === seatUid) continue;

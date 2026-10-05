@@ -79,6 +79,8 @@ import type { ModelAdapter } from "../../../src/model/adapter.js";
 import { EventStore } from "../../../src/session/store.js";
 import { AttachmentStore } from "../../../src/session/attachments.js";
 import { createChatMediaIntake } from "./chatMediaIntake.js";
+import { formatFromBytes, toMarkdownBytes } from "@firecrawl/anydoc";
+import { createSystemFonts } from "./systemFonts.js";
 import { decideRuntimeImageRoute, type MediaUpload } from "./toolImages.js";
 import { bridgeModelFor, describeImagesWith } from "./visionBridge.js";
 import { friendTiersOf } from "./chatHumans.js";
@@ -686,7 +688,18 @@ async function main(): Promise<void> {
       return new Uint8Array(await data.arrayBuffer());
     },
     storeFor: attachmentsFor,
+    // 人发来的文件（#1683）：原件存进这个团队的沙箱工作区（inbox/），转成文字给模型。sandbox 在下面才建——这里只在收文件时才读
+    saveFile: (workspaceId, path, data) => createDockerWorld({ container: () => sandbox.ensure(workspaceId) }).fs.writeBytes!(path, data),
+    toText: documentToText,
   });
+  /** PDF / Word / Excel / PPT → Markdown（#1683，同桌面附件那个转换器）。认不出格式按 unsupported 抛（read_document 据 code 说人话） */
+  async function documentToText(data: Uint8Array): Promise<string> {
+    const format = formatFromBytes(data);
+    if (format === null) throw Object.assign(new Error("认不出这种文件"), { code: "unsupported" });
+    return toMarkdownBytes(data, format);
+  }
+  /** create_document 印 PDF 的字体（系统字体目录，进程内缓存） */
+  const systemFonts = createSystemFonts();
   // 工具产出的图（generate_image，#1682）往 chat-media 里传：按内容寻址，upsert——同一张图重传无害
   const uploadMedia: MediaUpload = async (bucket, path, data, contentType) => {
     const { error } = await supabase.storage.from(bucket).upload(path, data, { contentType, upsert: true });
@@ -1380,6 +1393,8 @@ async function main(): Promise<void> {
         return { ready: async () => !("blocked" in (await route())), resolve: (agentId: string) => route(agentId) };
       })(),
       toolImages: { store: attachmentsFor(workspaceId), upload: uploadMedia, log: (m) => console.warn(`[otto-runtime] ${m}`) },
+      // 文件三把刀（#1683）：做 PDF / Word / Excel / PPT、读人发来的文件、把工作区里的文件发到聊天
+      documents: { fonts: systemFonts, toText: documentToText },
       // 专员上报（#1659）：送进主人和管理员的私聊。routineRooms 在下面才建——这里只在专员调刀时才读，那时早建好了
       escalateToAdmin: async (e) => {
         const f = await workspaceFacts(e.workspaceId);

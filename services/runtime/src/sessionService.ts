@@ -259,7 +259,10 @@ import type { SeatDecisionEvent, SeatRequestEvent } from "../../../src/session/e
 import { createAskOwnerTool } from "./askOwnerTool.js";
 import { createGenerateImageTool } from "../../../src/tools/generateImage.js";
 import { latestImageRef } from "../../../src/session/latestImage.js";
-import type { ToolImage } from "../../../src/tools/tool.js";
+import type { ToolFile, ToolImage } from "../../../src/tools/tool.js";
+import { createDocumentTools, type DocumentToolsPort } from "./documentTools.js";
+import { createRecentFiles, createToolFileIntakeMiddleware, publishToolFiles } from "./toolFiles.js";
+import type { ChatFileRef } from "../../../src/session/events.js";
 import { createToolImageIntakeMiddleware, publishToolImages, type RuntimeImageRoute, type ToolImagesPort } from "./toolImages.js";
 import { createWebSearchTool } from "../../../src/tools/webSearch.js";
 import { createWebExtractTool } from "../../../src/tools/webExtract.js";
@@ -414,7 +417,7 @@ export interface CloudSessionOpts {
   adapterFor: (agent: AgentSpec) => ModelAdapter;
   /** 这句话带的图 / 视频引用 → 事件里那两格（#1491，chatMediaIntake）。daemon 给；缺席 = 这台不收媒体
       （测试 / 冒烟），带了媒体的 say 会被拒绝而不是静默丢图 */
-  media?: (refs: readonly ChatMediaRef[]) => Promise<{ attachments: UserAttachmentRef[]; videos: ChatVideoRef[] }>;
+  media?: (refs: readonly ChatMediaRef[]) => Promise<{ attachments: UserAttachmentRef[]; videos: ChatVideoRef[]; files?: ChatFileRef[] }>;
   /** 无视觉模型的代读员（#1491 P4，ADR-0349）。daemon 给；缺席 = 不代读（没眼睛的型号看到的是占位文字）。
       `bridgeModel` = 网关此刻供的清单里最便宜那款带眼睛的（没有 → null）；`describe` 走托管 adapter 读图 */
   vision?: {
@@ -644,6 +647,10 @@ export interface CloudSessionOpts {
   /** 工具产出的图落附件库 + 传进 Storage 的 chat-media（toolImages.ts）。可选：缺席 = 不挂那层中间件，工具的图不进日志。
       群座位的桥也用它：座位里画的图在群那边的目录里再传一份 */
   toolImages?: ToolImagesPort | null;
+  /** 文件三把刀（#1683：create_document / read_document / send_file）：PDF 字体与文档转文字。可选：缺席 / null = 不挂。
+      交出去的文件借 toolImages 的 upload 传进 chat-media——两样都在、底下的世界读写得了二进制才挂
+      （不然模型说「发给你了」而人什么都没收到） */
+  documents?: DocumentToolsPort | null;
   /** 时钟（只给测试拧 TTL 用）。缺席 = Date.now */
   now?: () => number;
 }
@@ -862,7 +869,7 @@ export interface CloudSession {
   seatLinesFor?(seatUid: string, afterSeq: number | null): MirrorLine[];
   /** 座位 → 群：管理员的回话 / 点头卡 / 结局（镜像进群的日志） */
   /** `images` = 这句回话之前座位里那一轮画出来的图（字节，#1682 出图）：群这边落附件库、传进群的目录，挂在这条回话上 */
-  receiveSeatReply?(o: { seatUid: string; text: string; model: string; toUid: string | null; depth: number; worker?: { agentId: string; name: string }; images?: readonly ToolImage[] }): void | Promise<void>;
+  receiveSeatReply?(o: { seatUid: string; text: string; model: string; toUid: string | null; depth: number; worker?: { agentId: string; name: string }; images?: readonly ToolImage[]; files?: readonly ToolFile[] }): void | Promise<void>;
   receiveSeatRequest?(e: SeatRequestEvent): void;
   /** 座位 → 群：管理员流式的半句话，原样转成这间房的 delta 帧（署名 seat:<uid>） */
   receiveSeatDelta?(seatUid: string, text: string): void;
@@ -1152,6 +1159,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   let imageReady = false;
   /** 座位里这一轮画出来、还没跟着管理员的回话送回群的图（#1682）。进程内：重启丢了只是群里少一张，座位里那张还在 */
   let seatPendingImages: UserAttachmentRef[] = [];
+  /** 同上，文件（#1683）：座位里做出来的文件跟着管理员的回话进群 */
+  let seatPendingFiles: ChatFileRef[] = [];
+  /** 最近交出去的文件字节（toolFiles.ts）：座位把文件送进群时要在群的目录里再传一份 */
+  const recentFiles = createRecentFiles();
   /** 这一轮是不是主场群里的客人点起的（#1393，ADR-0325）。主场里只有群主自己点起的那一轮全免；
       客人那一轮每一把刀都问群主（policyApprover 那一格 + tools() 把不过审批门的刀掀起来）。
       团队会话恒为假（approveAll 为假），一个字不变 */
@@ -1378,6 +1389,25 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         await gateContainer();
         return opts.world.fs.write(path, content);
       },
+      // 二进制读写（#1683，文件工具）：同一道私人文件夹闸、同一道容器闸。底下的世界没有这两把就不给（工具据此不挂）
+      ...(opts.world.fs.readBytes !== undefined && opts.world.fs.writeBytes !== undefined
+        ? (() => {
+            const readBytes = opts.world.fs.readBytes.bind(opts.world.fs);
+            const writeBytes = opts.world.fs.writeBytes.bind(opts.world.fs);
+            return {
+              readBytes: async (path: string) => {
+                if (forSomeoneElse() && PRIVATE_DIR_RE.test(path)) throw new Error(PRIVATE_BLOCKED_TEXT);
+                await gateContainer();
+                return readBytes(path);
+              },
+              writeBytes: async (path: string, data: Uint8Array) => {
+                if (forSomeoneElse() && PRIVATE_DIR_RE.test(path)) throw new Error(PRIVATE_BLOCKED_TEXT);
+                await gateContainer();
+                return writeBytes(path, data);
+              },
+            };
+          })()
+        : {}),
     },
     exec: async (cmd, o) => {
       const guarded = forSomeoneElse();
@@ -1576,10 +1606,13 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     if (isSeat && e.type === "tool_result" && e.status === "ok" && e.images !== undefined && e.images.length > 0) {
       seatPendingImages = [...seatPendingImages, ...e.images];
     }
+    if (isSeat && e.type === "tool_result" && e.status === "ok" && e.files !== undefined && e.files.length > 0) {
+      seatPendingFiles = [...seatPendingFiles, ...e.files];
+    }
     // 座位里管理员说的每一句送回群（#1682）：非空、不是系统替它应的那句。专员（L1）的话也送，带 worker——群里折叠成一行
     if (isSeat && e.type === "assistant_message" && e.agentId !== undefined && e.ack === undefined && e.content.trim() !== "") {
       const admin = e.agentId === ADMIN_AGENT_ID;
-      bridgeSeatReply(e.content.trim(), e.model, admin ? undefined : { agentId: e.agentId, name: specNames.get(e.agentId) ?? e.agentId }, admin ? takeSeatImages() : []);
+      bridgeSeatReply(e.content.trim(), e.model, admin ? undefined : { agentId: e.agentId, name: specNames.get(e.agentId) ?? e.agentId }, admin ? takeSeatImages() : [], admin ? takeSeatFiles() : []);
     }
     // 谁在等它的职责（#1356 A2）：同 voiceCall 的推理——daemon.ts 绕过 notify 直接 append 的那几类
     // 里没有 user_message，漏不掉
@@ -1680,6 +1713,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   function landSeatReply(o: {
     seatUid: string; text: string; model: string; toUid: string | null; depth: number;
     worker: { agentId: string; name: string } | undefined; attachments: readonly UserAttachmentRef[];
+    files?: readonly ChatFileRef[];
   }): void {
     const { seatUid, text, model, toUid, depth, worker } = o;
     const seats = groupSeats ?? [];
@@ -1688,6 +1722,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     const said = store.append({
       sessionId, ts: Date.now(), type: "assistant_message", agentId: seatAgentId(seatUid), content: text, model,
       ...(worker !== undefined ? { worker } : {}), ...(o.attachments.length > 0 ? { attachments: [...o.attachments] } : {}),
+      ...(o.files !== undefined && o.files.length > 0 ? { files: [...o.files] } : {}),
     }) as AssistantMessageEvent;
     notify(said);
     // 专员的话只是折叠在群里给人看过程：不推送、不当成去使唤别家（它只听自家管理员）
@@ -1695,7 +1730,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 推给叫醒它的那个人
     if (toUid !== null && toUid !== seatUid && seats.some((s) => s.uid === toUid)) {
       const target = alertTargetFor(toUid, seatAgentId(seatUid));
-      if (target !== null) opts.alert?.(toUid, "agent_reply", { title: title || "群聊", subtitle: seatLabel(seat), body: alertBody(text), target });
+      // 只交了图 / 文件、一句话没说（#1683：轮末把攒着的送出去）：推送正文写占位，不推一条空的
+      const shown = text !== "" ? text : o.files !== undefined && o.files.length > 0 ? `[文件] ${o.files.map((f) => f.name).join("、")}` : "[图片]";
+      if (target !== null) opts.alert?.(toUid, "agent_reply", { title: title || "群聊", subtitle: seatLabel(seat), body: alertBody(shown), target });
     }
     // 回话里 @ 了别家管理员 = 以本家主人的身份去使唤它（规矩同人 @ 它）。刹车：深度与每小时次数（同车道桥）
     const others = seatMentionsIn(text, seats).filter((u) => u !== seatUid);
@@ -1729,12 +1766,18 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     }
     return out;
   }
-  /** 座位里管理员说的一句送回群。深度 = 叫醒这一轮的那句的深度（群那边 @ 别家时 +1）。`images` = 跟着这句一起回群的图 */
-  function bridgeSeatReply(text: string, model: string, worker: { agentId: string; name: string } | undefined, images: readonly ToolImage[]): void {
+  /** 攒着的文件取出来（字节，从最近交出去的那几份里取）。取不到的跳过——群里少一份，座位里那份还在 */
+  function takeSeatFiles(): ToolFile[] {
+    const refs = seatPendingFiles;
+    seatPendingFiles = [];
+    return refs.map((r) => recentFiles.get(r.id)).filter((f): f is ToolFile => f !== null);
+  }
+  /** 座位里管理员说的一句送回群。深度 = 叫醒这一轮的那句的深度（群那边 @ 别家时 +1）。`images` / `files` = 跟着这句一起回群的图与文件 */
+  function bridgeSeatReply(text: string, model: string, worker: { agentId: string; name: string } | undefined, images: readonly ToolImage[], files: readonly ToolFile[] = []): void {
     const hub = opts.seatHub ?? null;
     if (hub === null || seatGroup === null || archived) return;
     const toUid = (currentJob !== null ? grantRequesters.get(currentJob.openingSeq) : undefined) ?? currentInitiator;
-    void hub.reply({ group: seatGroup, seatUid: opts.ownerUid, text, model, toUid, depth: currentOpeningDepth, ...(worker !== undefined ? { worker } : {}), ...(images.length > 0 ? { images } : {}) })
+    void hub.reply({ group: seatGroup, seatUid: opts.ownerUid, text, model, toUid, depth: currentOpeningDepth, ...(worker !== undefined ? { worker } : {}), ...(images.length > 0 ? { images } : {}), ...(files.length > 0 ? { files } : {}) })
       .catch((err: unknown) => console.warn(`[otto-runtime] 座位的回话送不回群（session=${sessionId}）：${err instanceof Error ? err.message : String(err)}`));
   }
   /** 不花模型的那几句（没同意 / 没回）：以管理员的身份落一条 assistant_message——群里看到的是它说的，它自己下一轮也记得 */
@@ -1743,12 +1786,13 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     notify(store.append({ sessionId, ts: Date.now(), type: "assistant_message", agentId: ADMIN_AGENT_ID, content: text, model: callerModelOf(store.load(sessionId), ADMIN_AGENT_ID) }));
   }
   /** 授权开场白：主人点了头 / 设了全部放行。主人的规矩，但带 greeting = 不算主人亲口 */
-  function seatGrant(o: { fromUid: string; fromName: string; ask: string; via: "card" | "policy"; groupSeq?: number; tz?: string; note?: string }): void {
+  function seatGrant(o: { fromUid: string; fromName: string; ask: string; via: "card" | "policy"; groupSeq?: number; tz?: string; note?: string; files?: ChatFileRef[] }): void {
     if (archived) return;
     const opening = store.append({
       sessionId, ts: Date.now(), type: "user_message", fromUid: opts.ownerUid, mentions: [ADMIN_AGENT_ID], greeting: "seat_grant",
       ...(o.groupSeq !== undefined ? { mirror: { seq: o.groupSeq } } : {}),
       ...(o.tz !== undefined ? { tz: o.tz } : {}),
+      ...(o.files !== undefined ? { files: o.files } : {}),
       content: seatGrantText({ ownerName: seatOwnerName(), fromName: o.fromName, ask: o.ask, via: o.via, ...(o.note !== undefined ? { note: o.note } : {}) }),
     }) as UserMessageEvent;
     grantRequesters.set(opening.seq, o.fromUid);
@@ -2371,6 +2415,13 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
               }
             },
           });
+    // 文件三把刀（#1683）：字体 / 转文字有了、上传有了（借出图那一套）、底下的世界读写得了二进制才挂。
+    // 不过审批门（只在自己工作区的 outputs/ 写、发到的就是这条对话）；主场群里客人点起的那一轮照末尾的包装掀成要群主批
+    const documents = opts.documents ?? null;
+    const docTools: Tool[] =
+      documents !== null && toolImages !== null && opts.world.fs.readBytes !== undefined && opts.world.fs.writeBytes !== undefined
+        ? createDocumentTools(documents)
+        : [];
     const engine = new LoopEngine({
       // 座位里的专员（L1，拍板 F）：只看管理员交代的话，不看镜像进来的群聊、也不看群里送来的开场白
       store: isSeat && spec.agentId !== ADMIN_AGENT_ID ? seatWorkerView(agentView(store, spec.agentId)) : agentView(store, spec.agentId),
@@ -2410,6 +2461,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         const list: Tool[] = [
           ...scopedHands, wikiReadTool, wikiTool, inviteToCallTool, ...webTools,
           ...(imageTool !== null ? [imageTool] : []),
+          ...docTools,
           ...(sessionSearchTool !== null ? [sessionSearchTool] : []),
           ...(callUserTool !== null ? [callUserTool] : []),
           // 受监督的轮里干脆不亮这把刀：亮出来只会弹一张批了也必被 mayCall 拒的卡
@@ -2504,7 +2556,11 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           }
         : {}),
       // 工具产出的图（generate_image）落附件库 + 传进 chat-media，engine 把 ref 落进 tool_result.images（手机按它画图）
-      middlewares: toolImages === null ? [] : [createToolImageIntakeMiddleware(toolImages, { workspaceId: opts.workspaceId, sessionId })],
+      // 交给人的文件（#1683）同一个口子：传进 chat-media，engine 把 ref 落进 tool_result.files
+      middlewares: toolImages === null ? [] : [
+        createToolImageIntakeMiddleware(toolImages, { workspaceId: opts.workspaceId, sessionId }),
+        createToolFileIntakeMiddleware({ upload: toolImages.upload, ...(toolImages.log !== undefined ? { log: toolImages.log } : {}) }, { workspaceId: opts.workspaceId, sessionId }, recentFiles),
+      ],
       // 自动压缩（#957 A-1，ADR-0062）。桌面在 src/main/agent.ts 里一直有这一格，
       // runtime 从头到尾没有——于是云会话的上下文**单调增长**，直到每一轮都因超窗
       // 400，而每一轮都按全尺寸计在 owner 头上，且没有任何自愈路径（用户唯一能做的
@@ -2881,7 +2937,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       问题。为什么不在那条出口直接 `store.append`：`safeSpeakerLabel` 那道闸只能
       有一处（#957 复审 Important 2），绕开它就是给「伪造说话人」开第二个入口 */
   /** say 帧里的媒体引用 → 事件里那两格（#1491）。这台没接媒体 = 明说收不了，不静默丢图 */
-  async function intakeMedia(refs: readonly ChatMediaRef[]): Promise<{ attachments: UserAttachmentRef[]; videos: ChatVideoRef[] }> {
+  async function intakeMedia(refs: readonly ChatMediaRef[]): Promise<{ attachments: UserAttachmentRef[]; videos: ChatVideoRef[]; files?: ChatFileRef[] }> {
     if (opts.media === undefined) throw new SayRejectedError("这台服务器还收不了图片和视频");
     try {
       return await opts.media(refs);
@@ -2893,7 +2949,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
 
   function logChat(
     fromUid: string, label: string, text: string, mention: boolean, voice?: true,
-    media: { attachments?: UserAttachmentRef[]; videos?: ChatVideoRef[] } = {}
+    media: { attachments?: UserAttachmentRef[]; videos?: ChatVideoRef[]; files?: ChatFileRef[] } = {}
   ): SessionEvent {
     const logged = store.append({
       sessionId,
@@ -3607,6 +3663,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       }
       throw err; // 照旧向上抛：落盘是补记事实不是吞错（drain 的 catch 打日志）
     } finally {
+      // 座位里这一轮最后交出的图 / 文件之后管理员没再开口（#1682 遗留，#1683）：别等它下一句，轮末送回群
+      if (isSeat && job.agentId === ADMIN_AGENT_ID && (seatPendingImages.length > 0 || seatPendingFiles.length > 0)) {
+        bridgeSeatReply("", callerModelOf(store.load(sessionId), ADMIN_AGENT_ID), undefined, takeSeatImages(), takeSeatFiles());
+      }
       currentInitiator = null;
       reportTurn = false;
       routineTurn = false;
@@ -3809,7 +3869,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     const veto = budget?.(targets.length) ?? null;
     if (veto !== null) throw new SayRejectedError(veto);
     const got = media !== undefined && media.length > 0 ? await intakeMedia(media) : null;
-    const mediaFields = got === null ? {} : { attachments: got.attachments, ...(got.videos.length > 0 ? { videos: got.videos } : {}) };
+    const mediaFields = got === null ? {} : { attachments: got.attachments, ...(got.videos.length > 0 ? { videos: got.videos } : {}), ...(got.files !== undefined && got.files.length > 0 ? { files: got.files } : {}) };
     if (got !== null && text.trim() === "") text = mediaPlaceholder(media ?? []);
     const logged = store.append({
       sessionId, ts: Date.now(), type: "chat_message", fromUid, label: safeSpeakerLabel(label, fromUid), content: text, mention: targets.length > 0,
@@ -4134,7 +4194,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 发言人拿到的是一句说得清的拒绝。纯发图（正文为空）的正文写占位 `[图片]` / `[视频]`：
       // 老客户端与模型都读得出这里有东西
       const got = media !== undefined && media.length > 0 ? await intakeMedia(media) : null;
-      const mediaFields = got === null ? {} : { attachments: got.attachments, ...(got.videos.length > 0 ? { videos: got.videos } : {}) };
+      const mediaFields = got === null ? {} : { attachments: got.attachments, ...(got.videos.length > 0 ? { videos: got.videos } : {}), ...(got.files !== undefined && got.files.length > 0 ? { files: got.files } : {}) };
       if (got !== null && text.trim() === "") text = mediaPlaceholder(media ?? []);
 
       if (targets.length === 0) {
@@ -4365,16 +4425,23 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 新座位：带最后 SEAT_MIRROR_BACKFILL 句当背景（只算镜像得出来的那几种，不按事件条数截）
       return mirrorLinesOf(store.load(sessionId), seatUid, seats).slice(-SEAT_MIRROR_BACKFILL);
     },
-    receiveSeatReply({ seatUid, text, model, toUid, depth, worker, images }) {
+    receiveSeatReply({ seatUid, text, model, toUid, depth, worker, images, files }) {
       if (archived || !(groupSeats ?? []).some((s) => s.uid === seatUid)) return; // 退群了：它最后那句不再进群
-      // 座位里画的图（#1682 出图）：座位的目录群里的人读不到（RLS 按团队/会话目录放行），在群的目录里再传一份，
-      // 传好了再落这句——先落的话手机先画出一张加载不出的图。传不上去的那张跳过，话照样进群
+      // 座位里画的图（#1682 出图）、做的文件（#1683）：座位的目录群里的人读不到（RLS 按团队/会话目录放行），在群的目录里再传一份，
+      // 传好了再落这句——先落的话手机先画出一张加载不出的图。传不上去的那份跳过，话照样进群
       const port = opts.toolImages ?? null;
-      if (images !== undefined && images.length > 0 && port !== null) {
-        return publishToolImages(port, opts.workspaceId, sessionId, images, "generate_image")
-          .catch(() => [] as UserAttachmentRef[])
-          .then((attachments) => landSeatReply({ seatUid, text, model, toUid, depth, worker, attachments }));
+      const hasImages = images !== undefined && images.length > 0;
+      const hasFiles = files !== undefined && files.length > 0;
+      if ((hasImages || hasFiles) && port !== null) {
+        return Promise.all([
+          hasImages ? publishToolImages(port, opts.workspaceId, sessionId, images, "generate_image").catch(() => [] as UserAttachmentRef[]) : Promise.resolve([] as UserAttachmentRef[]),
+          hasFiles ? publishToolFiles({ upload: port.upload }, opts.workspaceId, sessionId, files).catch(() => [] as ChatFileRef[]) : Promise.resolve([] as ChatFileRef[]),
+        ]).then(([attachments, fileRefs]) => {
+          if (text === "" && attachments.length === 0 && fileRefs.length === 0) return; // 只有图 / 文件却一份都没传上去：不落一条空话
+          landSeatReply({ seatUid, text, model, toUid, depth, worker, attachments, files: fileRefs });
+        });
       }
+      if (text === "") return;
       landSeatReply({ seatUid, text, model, toUid, depth, worker, attachments: [] });
     },
     receiveSeatDelta(seatUid, text) {
@@ -4446,14 +4513,16 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // ① 补上下文：群里上次之后的每一句（不收紧监督——见 tightenSupervision）。叫醒它的那一句不镜像（它就是下面的开场白），
       //    排在它之后的（群里已经又说了几句）镜像在开场白之后，顺序与群里一致
       const mirrorLine = (l: MirrorLine): void => {
-        notify(store.append({ sessionId, ts: Date.now(), type: "chat_message", fromUid: l.fromUid, label: safeSpeakerLabel(l.label, l.fromUid), content: l.content, mention: false, mirror: { seq: l.seq } }));
+        notify(store.append({ sessionId, ts: Date.now(), type: "chat_message", fromUid: l.fromUid, label: safeSpeakerLabel(l.label, l.fromUid), content: l.content, mention: false, mirror: { seq: l.seq }, ...(l.files !== undefined ? { files: l.files } : {}) }));
       };
       for (const l of lines) if (l.seq < opening.groupSeq) mirrorLine(l);
       const after = lines.filter((l) => l.seq > opening.groupSeq);
       const label = safeSpeakerLabel(opening.fromName, opening.fromUid);
+      // 叫醒它的那一句带的文件（#1683：「@我的管理员 看看这份合同」）跟着开场白进来——那一句本身不镜像
+      const openingFiles = lines.find((l) => l.seq === opening.groupSeq)?.files;
       // ② 别人使唤、这个座位设了全部放行：直接授权，不弹卡
       if (opening.fromUid !== opts.ownerUid && opening.policy === "open") {
-        seatGrant({ fromUid: opening.fromUid, fromName: label, ask: opening.text, via: "policy", groupSeq: opening.groupSeq, ...(opening.tz !== undefined ? { tz: opening.tz } : {}) });
+        seatGrant({ fromUid: opening.fromUid, fromName: label, ask: opening.text, via: "policy", groupSeq: opening.groupSeq, ...(opening.tz !== undefined ? { tz: opening.tz } : {}), ...(openingFiles !== undefined ? { files: openingFiles } : {}) });
         for (const l of after) mirrorLine(l);
         return null;
       }
@@ -4462,6 +4531,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         sessionId, ts: Date.now(), type: "user_message", content: `[${label}]: ${opening.text}`, fromUid: opening.fromUid, mentions: [ADMIN_AGENT_ID],
         mirror: { seq: opening.groupSeq },
         ...(opening.tz !== undefined ? { tz: opening.tz } : {}),
+        ...(openingFiles !== undefined ? { files: openingFiles } : {}),
         ...(opening.depth > 0 ? { relay: { fromAgentId: seatAgentId(opening.fromUid), depth: opening.depth } } : {}),
       }) as UserMessageEvent;
       notify(msg);

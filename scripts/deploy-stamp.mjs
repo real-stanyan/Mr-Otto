@@ -75,8 +75,10 @@ export const STAMP_TARGETS = {
   runtime: {
     entry: "services/runtime/src/daemon.ts",
     platform: "node",
-    // 与 runtime-deploy.mjs 的 external 同一份理由：原生绑定打不进 bundle
-    external: ["better-sqlite3", "dockerode"],
+    // 打不进 bundle 的那几个（runtime-deploy.mjs 直接读这一份当 external、也当远端要装的清单）：
+    // better-sqlite3 / dockerode / anydoc 是原生绑定；pdfkit 运行时从自己的目录读字体度量文件（data/*.afm），
+    // 打进单文件就找不到了（#1683）
+    external: ["better-sqlite3", "dockerode", "@firecrawl/anydoc", "pdfkit"],
   },
 };
 

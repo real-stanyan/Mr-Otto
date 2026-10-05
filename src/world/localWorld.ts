@@ -194,6 +194,13 @@ export function createLocalWorld(
       // 同步 throw 会炸在调用点而不是 await 点——工具层的 try/catch 就接不住了）
       read: async (path) => readFile(fence(root, path), "utf8"),
       write: async (path, content) => writeFile(fence(root, path), content, "utf8"),
+      // 二进制（#1683）：文件工具读写 PDF / Excel / PPT。写之前补目录（同 docker 那边的 mkdir -p）
+      readBytes: async (path) => new Uint8Array(await readFile(fence(root, path))),
+      writeBytes: async (path, data) => {
+        const abs = fence(root, path);
+        await mkdir(dirname(abs), { recursive: true });
+        await writeFile(abs, data);
+      },
     },
 
     exec(cmd, opts): Promise<ExecResult> {

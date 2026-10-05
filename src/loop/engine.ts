@@ -459,6 +459,8 @@ export class LoopEngine {
               ...(raw.concludesTurn ? { concludesTurn: true } : {}),
               // 原始字节到此为止：能不能落盘由 imageIntake 中间件说了算
               ...(raw.images && raw.images.length > 0 ? { images: raw.images } : {}),
+              // 文件同理（#1683）：能不能落盘由 toolFiles 中间件说了算
+              ...(raw.files && raw.files.length > 0 ? { files: raw.files } : {}),
               // 工具里套着的那次模型调用的账（#1084）：透传给落盘处摊平
               ...(raw.billing ? { billing: raw.billing } : {}),
             };
@@ -1014,6 +1016,9 @@ export class LoopEngine {
             // imageRefs = 这个键整个不出现,旧日志形状不变
             ...(outcome.imageRefs && outcome.imageRefs.length > 0
               ? { images: [...outcome.imageRefs] }
+              : {}),
+            ...(outcome.fileRefs && outcome.fileRefs.length > 0
+              ? { files: [...outcome.fileRefs] }
               : {}),
             // 工具里套着的那次模型调用的账（#1084）：摊平成与 assistant_message
             // 同名的四格，deriveUsage 的 billed() 按「有没有这一格」记账，

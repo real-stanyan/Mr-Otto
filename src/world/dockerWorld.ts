@@ -232,6 +232,30 @@ export function createDockerWorld(opts: {
           throw new Error(result.stderr || `写入失败（exitCode ${result.exitCode}）: ${path}`);
         }
       },
+      // 二进制（#1683）：docker exec 的 stdout 被解成字符串、stdin 收的也是字符串，字节直接过会被 UTF-8 搅坏——
+      // 两头都过一道 base64（20MB 的文件 ≈ 27MB 的字符串，够用）
+      async readBytes(path) {
+        const abs = fenceInContainer(path);
+        const container = await opts.container();
+        const result = await runExec(container, ["/bin/bash", "-lc", `base64 -w0 -- ${shellQuote(abs)}`]);
+        if (result.exitCode !== 0) {
+          throw new Error(result.stderr || `读取失败（exitCode ${result.exitCode}）: ${path}`);
+        }
+        return new Uint8Array(Buffer.from(result.stdout.trim(), "base64"));
+      },
+      async writeBytes(path, data) {
+        const abs = fenceInContainer(path);
+        const dir = posixDirname(abs);
+        const container = await opts.container();
+        const cmd = `mkdir -p -- ${shellQuote(dir)} && base64 -d > ${shellQuote(abs)}`;
+        const result = await runExec(container, ["/bin/bash", "-lc", cmd], {
+          attachStdin: true,
+          stdin: Buffer.from(data).toString("base64"),
+        });
+        if (result.exitCode !== 0) {
+          throw new Error(result.stderr || `写入失败（exitCode ${result.exitCode}）: ${path}`);
+        }
+      },
     },
 
     async exec(cmd, execOpts): Promise<ExecResult> {

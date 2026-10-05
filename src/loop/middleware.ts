@@ -2,8 +2,8 @@
 // 洋葱模型：middlewares[0] 包 middlewares[1] 包 … 包 executor。
 // 中间件不调 next() = 短路，后面全不跑（审批拒绝就是这么实现的）。
 
-import type { Tool, ToolBilling, ToolImage } from "../tools/tool.js";
-import type { ToolCallRequest, UserAttachmentRef } from "../session/events.js";
+import type { Tool, ToolBilling, ToolFile, ToolImage } from "../tools/tool.js";
+import type { ChatFileRef, ToolCallRequest, UserAttachmentRef } from "../session/events.js";
 import type { ExecutionWorld } from "../world/executionWorld.js";
 
 /** 一次工具调用的完整上下文 —— 管线每一环都看得到 */
@@ -36,6 +36,10 @@ export interface ToolOutcome {
       读的人没法从类型上分辨手里这份到底落没落盘，而"以为落了盘其实没落"
       正是日志说谎的那种错 */
   imageRefs?: readonly UserAttachmentRef[];
+  /** 工具交给人的文件（#1683）：字节与 ref 两格，理由同 images / imageRefs。ref 由 toolFiles 中间件填，
+      engine 落进 tool_result.files */
+  files?: readonly ToolFile[];
+  fileRefs?: readonly ChatFileRef[];
   /** 这次调用里套着的那次模型调用的账（#1084，见 ToolBilling）。engine 把它
       原样摊平到 tool_result 事件上（model/usage/route/creditCostMicro）——
       摊平而不是嵌套，是为了 deriveUsage 的 billed() 不用为工具单写一条分支：

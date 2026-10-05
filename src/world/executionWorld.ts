@@ -294,6 +294,11 @@ export interface ExecutionWorld {
   fs: {
     read(path: string): Promise<string>;
     write(path: string, content: string): Promise<void>;
+    /** 可选：按字节读写（#1683）——PDF / Excel / PPT 这类二进制文件。read/write 走 UTF-8 字符串，
+        二进制过一道就坏了。可选的理由同 execDetached（仓里几十处假 world 只实现了 read/write）；
+        缺席 = 这个世界读写不了二进制，create_document / read_document / send_file 不挂 */
+    readBytes?(path: string): Promise<Uint8Array>;
+    writeBytes?(path: string, data: Uint8Array): Promise<void>;
   };
   exec(cmd: string, opts?: ExecOptions): Promise<ExecResult>;
   /** 可选：后台执行（issue #389）——不绑 turn 信号、超时放宽（LocalWorld 30 分钟）。
