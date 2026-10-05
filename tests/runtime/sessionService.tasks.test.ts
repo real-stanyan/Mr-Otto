@@ -173,7 +173,7 @@ describe("主场里任务那三把刀", () => {
     });
     await session.say("owner", "Stan", "帮我订票", false, undefined);
     await session.settled();
-    for (const e of events) if (e.type === "tool_result") results.push(String(e.content));
+    for (const e of events) if (e.type === "tool_result") results.push(e.output);
     expect(events.find((e) => e.type === "task_assigned")).toMatchObject({ byAgentId: "admin", toAgentId: "a_travel" });
     expect(results.some((r) => r.includes("不在这条对话里"))).toBe(false);
     store.close();
