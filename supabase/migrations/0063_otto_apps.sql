@@ -5,7 +5,7 @@
 --   apps          一个应用一行（slug 是它的稳定键；current_version 指向最新版）。runtime 写，本人读。
 --   app_versions  每一版一行：清单 + 文件表（路径 / 大小 / sha256）。文件本体在桶 otto-apps 的 <uid>/<app_id>/<version>/<path>。
 --   app_data      应用的数据格子：(app_id, uid, key) → value。本人读写（手机上的桥直接走 REST），runtime 的 service role 也能（智能体读写）。
--- 真相在日志里（app_card 事件 + 专员那一轮）；这三张表是索引与投影——重建 = 重新 build。**还没有在生产执行**。
+-- 真相在日志里（app_card 事件 + 专员那一轮）；这三张表是索引与投影——重建 = 重新 build。**已在生产执行（2026-10-05，#1591）**。
 
 create table if not exists public.apps (
   id                uuid primary key default gen_random_uuid(),
