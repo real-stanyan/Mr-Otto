@@ -52,3 +52,18 @@ describe("抽屉里的键盘让位（真机 2026-10-05）", () => {
     expect(src).toMatch(/<View style=\{\{ flex: 1, paddingBottom: kb \}\}>/);
   });
 });
+
+describe("抽屉里主人直接面对结果（#1601，真机 2026-10-05）", () => {
+  const src = readFileSync(new URL("../../mobile/src/friends/TaskDrawer.tsx", import.meta.url), "utf8");
+  it("按 laneTaskDigest 画：原样的行走 LaneBubble；「过程」格默认折起、露最后一条的预览、点开才铺", () => {
+    expect(src).toMatch(/laneTaskDigest\(task\)\.map\(\(row\) => \{/);
+    expect(src).toMatch(/if \(row\.kind === "item"\) return bubble\(row\.item\);/);
+    expect(src).toMatch(/const open = opened\.has\(row\.key\);/);
+    expect(src).toMatch(/\{`过程 · \$\{row\.items\.length\} 条`\}/);
+    expect(src).toMatch(/\{open \? null : \(\s*<Text numberOfLines=\{1\}/);
+    expect(src).toMatch(/laneItemPreview\(last, nameOf\)/);
+  });
+  it("铺开时下发那条不画 [系统] 气泡，只一行「↳ 谁 下发给 谁」", () => {
+    expect(src).toMatch(/item\.handoff !== undefined \? \(\s*<Text key=\{item\.key\}[^]*?\{`↳ \$\{item\.agentId !== undefined \? nameOf\(item\.agentId\) : "智能体"\} 下发给 /);
+  });
+});
