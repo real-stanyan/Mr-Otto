@@ -44,6 +44,8 @@
 - 每对每小时上限 `OUTREACH_CHAT_PER_HOUR_MAX = 30`（runtime 内存窗口，同 ADR-0358 的桥；花的是主人额度）。超了拒，
   回「这会儿说得太多了，过一会儿再来」。
 - 通话中的 `say`（语音转写）路径不变；通话中的那一句仍受原闸（进行中那通的好友）。
+- 重启补跑：今天外联里「此刻没在通话」= 补跑的开场白全部落收口不跑（ADR-0337 终审 M1）。改成只丢**落在一通电话之内**的那些
+  （`outreachLiveAt(seed, seq)`）；打字聊的照常补跑。
 - 那一轮是客人点起的：沿用 ADR-0325 第 7 条（每一刀要主人批）——但外联里只有 `relay_to_owner` 一把刀，且它豁免（见 2.2）。
 
 ### 2.2 带话给主人：`relay_to_owner(text)`
@@ -56,7 +58,7 @@
   （`fromUid` = 主人、点管理员，正文 = `friendRelayText`：谁、原话摘要、怎么回）并起一轮，让管理员对主人说一句
   「X 让我带话：…」。**这一轮受监督**（正文是外人的话；进 `openingTraits.report`）。回复走现成 `pushReply`
   （管理员私聊是 dm → 推给主人）。`friend_relay` **不进** `SILENT_GREETINGS`。
-- 外联会话里同步落一条 ignorable 记号 `outreach_relay`（`direction: "to_owner"`），两边气泡画灰色小注「已帮你带话给 X」。
+- 外联会话里**不另落记号**：管理员调完刀会对朋友说「已经转告 X」，那句就是朋友看得到的回执；工具调用与回执本就在日志里。
 - 找不到主场 / 管理员私聊 / 额度不够：工具回失败文本给模型（「没带到：…」），模型据实告诉朋友。
 
 ### 2.3 主人回话：`reply_to_friend(friend, text)`
@@ -66,7 +68,7 @@
   你的智能体聊过，用 message_friend 发私聊」。
 - 落地：经 `outreachHub.replyToFriend(...)` → `ensureSession`（复用那条外联会话）→ 开房 → 新方法
   `ownerReply({ text, ownerUid })`：落 `greeting: "owner_reply"` 开场白（`fromUid` = 主人、点管理员）并起一轮，管理员把
-  主人的话转给朋友。外联里同步落 `outreach_relay`（`direction: "to_friend"`）记号。
+  主人的话转给朋友。`owner_reply` 开场白在手机外联页不画（greeting 一族照旧藏），朋友看到的是管理员转述的那句。
 - 这一轮不受监督（是主人亲口的话），但外联里工具面本就只有 `relay_to_owner`。
 - 外联 `say` 闸放行这条开场白：它不走 `say`，走 `ownerReply` 直接 append（同 `reportOutreach`），不受客户端帧的闸。
 
@@ -82,24 +84,25 @@
 - **档位口径**：外联只在「全部开放」存在，brief 里加 `collabAuthPrompt("full", 朋友名)` + 新段 `outreachChatPrompt`：
   「你在替主人接待 X。事实直接答；要主人拍板的事（花钱、承诺时间、替主人答应什么）用 relay_to_owner 带话，别替主人答应。
   主人的回话会以开场白的形式回到这里，转述给 X」。提示词只在工具真挂着时提它（#1206）。
-- **记忆**：`loadWikiIfChanged` 去掉外联那一行——与公开车道一致。副作用：通话里那只也带着记忆。依据：外联存在 = 主人给了这位
-  朋友「全部开放」。
+- **记忆**：`loadWikiIfChanged` 去掉外联那一行——与公开车道一致；外联里 `nudge` 恒为假。副作用：通话里那只也带着记忆。依据：外联存在 = 主人给了这位
+  朋友「全部开放」。**引言要换只读版**：`WIKI_PROMPT_INTRO` 点名 `wiki_read` / `wiki` 两把刀，外联里都没挂（#1206）——`renderWikiPrompt`
+  多一个 `readOnly` 选项，deriveMessages 在外联里传真：引言换成「下面是主人的团队 wiki（只读）」、不写「用 wiki write 建」那句。
 - **工具面**：外联里只挂 `relay_to_owner`。
 
 ## 4. 事件 / 协议
 
 - `user_message.greeting` 多两个取值：`friend_relay`、`owner_reply`（字符串字段，旧日志不含即可照放）。
-- 新 ignorable 事件 `outreach_relay { direction: "to_owner" | "to_friend"; peerUid; text }`——按 ADR 惯例登记进事件登记表
-  （同 ADR-0368 加 `task_collab` 时那几张）。否决给现有 `outreach` 事件（`src/session/events.ts`）加 `phase` 值：
-  `outreachFold` / `activeOutreach` 按 started/ended 折通话状态，混进第三种 phase 要改每个消费者的判断，新类型反而局部。
+- **不加新事件类型**：带话的痕迹就是工具调用 + tool_result + 开场白，全在现成事件里。否决新建 `outreach_relay` 事件：要登记进
+  七张穷举表（KNOWN_EVENT_TYPES / PRIVACY_VERDICTS / PEN_VERDICTS / cloudTimeline / persistencePolicy / deriveMessages / contextEstimate），
+  只为画一条灰注，不值；也否决给 `outreach` 事件加 phase 值（`outreachFold` 按 started/ended 折通话状态）。
 - 不动协议版本（`say` 帧已存在；老客户端只是没有输入框）、不动 schema。
 
 ## 5. 手机端
 
 - `outreachComposer`：好友侧返回输入框（`{ kind: "input" }` 或现有输入栏的那一种），主人侧照旧说明条。被 runtime 拒时
   显示拒绝文案（档位被调低 / 超上限）。
-- 气泡：`friend_relay` / `owner_reply` 开场白在投影里按现有 greeting 惯例处理（外联页里朋友看不到 `friend_relay`——它在
-  主人的私聊里；`owner_reply` 开场白在外联页不画原文，画 `outreach_relay` 灰注）。
+- 气泡：两种开场白按现有 greeting 惯例藏（`friend_relay` 在主人的管理员私聊里、`owner_reply` 在外联里），看到的是管理员说的那句。
+- 空页文案：好友侧「可以在这里和 X 说话，它打来的电话也记在这里」。
 - 推送点击 → 外联页。
 
 ## 6. 测试（tests/ 镜像 src/）
