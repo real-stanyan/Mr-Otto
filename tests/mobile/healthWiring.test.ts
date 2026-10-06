@@ -18,8 +18,10 @@ describe("app.json", () => {
     expect(app.expo.ios.infoPlist.NSHealthShareUsageDescription).toBe("你问智能体健康相关的问题时，读取你的步数、睡眠、心率、体重和体能训练来回答。");
     expect(app.expo.ios.infoPlist.NSHealthUpdateUsageDescription).toBe("Otto 只读取健康数据，不会向「健康」写入任何内容。");
   });
-  it("runtimeVersion 进位到 7（加了原生模块）", () => {
-    expect(app.expo.runtimeVersion).toBe("7");
+  // 下限而不是定值（同 voiceRecordingWiring）：之后每出一个原生包都会再抬 runtimeVersion，钉死 7 的话 #1687 那次就红了
+  it("runtimeVersion 至少进位到 7（加了原生模块）", () => {
+    expect(app.expo.runtimeVersion).toMatch(/^\d+$/);
+    expect(Number(app.expo.runtimeVersion)).toBeGreaterThanOrEqual(7);
   });
 });
 
